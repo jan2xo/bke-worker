@@ -79,8 +79,22 @@ public sealed class BkeWorkerActivity : Activity
     {
         if (_status is null) return;
         var accessibility = IsAccessibilityEnabled() ? "ENABLED" : "DISABLED";
-        var chatGpt = PackageManager?.GetApplicationInfo(ChatGPTPackageIdentity.CandidatePackageName, 0) is not null ? "INSTALLED" : "UNKNOWN";
+        var chatGpt = GetChatGPTInstallStatus();
         _status.Text = $"Accessibility: {accessibility}\nChatGPT: {chatGpt}\nState: Idle\nReal ChatGPT execution: NOT TESTED";
+    }
+
+    private string GetChatGPTInstallStatus()
+    {
+        try
+        {
+            return PackageManager?.GetApplicationInfo(ChatGPTPackageIdentity.CandidatePackageName, 0) is not null
+                ? "INSTALLED"
+                : "UNKNOWN";
+        }
+        catch (Exception)
+        {
+            return "UNKNOWN";
+        }
     }
 
     private bool IsAccessibilityEnabled() =>
