@@ -43,7 +43,7 @@ public sealed class AndroidAccessibilitySurface(AndroidAccessibilityService serv
     public IReadOnlyList<IAccessibilityNode> Snapshot() =>
         service.CurrentRoot is { } root ? [new AndroidAccessibilityNodeAdapter(root)] : [];
     public bool LaunchChatGPT() => false;
-    public bool Back() => service.PerformGlobalAction(GlobalActionBack);
+    public bool Back() => service.PerformGlobalAction(global::Android.AccessibilityServices.GlobalAction.Back);
     public bool ScrollForward() => false;
     public bool Paste(string text) => false;
 }
