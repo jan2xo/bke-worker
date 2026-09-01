@@ -25,6 +25,7 @@ public sealed class BkeWorkerActivity : Activity
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
+        ActionBar?.Hide();
         BuildUi();
     }
 
@@ -36,8 +37,10 @@ public sealed class BkeWorkerActivity : Activity
 
     private void BuildUi()
     {
+        var scroll = new ScrollView(this);
         var layout = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        layout.SetPadding(32, 32, 32, 32);
+        layout.SetPadding(32, 48, 32, 64);
+
         layout.AddView(new TextView(this) { Text = "BKE Worker", TextSize = 24 });
         _status = new TextView(this);
         layout.AddView(_status);
@@ -71,7 +74,8 @@ public sealed class BkeWorkerActivity : Activity
         layout.AddView(run);
 
         layout.AddView(new TextView(this) { Text = "State / local event log" });
-        SetContentView(layout);
+        scroll.AddView(layout);
+        SetContentView(scroll);
         RefreshStatus();
     }
 
