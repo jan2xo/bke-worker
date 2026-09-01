@@ -1,5 +1,5 @@
+using Android.OS;
 using Android.Views.Accessibility;
-using BKE.Worker.Platform.Android.Accessibility;
 
 namespace BKE.Worker.Platform.Android.Accessibility;
 
@@ -20,10 +20,8 @@ public sealed class AndroidAccessibilityNodeAdapter(AccessibilityNodeInfo node) 
     public bool Click() => node.PerformAction(AccessibilityNodeInfo.ActionClick);
     public bool SetText(string text)
     {
-        var args = Android.OS.Bundle.FromInvocation(new Dictionary<string, Java.Lang.Object>
-        {
-            [AccessibilityNodeInfo.ActionArgumentSetTextCharSequence] = new Java.Lang.String(text)
-        });
+        var args = new Bundle();
+        args.PutCharSequence(AccessibilityNodeInfo.ActionArgumentSetTextCharSequence, text);
         return node.PerformAction(AccessibilityNodeInfo.ActionSetText, args);
     }
 }
