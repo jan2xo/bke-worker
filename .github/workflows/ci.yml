@@ -7,6 +7,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '10.0.x' }
+      - run: dotnet workload install android --skip-sign-check
       - run: dotnet restore BKE.Worker.sln
       - run: dotnet build BKE.Worker.sln --configuration Release --no-restore
       - run: dotnet test BKE.Worker.sln --configuration Release --no-build
+      - run: dotnet build src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj --configuration Debug --no-restore
