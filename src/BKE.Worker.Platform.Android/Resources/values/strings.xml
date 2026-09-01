@@ -1,0 +1,4 @@
+<resources>
+  <string name="app_name">BKE Worker</string>
+  <string name="accessibility_service_description">BKE Worker ChatGPT UI probe service</string>
+</resources>
