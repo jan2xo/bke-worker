@@ -1,18 +1,63 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '10.0.x' }
-      - run: dotnet workload install android --skip-sign-check
-      - run: dotnet restore BKE.Worker.sln
-      - run: dotnet build BKE.Worker.sln --configuration Release --no-restore
-      - run: dotnet test BKE.Worker.sln --configuration Release --no-build
-      - run: dotnet restore src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj
-      - run: dotnet build src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj --configuration Debug --no-restore
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Android workload
+        run: dotnet workload install android --skip-sign-check
+
+      - name: Restore canonical portable projects
+        run: |
+          set -euo pipefail
+          for project in \
+            src/BKE.Worker.Core/BKE.Worker.Core.csproj \
+            src/BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj \
+            src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
+            src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
+            src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
+            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
+          do
+            echo "RESTORE $project"
+            dotnet restore "$project"
+          done
+
+      - name: Build canonical portable projects
+        run: |
+          set -euo pipefail
+          for project in \
+            src/BKE.Worker.Core/BKE.Worker.Core.csproj \
+            src/BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj \
+            src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
+            src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
+            src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
+            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
+          do
+            echo "BUILD $project"
+            dotnet build "$project" --configuration Release --no-restore
+          done
+
+      - name: Execute Core tests
+        run: dotnet test tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Restore Android project
+        run: dotnet restore src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj
+
+      - name: Build Android debug APK
+        run: dotnet build src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj --configuration Debug --no-restore
+
+      - name: Verify APK exists
+        run: |
+          set -euo pipefail
+          find src/BKE.Worker.Platform.Android/bin/Debug -type f -name '*.apk' -print -quit | grep -q .
+
       - uses: actions/upload-artifact@v4
         with:
           name: bke-worker-android-debug-apk
