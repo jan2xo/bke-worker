@@ -1,1 +1,16 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <ApplicationId>bke.worker.android</ApplicationId>
+    <ApplicationTitle>BKE Worker</ApplicationTitle>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../BKE.Worker.Core/BKE.Worker.Core.csproj" />
+    <ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
+  </ItemGroup>
+</Project>
