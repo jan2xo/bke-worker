@@ -11,4 +11,10 @@ jobs:
       - run: dotnet restore BKE.Worker.sln
       - run: dotnet build BKE.Worker.sln --configuration Release --no-restore
       - run: dotnet test BKE.Worker.sln --configuration Release --no-build
+      - run: dotnet restore src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj
       - run: dotnet build src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj --configuration Debug --no-restore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-android-debug-apk
+          path: src/BKE.Worker.Platform.Android/bin/Debug/**/*.apk
+          if-no-files-found: error
