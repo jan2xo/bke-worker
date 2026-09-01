@@ -9,6 +9,16 @@
     <ApplicationId>bke.worker.android</ApplicationId>
     <ApplicationTitle>BKE Worker</ApplicationTitle>
   </PropertyGroup>
+
+  <!--
+    CI artifacts are manually sideloaded onto an emulator rather than deployed
+    through the IDE. Embed managed assemblies so the APK is self-contained and
+    does not depend on .NET Android Fast Deployment override directories.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../BKE.Worker.Core/BKE.Worker.Core.csproj" />
     <ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
