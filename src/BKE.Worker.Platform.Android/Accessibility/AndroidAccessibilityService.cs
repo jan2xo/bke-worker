@@ -30,7 +30,7 @@ public class AndroidAccessibilityService : AccessibilityService
         SafeEvent?.Invoke("Accessibility service connected.");
     }
 
-    protected override void OnDestroy()
+    public override void OnDestroy()
     {
         _connected = false;
         lock (_sync) _root = null;
