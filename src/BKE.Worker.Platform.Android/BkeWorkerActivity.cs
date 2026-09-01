@@ -15,7 +15,7 @@ namespace BKE.Worker.Platform.Android;
     MainLauncher = true)]
 public sealed class BkeWorkerActivity : Activity
 {
-    private readonly TextView _status = new() { };
+    private TextView? _status;
     private Spinner? _context;
     private Spinner? _reasoning;
     private EditText? _conversation;
@@ -39,6 +39,7 @@ public sealed class BkeWorkerActivity : Activity
         var layout = new LinearLayout(this) { Orientation = Orientation.Vertical };
         layout.SetPadding(32, 32, 32, 32);
         layout.AddView(new TextView(this) { Text = "BKE Worker", TextSize = 24 });
+        _status = new TextView(this);
         layout.AddView(_status);
 
         var settings = new Button(this) { Text = "OPEN ACCESSIBILITY SETTINGS" };
@@ -46,8 +47,8 @@ public sealed class BkeWorkerActivity : Activity
         layout.AddView(settings);
 
         _context = new Spinner(this);
-        _context.Adapter = new ArrayAdapter<string>(this, Android.Resource.Layout.SimpleSpinnerItem,
-            ["NewChat", "RecentChat", "ProjectChat"]);
+        _context.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
+            new[] { "NewChat", "RecentChat", "ProjectChat" });
         layout.AddView(_context);
 
         _project = new EditText(this) { Hint = "ProjectName (ProjectChat only)" };
@@ -56,12 +57,13 @@ public sealed class BkeWorkerActivity : Activity
         layout.AddView(_conversation);
 
         _reasoning = new Spinner(this);
-        _reasoning.Adapter = new ArrayAdapter<string>(this, Android.Resource.Layout.SimpleSpinnerItem,
+        _reasoning.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
             Enum.GetNames<ReasoningProfile>());
         _reasoning.SetSelection(Array.IndexOf(Enum.GetNames<ReasoningProfile>(), nameof(ReasoningProfile.HIGH)));
         layout.AddView(_reasoning);
 
-        _probe = new EditText(this) { Text = "BKE WORKER TEST 001.\n\nReply with exactly:\n\nBKE_WORKER_OK", MinLines = 4 };
+        _probe = new EditText(this) { Text = "BKE WORKER TEST 001.\n\nReply with exactly:\n\nBKE_WORKER_OK" };
+        _probe.SetMinLines(4);
         layout.AddView(_probe);
 
         var run = new Button(this) { Text = "RUN PROBE" };
@@ -69,7 +71,6 @@ public sealed class BkeWorkerActivity : Activity
         layout.AddView(run);
 
         layout.AddView(new TextView(this) { Text = "State / local event log" });
-        layout.AddView(_status);
         SetContentView(layout);
         RefreshStatus();
     }
