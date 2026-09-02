@@ -1,3 +1,4 @@
+global using Xunit;
 using System.Net;
 using BKE.Worker.Notion;
 
