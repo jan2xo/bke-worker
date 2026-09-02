@@ -1,7 +1,10 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 
 namespace BKE.Worker.Notion;
+
+public sealed record NotionPageSummary(string PageId, string Title, string? Url);
 
 public sealed record NotionChecklistTask(
     string BlockId,
@@ -11,6 +14,8 @@ public sealed record NotionChecklistTask(
 
 public interface INotionChecklistClient
 {
+    Task<IReadOnlyList<NotionPageSummary>> GetSharedPages(CancellationToken cancellationToken);
+
     Task<IReadOnlyList<NotionChecklistTask>> GetTasks(
         string pageIdOrUrl,
         bool includeChecked,
@@ -33,6 +38,66 @@ public sealed class NotionChecklistClient : INotionChecklistClient
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
         _http.DefaultRequestHeaders.Remove("Notion-Version");
         _http.DefaultRequestHeaders.Add("Notion-Version", ApiVersion);
+    }
+
+    public async Task<IReadOnlyList<NotionPageSummary>> GetSharedPages(CancellationToken cancellationToken)
+    {
+        var pages = new List<NotionPageSummary>();
+        string? cursor = null;
+
+        do
+        {
+            var request = new Dictionary<string, object?>
+            {
+                ["page_size"] = 100,
+                ["filter"] = new Dictionary<string, string>
+                {
+                    ["property"] = "object",
+                    ["value"] = "page"
+                },
+                ["sort"] = new Dictionary<string, string>
+                {
+                    ["direction"] = "descending",
+                    ["timestamp"] = "last_edited_time"
+                }
+            };
+
+            if (!string.IsNullOrWhiteSpace(cursor))
+                request["start_cursor"] = cursor;
+
+            using var content = new StringContent(
+                JsonSerializer.Serialize(request),
+                Encoding.UTF8,
+                "application/json");
+            using var response = await _http.PostAsync("v1/search", content, cancellationToken);
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
+
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            foreach (var page in root.GetProperty("results").EnumerateArray())
+            {
+                if (page.TryGetProperty("object", out var objectType)
+                    && objectType.GetString() == "page"
+                    && page.TryGetProperty("id", out var idProperty))
+                {
+                    var id = idProperty.GetString() ?? string.Empty;
+                    var title = ReadPageTitle(page);
+                    var url = page.TryGetProperty("url", out var urlProperty) ? urlProperty.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(title))
+                        pages.Add(new NotionPageSummary(id, title, url));
+                }
+            }
+
+            cursor = root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
+                && root.TryGetProperty("next_cursor", out var nextCursor)
+                ? nextCursor.GetString()
+                : null;
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+
+        return pages;
     }
 
     public async Task<IReadOnlyList<NotionChecklistTask>> GetTasks(
@@ -85,7 +150,8 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                     }
                 }
 
-                if (hasChildren && !string.IsNullOrWhiteSpace(id))
+                var isNestedPageOrDatabase = type is "child_page" or "child_database";
+                if (hasChildren && !isNestedPageOrDatabase && !string.IsNullOrWhiteSpace(id))
                     await ReadChildren(id, includeChecked, tasks, cancellationToken);
             }
 
@@ -95,6 +161,28 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                 : null;
         }
         while (!string.IsNullOrWhiteSpace(cursor));
+    }
+
+    private static string ReadPageTitle(JsonElement page)
+    {
+        if (!page.TryGetProperty("properties", out var properties))
+            return string.Empty;
+
+        foreach (var property in properties.EnumerateObject())
+        {
+            var value = property.Value;
+            if (!value.TryGetProperty("type", out var type) || type.GetString() != "title")
+                continue;
+            if (!value.TryGetProperty("title", out var titleItems))
+                continue;
+
+            return string.Concat(
+                titleItems.EnumerateArray()
+                    .Select(item => item.TryGetProperty("plain_text", out var text) ? text.GetString() : null)
+                    .Where(text => !string.IsNullOrEmpty(text)));
+        }
+
+        return string.Empty;
     }
 
     private static string ReadPlainText(JsonElement blockType)
