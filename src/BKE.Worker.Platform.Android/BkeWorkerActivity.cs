@@ -19,6 +19,7 @@ public sealed class BkeWorkerActivity : Activity
 {
     private TextView? _status;
     private TextView? _notionStatus;
+    private Spinner? _notionPages;
     private Spinner? _notionTasks;
     private Spinner? _context;
     private Spinner? _reasoning;
@@ -26,7 +27,8 @@ public sealed class BkeWorkerActivity : Activity
     private EditText? _project;
     private EditText? _probe;
     private EditText? _notionToken;
-    private EditText? _notionPage;
+    private IReadOnlyList<NotionPageSummary> _loadedNotionPages = [];
+    private IReadOnlyList<NotionChecklistTask> _loadedNotionTasks = [];
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -65,15 +67,21 @@ public sealed class BkeWorkerActivity : Activity
         _notionToken.InputType = InputTypes.ClassText | InputTypes.TextVariationPassword;
         layout.AddView(_notionToken);
 
-        _notionPage = new EditText(this) { Hint = "Notion checklist page ID or URL" };
-        layout.AddView(_notionPage);
-
-        var loadNotion = new Button(this) { Text = "LOAD NOTION TASKS" };
-        loadNotion.Click += async (_, _) => await LoadNotionTasks(loadNotion);
-        layout.AddView(loadNotion);
+        var discoverNotion = new Button(this) { Text = "DISCOVER NOTION PAGES" };
+        discoverNotion.Click += async (_, _) => await DiscoverNotionPages(discoverNotion);
+        layout.AddView(discoverNotion);
 
         _notionStatus = new TextView(this) { Text = "Notion: NOT CONNECTED" };
         layout.AddView(_notionStatus);
+
+        _notionPages = new Spinner(this);
+        _notionPages.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
+            new[] { "(discover shared pages)" });
+        layout.AddView(_notionPages);
+
+        var loadNotion = new Button(this) { Text = "LOAD PAGE TASKS" };
+        loadNotion.Click += async (_, _) => await LoadNotionTasks(loadNotion);
+        layout.AddView(loadNotion);
 
         _notionTasks = new Spinner(this);
         _notionTasks.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
@@ -118,35 +126,87 @@ public sealed class BkeWorkerActivity : Activity
         RefreshStatus();
     }
 
-    private async Task LoadNotionTasks(Button button)
+    private async Task DiscoverNotionPages(Button button)
     {
-        if (_notionToken is null || _notionPage is null || _notionTasks is null || _notionStatus is null)
+        if (_notionToken is null || _notionPages is null || _notionStatus is null)
             return;
 
         var token = _notionToken.Text?.Trim();
-        var page = _notionPage.Text?.Trim();
-        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(page))
+        if (string.IsNullOrWhiteSpace(token))
         {
-            _notionStatus.Text = "Notion: TOKEN_AND_PAGE_REQUIRED";
+            _notionStatus.Text = "Notion: TOKEN_REQUIRED";
             return;
         }
 
         button.Enabled = false;
-        _notionStatus.Text = "Notion: LOADING";
+        _notionStatus.Text = "Notion: DISCOVERING PAGES";
 
         try
         {
             using var http = new HttpClient();
             var client = new NotionChecklistClient(http, token);
-            var tasks = await client.GetTasks(page, includeChecked: false, CancellationToken.None);
-            var labels = tasks.Count == 0
+            _loadedNotionPages = await client.GetSharedPages(CancellationToken.None);
+            _loadedNotionTasks = [];
+
+            var labels = _loadedNotionPages.Count == 0
+                ? new[] { "(no shared pages found)" }
+                : _loadedNotionPages.Select(page => page.Title).ToArray();
+
+            _notionPages.Adapter = new ArrayAdapter<string>(this,
+                global::Android.Resource.Layout.SimpleSpinnerItem,
+                labels);
+            _notionStatus.Text = $"Notion: CONNECTED — {_loadedNotionPages.Count} shared page(s)";
+        }
+        catch (InvalidOperationException ex)
+        {
+            _notionStatus.Text = $"Notion: {ex.Message}";
+        }
+        catch (HttpRequestException)
+        {
+            _notionStatus.Text = "Notion: NETWORK_FAILED";
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
+    private async Task LoadNotionTasks(Button button)
+    {
+        if (_notionToken is null || _notionPages is null || _notionTasks is null || _notionStatus is null)
+            return;
+
+        var token = _notionToken.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _notionStatus.Text = "Notion: TOKEN_REQUIRED";
+            return;
+        }
+
+        var selectedIndex = _notionPages.SelectedItemPosition;
+        if (_loadedNotionPages.Count == 0 || selectedIndex < 0 || selectedIndex >= _loadedNotionPages.Count)
+        {
+            _notionStatus.Text = "Notion: DISCOVER_PAGES_FIRST";
+            return;
+        }
+
+        button.Enabled = false;
+        var selectedPage = _loadedNotionPages[selectedIndex];
+        _notionStatus.Text = $"Notion: LOADING — {selectedPage.Title}";
+
+        try
+        {
+            using var http = new HttpClient();
+            var client = new NotionChecklistClient(http, token);
+            _loadedNotionTasks = await client.GetTasks(selectedPage.PageId, includeChecked: false, CancellationToken.None);
+            var labels = _loadedNotionTasks.Count == 0
                 ? new[] { "(no unchecked tasks found)" }
-                : tasks.Select(task => task.Text).ToArray();
+                : _loadedNotionTasks.Select(task => task.Text).ToArray();
 
             _notionTasks.Adapter = new ArrayAdapter<string>(this,
                 global::Android.Resource.Layout.SimpleSpinnerItem,
                 labels);
-            _notionStatus.Text = $"Notion: CONNECTED — {tasks.Count} unchecked task(s)";
+            _notionStatus.Text = $"Notion: CONNECTED — {_loadedNotionTasks.Count} unchecked task(s)";
         }
         catch (ArgumentException ex)
         {
