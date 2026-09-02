@@ -77,6 +77,10 @@ public sealed class BkeWorkerActivity : Activity
         _notionSecretStatus = new TextView(this);
         layout.AddView(_notionSecretStatus);
 
+        var securitySettings = new Button(this) { Text = "OPEN DEVICE SECURITY SETTINGS" };
+        securitySettings.Click += (_, _) => StartActivity(new Intent(Settings.ActionSecuritySettings));
+        layout.AddView(securitySettings);
+
         _notionToken = new EditText(this) { Hint = "Notion token — first setup/change only" };
         _notionToken.InputType = InputTypes.ClassText | InputTypes.TextVariationPassword;
         layout.AddView(_notionToken);
@@ -183,7 +187,7 @@ public sealed class BkeWorkerActivity : Activity
         }
         catch (InvalidOperationException ex)
         {
-            _notionStatus.Text = $"Notion: {ex.Message}";
+            _notionStatus.Text = $"Notion: {FormatNotionSecurityError(ex)}";
         }
         finally
         {
@@ -206,7 +210,7 @@ public sealed class BkeWorkerActivity : Activity
         }
         catch (InvalidOperationException ex)
         {
-            _notionStatus.Text = $"Notion: {ex.Message}";
+            _notionStatus.Text = $"Notion: {FormatNotionSecurityError(ex)}";
         }
         finally
         {
@@ -370,6 +374,12 @@ public sealed class BkeWorkerActivity : Activity
         if (_notionSecretStatus is null || _notionVault is null)
             return;
 
+        if (!_notionVault.IsDeviceAuthenticationConfigured)
+        {
+            _notionSecretStatus.Text = "Notion credential: DEVICE LOCK REQUIRED — configure PIN/password/fingerprint";
+            return;
+        }
+
         _notionSecretStatus.Text = _notionVault.State switch
         {
             NotionSecretState.NotConfigured => "Notion credential: NOT CONFIGURED",
@@ -378,6 +388,11 @@ public sealed class BkeWorkerActivity : Activity
             _ => "Notion credential: UNKNOWN"
         };
     }
+
+    private static string FormatNotionSecurityError(InvalidOperationException ex) =>
+        ex.Message == "NOTION_DEVICE_LOCK_REQUIRED"
+            ? "DEVICE_LOCK_REQUIRED — enable a secure screen lock"
+            : ex.Message;
 
     private void RefreshStatus()
     {
