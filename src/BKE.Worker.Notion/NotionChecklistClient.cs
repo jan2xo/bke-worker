@@ -115,13 +115,12 @@ public sealed class NotionChecklistClient : INotionChecklistClient
 
         var candidate = pageIdOrUrl.Trim();
         if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
-        {
-            var lastSegment = uri.AbsolutePath.Trim('/').Split('/').LastOrDefault() ?? string.Empty;
-            var suffix = lastSegment.Split('-').LastOrDefault() ?? lastSegment;
-            candidate = suffix.Length >= 32 ? suffix[^32..] : suffix;
-        }
+            candidate = uri.AbsolutePath.Trim('/').Split('/').LastOrDefault() ?? string.Empty;
 
         candidate = new string(candidate.Where(Uri.IsHexDigit).ToArray());
+        if (candidate.Length > 32)
+            candidate = candidate[^32..];
+
         if (candidate.Length != 32)
             throw new ArgumentException("Notion page ID must contain exactly 32 hexadecimal characters.", nameof(pageIdOrUrl));
 
