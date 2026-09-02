@@ -13,7 +13,7 @@ public sealed class OperatorUiTests
         Environment.GetEnvironmentVariable("BKE_WORKER_UI_FIXTURE_URL") ?? "http://127.0.0.1:5094";
 
     [Fact]
-    public async Task Operator_surface_renders_live_worker_state_and_manual_reconcile_works()
+    public async Task Operator_surface_renders_live_worker_state_probe_is_non_mutating_and_manual_reconcile_works()
     {
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -33,6 +33,12 @@ public sealed class OperatorUiTests
 
         var initialPromptCount = await PromptCount();
         Assert.Equal(1, initialPromptCount);
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Probe ChatGPT Adapter" }).ClickAsync();
+        await Assertions.Expect(page.GetByText("ChatGPT adapter compatible. No prompt was sent.", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("Compatible", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("Authenticated", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Equal(initialPromptCount, await PromptCount());
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Force Reconcile" }).ClickAsync();
         await Assertions.Expect(page.GetByText("Manual reconciliation queued.", new() { Exact = true })).ToBeVisibleAsync();

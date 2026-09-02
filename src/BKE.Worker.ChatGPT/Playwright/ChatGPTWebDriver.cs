@@ -3,6 +3,18 @@ using Microsoft.Playwright;
 
 namespace BKE.Worker.ChatGPT.Playwright;
 
+public sealed record ChatGptAdapterProbeResult(
+    bool Compatible,
+    bool Authenticated,
+    string Project,
+    string Conversation,
+    bool ComposerAvailable,
+    bool TurnBusy,
+    bool CanSendNextTurn,
+    string? CurrentUrl,
+    string? Failure,
+    DateTimeOffset CheckedAt);
+
 public sealed class ChatGPTWebDriver(
     ChromiumHost host,
     ProjectNavigator projects,
@@ -21,6 +33,65 @@ public sealed class ChatGPTWebDriver(
         }
 
         await ThrowIfAuthenticationRequired(page, cancellationToken);
+    }
+
+    public async Task<ChatGptAdapterProbeResult> ProbeExactContext(
+        string project,
+        string conversation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(project);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversation);
+
+        string? currentUrl = null;
+        var checkedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            await Launch(cancellationToken);
+            currentUrl = (await host.GetPage(cancellationToken)).Url;
+
+            await OpenContext(
+                ContextTarget.ProjectChat(project, conversation),
+                cancellationToken);
+
+            var page = await host.GetPage(cancellationToken);
+            currentUrl = page.Url;
+            await ThrowIfAuthenticationRequired(page, cancellationToken);
+
+            var composerState = await composer.Probe(page, cancellationToken);
+            if (!composerState.ComposerAvailable && !composerState.TurnBusy)
+                throw new InvalidOperationException("CHATGPT_COMPOSER_NOT_AVAILABLE");
+
+            return new ChatGptAdapterProbeResult(
+                Compatible: true,
+                Authenticated: true,
+                Project: project,
+                Conversation: conversation,
+                ComposerAvailable: composerState.ComposerAvailable,
+                TurnBusy: composerState.TurnBusy,
+                CanSendNextTurn: composerState.CanSendNextTurn,
+                CurrentUrl: currentUrl,
+                Failure: null,
+                CheckedAt: checkedAt);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new ChatGptAdapterProbeResult(
+                Compatible: false,
+                Authenticated: !ex.Message.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal),
+                Project: project,
+                Conversation: conversation,
+                ComposerAvailable: false,
+                TurnBusy: false,
+                CanSendNextTurn: false,
+                CurrentUrl: currentUrl,
+                Failure: ex.Message,
+                CheckedAt: checkedAt);
+        }
     }
 
     public async Task<IReadOnlyList<ContextTarget>> GetAvailableContexts(CancellationToken cancellationToken)
