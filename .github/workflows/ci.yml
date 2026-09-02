@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  build:
+  vps-runtime:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -11,36 +11,41 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install Android workload
-        run: dotnet workload install android --skip-sign-check
-
-      - name: Restore canonical portable projects
+      - name: Restore canonical VPS runtime projects
         run: |
           set -euo pipefail
           for project in \
             src/BKE.Worker.Core/BKE.Worker.Core.csproj \
             src/BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj \
             src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
+            src/BKE.Worker.GitHub/BKE.Worker.GitHub.csproj \
+            src/BKE.Worker.Server/BKE.Worker.Server.csproj \
             src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
             src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
             tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj \
-            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj
+            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj \
+            tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj \
+            tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj
           do
             echo "RESTORE $project"
             dotnet restore "$project"
           done
 
-      - name: Build canonical portable projects
+      - name: Build canonical VPS runtime projects
         run: |
           set -euo pipefail
           for project in \
             src/BKE.Worker.Core/BKE.Worker.Core.csproj \
             src/BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj \
             src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
+            src/BKE.Worker.GitHub/BKE.Worker.GitHub.csproj \
+            src/BKE.Worker.Server/BKE.Worker.Server.csproj \
             src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
             src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
             tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj \
-            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj
+            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj \
+            tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj \
+            tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj
           do
             echo "BUILD $project"
             dotnet build "$project" --configuration Release --no-restore
@@ -52,19 +57,44 @@ jobs:
       - name: Execute Notion tests
         run: dotnet test tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
 
-      - name: Restore Android project
-        run: dotnet restore src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj
+      - name: Execute GitHub webhook tests
+        run: dotnet test tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
 
-      - name: Build Android debug APK
-        run: dotnet build src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj --configuration Debug --no-restore
+      - name: Install Playwright Chromium
+        run: pwsh tests/BKE.Worker.ChatGPT.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
 
-      - name: Verify APK exists
+      - name: Certify persistent Chromium and ChatGPT semantic driver
+        run: dotnet test tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish VPS server
+        run: dotnet publish src/BKE.Worker.Server/BKE.Worker.Server.csproj --configuration Release --no-build --output artifacts/bke-worker-server
+
+      - name: Certify published server boots on Ubuntu
         run: |
           set -euo pipefail
-          find src/BKE.Worker.Platform.Android/bin/Debug -type f -name '*.apk' -print -quit | grep -q .
+          export ASPNETCORE_URLS=http://127.0.0.1:5080
+          export BKE_WORKER_STATE_FILE="$RUNNER_TEMP/bke-worker/state.json"
+          export BKE_WORKER_CHATGPT_PROFILE="$RUNNER_TEMP/bke-worker/chatgpt-profile"
+
+          dotnet artifacts/bke-worker-server/BKE.Worker.Server.dll > "$RUNNER_TEMP/bke-worker-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 20); do
+            if response=$(curl --fail --silent http://127.0.0.1:5080/health); then
+              echo "$response"
+              echo "$response" | grep -q '"status":"ok"'
+              echo "$response" | grep -q '"runtime":"vps-playwright"'
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat "$RUNNER_TEMP/bke-worker-server.log"
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bke-worker-android-debug-apk
-          path: src/BKE.Worker.Platform.Android/bin/Debug/**/*.apk
+          name: bke-worker-server-linux-portable
+          path: artifacts/bke-worker-server/**
           if-no-files-found: error

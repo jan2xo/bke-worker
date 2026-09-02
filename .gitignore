@@ -1,0 +1,12 @@
+bin/
+obj/
+artifacts/
+.vs/
+.idea/
+.DS_Store
+
+# Local BKE Worker runtime material. Treat browser profiles as credentials.
+.bke-worker/
+chatgpt-profile/
+worker-state/
+*.worker-state.json
