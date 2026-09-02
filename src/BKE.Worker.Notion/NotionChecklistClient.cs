@@ -28,13 +28,13 @@ public sealed class NotionChecklistClient : INotionChecklistClient
 
     private readonly HttpClient _http;
 
-    public NotionChecklistClient(HttpClient http, string accessToken)
+    public NotionChecklistClient(HttpClient http, string accessToken, Uri? baseAddress = null)
     {
         if (string.IsNullOrWhiteSpace(accessToken))
             throw new ArgumentException("A Notion access token is required.", nameof(accessToken));
 
         _http = http;
-        _http.BaseAddress ??= new Uri("https://api.notion.com/");
+        _http.BaseAddress ??= baseAddress ?? new Uri("https://api.notion.com/");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
         _http.DefaultRequestHeaders.Remove("Notion-Version");
         _http.DefaultRequestHeaders.Add("Notion-Version", ApiVersion);

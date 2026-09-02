@@ -2,6 +2,8 @@
 Description=BKE Worker VPS Runtime
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -10,6 +12,10 @@ Group=bke-worker
 WorkingDirectory=/opt/bke-worker
 EnvironmentFile=/etc/bke-worker/bke-worker.env
 Environment=ASPNETCORE_URLS=http://127.0.0.1:8080
+Environment=HOME=/var/lib/bke-worker
+StateDirectory=bke-worker
+StateDirectoryMode=0700
+UMask=0077
 ExecStart=/usr/bin/dotnet /opt/bke-worker/BKE.Worker.Server.dll
 Restart=on-failure
 RestartSec=5

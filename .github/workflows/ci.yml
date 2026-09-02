@@ -69,29 +69,264 @@ jobs:
       - name: Publish VPS server
         run: dotnet publish src/BKE.Worker.Server/BKE.Worker.Server.csproj --configuration Release --no-build --output artifacts/bke-worker-server
 
-      - name: Certify published server boots on Ubuntu
+      - name: Certify liveness and fail-closed readiness
         run: |
           set -euo pipefail
           export ASPNETCORE_URLS=http://127.0.0.1:5080
-          export BKE_WORKER_STATE_FILE="$RUNNER_TEMP/bke-worker/state.json"
-          export BKE_WORKER_CHATGPT_PROFILE="$RUNNER_TEMP/bke-worker/chatgpt-profile"
+          export BKE_WORKER_STATE_FILE="$RUNNER_TEMP/bke-worker-unconfigured/state.json"
+          export BKE_WORKER_CHATGPT_PROFILE="$RUNNER_TEMP/bke-worker-unconfigured/chatgpt-profile"
 
-          dotnet artifacts/bke-worker-server/BKE.Worker.Server.dll > "$RUNNER_TEMP/bke-worker-server.log" 2>&1 &
+          dotnet artifacts/bke-worker-server/BKE.Worker.Server.dll > "$RUNNER_TEMP/bke-worker-unconfigured.log" 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 
           for attempt in $(seq 1 20); do
-            if response=$(curl --fail --silent http://127.0.0.1:5080/health); then
-              echo "$response"
-              echo "$response" | grep -q '"status":"ok"'
-              echo "$response" | grep -q '"runtime":"vps-playwright"'
-              exit 0
+            if response=$(curl --fail --silent http://127.0.0.1:5080/health/live); then
+              echo "$response" | grep -q '"status":"alive"'
+              break
             fi
             sleep 1
           done
 
-          cat "$RUNNER_TEMP/bke-worker-server.log"
-          exit 1
+          ready_code=$(curl --silent --output "$RUNNER_TEMP/ready.json" --write-out '%{http_code}' http://127.0.0.1:5080/health/ready)
+          test "$ready_code" = "503"
+          grep -q '"status":"not_ready"' "$RUNNER_TEMP/ready.json"
+
+      - name: Certify Phase 3 full closed loop and restart idempotency
+        run: |
+          set -euo pipefail
+
+          FIXTURE=http://127.0.0.1:5091
+          WORKER=http://127.0.0.1:5081
+          SECRET=phase3-ci-secret
+          STATE_FILE="$RUNNER_TEMP/bke-worker-phase3/state.json"
+          PROFILE_DIR="$RUNNER_TEMP/bke-worker-phase3/chatgpt-profile"
+          WORKER_LOG="$RUNNER_TEMP/bke-worker-phase3.log"
+          FIXTURE_LOG="$RUNNER_TEMP/bke-worker-phase3-fixture.log"
+          WORKER_PID=""
+
+          mkdir -p "$(dirname "$STATE_FILE")"
+
+          python3 tests/integration/phase3_fixture.py --port 5091 > "$FIXTURE_LOG" 2>&1 &
+          FIXTURE_PID=$!
+
+          cleanup() {
+            if [ -n "${WORKER_PID:-}" ]; then
+              kill "$WORKER_PID" 2>/dev/null || true
+              wait "$WORKER_PID" 2>/dev/null || true
+            fi
+            kill "$FIXTURE_PID" 2>/dev/null || true
+            wait "$FIXTURE_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent "$FIXTURE/fixture-health" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent "$FIXTURE/fixture-health" >/dev/null
+
+          start_worker() {
+            export ASPNETCORE_URLS=http://127.0.0.1:5081
+            export BKE_WORKER_NOTION_TOKEN=phase3-fixture-token
+            export BKE_WORKER_NOTION_PAGE=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+            export BKE_WORKER_NOTION_BASE_URL="$FIXTURE/"
+            export BKE_WORKER_CHATGPT_PROJECT="BKE Worker"
+            export BKE_WORKER_CHATGPT_CONVERSATION="Worker Engineering"
+            export BKE_WORKER_CHATGPT_BASE_URL="$FIXTURE/chatgpt/"
+            export BKE_WORKER_GITHUB_WEBHOOK_SECRET="$SECRET"
+            export BKE_WORKER_CHATGPT_PROFILE="$PROFILE_DIR"
+            export BKE_WORKER_STATE_FILE="$STATE_FILE"
+            export BKE_WORKER_HEADLESS=true
+            export BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS=1
+            export BKE_WORKER_RECOVERY_SECONDS=300
+            export BKE_WORKER_MIN_DISPATCH_SECONDS=1
+
+            dotnet artifacts/bke-worker-server/BKE.Worker.Server.dll >> "$WORKER_LOG" 2>&1 &
+            WORKER_PID=$!
+
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent "$WORKER/health/ready" >/dev/null; then
+                return 0
+              fi
+              if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+                cat "$WORKER_LOG"
+                return 1
+              fi
+              sleep 1
+            done
+            cat "$WORKER_LOG"
+            return 1
+          }
+
+          stop_worker() {
+            if [ -n "${WORKER_PID:-}" ]; then
+              kill "$WORKER_PID" 2>/dev/null || true
+              wait "$WORKER_PID" 2>/dev/null || true
+              WORKER_PID=""
+              sleep 1
+            fi
+          }
+
+          prompt_count() {
+            curl --fail --silent "$FIXTURE/admin/state" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["prompts"]))'
+          }
+
+          wait_prompt_count() {
+            expected="$1"
+            for attempt in $(seq 1 30); do
+              actual=$(prompt_count)
+              if [ "$actual" = "$expected" ]; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "expected prompt count $expected but got $(prompt_count)"
+            cat "$WORKER_LOG"
+            cat "$FIXTURE_LOG"
+            return 1
+          }
+
+          assert_prompt_count() {
+            expected="$1"
+            actual=$(prompt_count)
+            test "$actual" = "$expected" || {
+              echo "expected prompt count $expected but got $actual"
+              cat "$WORKER_LOG"
+              return 1
+            }
+          }
+
+          worker_field() {
+            field="$1"
+            curl --fail --silent "$WORKER/control/state" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$field'))"
+          }
+
+          wait_worker_state() {
+            expected="$1"
+            for attempt in $(seq 1 30); do
+              actual=$(worker_field state)
+              if [ "$actual" = "$expected" ]; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "expected worker state $expected but got $(worker_field state)"
+            cat "$WORKER_LOG"
+            return 1
+          }
+
+          send_webhook() {
+            delivery="$1"
+            body='{"ref":"refs/heads/main"}'
+            signature=$(BODY="$body" SECRET="$SECRET" python3 - <<'PY'
+          import hashlib, hmac, os
+          print("sha256=" + hmac.new(os.environ["SECRET"].encode(), os.environ["BODY"].encode(), hashlib.sha256).hexdigest())
+          PY
+            )
+            code=$(curl --silent --output "$RUNNER_TEMP/webhook.json" --write-out '%{http_code}' \
+              -X POST "$WORKER/webhooks/github" \
+              -H 'Content-Type: application/json' \
+              -H 'X-GitHub-Event: push' \
+              -H "X-GitHub-Delivery: $delivery" \
+              -H "X-Hub-Signature-256: $signature" \
+              --data "$body")
+            test "$code" = "202" || {
+              cat "$RUNNER_TEMP/webhook.json"
+              return 1
+            }
+          }
+
+          echo 'PHASE3: initial configured server dispatch'
+          start_worker
+          wait_prompt_count 1
+          test "$(worker_field state)" = "WAITING_FOR_ENGINEERING_EVENT"
+          test "$(worker_field currentChecklistIdentifier)" = "11111111-1111-1111-1111-111111111111"
+
+          echo 'PHASE3: process restart must not duplicate dispatch'
+          stop_worker
+          start_worker
+          sleep 2
+          assert_prompt_count 1
+
+          echo 'PHASE3: unchecked gate + signed push continues same engineering loop'
+          send_webhook delivery-1
+          wait_prompt_count 2
+          test "$(worker_field currentChecklistIdentifier)" = "11111111-1111-1111-1111-111111111111"
+
+          echo 'PHASE3: delivery idempotency survives process restart'
+          stop_worker
+          start_worker
+          send_webhook delivery-1
+          sleep 3
+          assert_prompt_count 2
+
+          echo 'PHASE3: busy ChatGPT turn blocks duplicate continuation'
+          curl --fail --silent -X POST "$FIXTURE/admin/busy/on" >/dev/null
+          send_webhook delivery-busy
+          sleep 3
+          assert_prompt_count 2
+          test "$(worker_field state)" = "WAITING_FOR_ENGINEERING_EVENT"
+
+          echo 'PHASE3: idle recovery permits continuation'
+          curl --fail --silent -X POST "$FIXTURE/admin/busy/off" >/dev/null
+          send_webhook delivery-idle
+          wait_prompt_count 3
+
+          echo 'PHASE3: checked current gate advances to next unchecked gate'
+          curl --fail --silent -X POST "$FIXTURE/admin/gates/1/check" >/dev/null
+          send_webhook delivery-2
+          wait_prompt_count 4
+          test "$(worker_field currentChecklistIdentifier)" = "22222222-2222-2222-2222-222222222222"
+
+          echo 'PHASE3: all checked completes without another prompt'
+          curl --fail --silent -X POST "$FIXTURE/admin/gates/all/check" >/dev/null
+          send_webhook delivery-3
+          wait_worker_state COMPLETE
+          assert_prompt_count 4
+
+          echo 'PHASE3: duplicate completed delivery remains harmless'
+          send_webhook delivery-3
+          sleep 2
+          assert_prompt_count 4
+          test "$(worker_field state)" = "COMPLETE"
+
+          echo 'PHASE3: HTTP webhook failures are fail-closed'
+          invalid_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST "$WORKER/webhooks/github" \
+            -H 'Content-Type: application/json' \
+            -H 'X-GitHub-Event: push' \
+            -H 'X-GitHub-Delivery: invalid-signature' \
+            -H 'X-Hub-Signature-256: sha256=00' \
+            --data '{"ref":"refs/heads/main"}')
+          test "$invalid_code" = "401"
+
+          missing_delivery_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST "$WORKER/webhooks/github" \
+            -H 'X-GitHub-Event: push' \
+            --data '{}')
+          test "$missing_delivery_code" = "400"
+
+          ignored_code=$(curl --silent --output "$RUNNER_TEMP/ignored.json" --write-out '%{http_code}' \
+            -X POST "$WORKER/webhooks/github" \
+            -H 'X-GitHub-Event: ping' \
+            --data '{}')
+          test "$ignored_code" = "202"
+          grep -q 'IGNORED_EVENT' "$RUNNER_TEMP/ignored.json"
+
+          echo 'PHASE3: every browser dispatch used the exact locked continuation prompt'
+          curl --fail --silent "$FIXTURE/admin/state" | python3 -c 'import json,sys; p=json.load(sys.stdin)["prompts"]; assert len(p)==4; assert all(x=="CONTINUE FROM THE NOTION CHECKLIST." for x in p), p'
+
+          echo 'PHASE3: COMPLETE state survives another server restart'
+          stop_worker
+          start_worker
+          wait_worker_state COMPLETE
+          sleep 2
+          assert_prompt_count 4
+
+          echo 'PHASE3 CLOSED LOOP: GREEN'
 
       - uses: actions/upload-artifact@v4
         with:
