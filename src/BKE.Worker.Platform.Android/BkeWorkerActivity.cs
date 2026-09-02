@@ -6,6 +6,7 @@ using Android.Text;
 using Android.Widget;
 using BKE.Worker.Core;
 using BKE.Worker.Notion;
+using BKE.Worker.Platform.Android.Accessibility;
 using BKE.Worker.Platform.Android.Configuration;
 using BKE.Worker.Platform.Android.Security;
 
@@ -21,6 +22,8 @@ public sealed class BkeWorkerActivity : Activity
     private TextView? _status;
     private TextView? _notionStatus;
     private TextView? _notionSecretStatus;
+    private TextView? _chatGptStatus;
+    private TextView? _overrideStatus;
     private Spinner? _notionPages;
     private Spinner? _notionTasks;
     private Spinner? _context;
@@ -30,6 +33,7 @@ public sealed class BkeWorkerActivity : Activity
     private EditText? _probe;
     private EditText? _notionToken;
     private AndroidNotionSecretVault? _notionVault;
+    private WorkItem? _armedWorkItem;
     private IReadOnlyList<NotionPageSummary> _loadedNotionPages = [];
     private IReadOnlyList<NotionChecklistTask> _loadedNotionTasks = [];
 
@@ -46,11 +50,13 @@ public sealed class BkeWorkerActivity : Activity
         base.OnResume();
         RefreshStatus();
         RefreshNotionSecretStatus();
+        RefreshChatGptBindingStatus();
     }
 
     protected override void OnDestroy()
     {
         _notionVault?.Lock();
+        _armedWorkItem = null;
         base.OnDestroy();
     }
 
@@ -128,6 +134,17 @@ public sealed class BkeWorkerActivity : Activity
             new[] { "CHATGPT" });
         layout.AddView(executionTarget);
 
+        _chatGptStatus = new TextView(this) { Text = "ChatGPT binding: WAITING" };
+        layout.AddView(_chatGptStatus);
+
+        var openChatGpt = new Button(this) { Text = "OPEN CHATGPT" };
+        openChatGpt.Click += (_, _) => OpenChatGpt();
+        layout.AddView(openChatGpt);
+
+        var checkChatGpt = new Button(this) { Text = "CHECK CHATGPT BINDING" };
+        checkChatGpt.Click += (_, _) => RefreshChatGptBindingStatus();
+        layout.AddView(checkChatGpt);
+
         layout.AddView(new TextView(this) { Text = "CHATS" });
         _context = new Spinner(this);
         _context.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
@@ -137,7 +154,7 @@ public sealed class BkeWorkerActivity : Activity
 
         _project = new EditText(this) { Hint = "Project (PROJECTS only)" };
         layout.AddView(_project);
-        _conversation = new EditText(this) { Hint = "Conversation override" };
+        _conversation = new EditText(this) { Hint = "Conversation override (RECENTS / PROJECTS)" };
         layout.AddView(_conversation);
 
         _reasoning = new Spinner(this);
@@ -145,6 +162,13 @@ public sealed class BkeWorkerActivity : Activity
             Enum.GetNames<ReasoningProfile>());
         _reasoning.SetSelection(Array.IndexOf(Enum.GetNames<ReasoningProfile>(), nameof(ReasoningProfile.HIGH)));
         layout.AddView(_reasoning);
+
+        var armOverride = new Button(this) { Text = "ARM OVERRIDE" };
+        armOverride.Click += (_, _) => ArmOverride();
+        layout.AddView(armOverride);
+
+        _overrideStatus = new TextView(this) { Text = "Override: NOT ARMED" };
+        layout.AddView(_overrideStatus);
 
         _probe = new EditText(this) { Text = "BKE WORKER TEST 001.\n\nReply with exactly:\n\nBKE_WORKER_OK" };
         _probe.SetMinLines(4);
@@ -159,6 +183,7 @@ public sealed class BkeWorkerActivity : Activity
         SetContentView(scroll);
         RefreshStatus();
         RefreshNotionSecretStatus();
+        RefreshChatGptBindingStatus();
     }
 
     private async Task SaveNotionToken(Button button)
@@ -234,6 +259,9 @@ public sealed class BkeWorkerActivity : Activity
             _notionVault?.Forget();
             if (_notionToken is not null)
                 _notionToken.Text = string.Empty;
+            _armedWorkItem = null;
+            if (_overrideStatus is not null)
+                _overrideStatus.Text = "Override: NOT ARMED";
             ResetNotionDiscovery();
             if (_notionStatus is not null)
                 _notionStatus.Text = "Notion: TOKEN FORGOTTEN";
@@ -272,6 +300,7 @@ public sealed class BkeWorkerActivity : Activity
             var client = new NotionChecklistClient(http, token);
             _loadedNotionPages = await client.GetSharedPages(CancellationToken.None);
             _loadedNotionTasks = [];
+            _armedWorkItem = null;
 
             var labels = _loadedNotionPages.Count == 0
                 ? new[] { "(no shared pages found)" }
@@ -281,6 +310,8 @@ public sealed class BkeWorkerActivity : Activity
                 global::Android.Resource.Layout.SimpleSpinnerItem,
                 labels);
             _notionStatus.Text = $"Notion: CONNECTED — {_loadedNotionPages.Count} shared page(s)";
+            if (_overrideStatus is not null)
+                _overrideStatus.Text = "Override: NOT ARMED";
         }
         catch (InvalidOperationException ex)
         {
@@ -326,6 +357,7 @@ public sealed class BkeWorkerActivity : Activity
             using var http = new HttpClient();
             var client = new NotionChecklistClient(http, token);
             _loadedNotionTasks = await client.GetTasks(selectedPage.PageId, includeChecked: false, CancellationToken.None);
+            _armedWorkItem = null;
             var labels = _loadedNotionTasks.Count == 0
                 ? new[] { "(no unchecked tasks found)" }
                 : _loadedNotionTasks.Select(task => task.Text).ToArray();
@@ -334,6 +366,8 @@ public sealed class BkeWorkerActivity : Activity
                 global::Android.Resource.Layout.SimpleSpinnerItem,
                 labels);
             _notionStatus.Text = $"Notion: CONNECTED — {_loadedNotionTasks.Count} unchecked task(s)";
+            if (_overrideStatus is not null)
+                _overrideStatus.Text = "Override: NOT ARMED";
         }
         catch (ArgumentException ex)
         {
@@ -353,10 +387,115 @@ public sealed class BkeWorkerActivity : Activity
         }
     }
 
+    private void OpenChatGpt()
+    {
+        if (_chatGptStatus is null)
+            return;
+
+        try
+        {
+            var launchIntent = PackageManager?.GetLaunchIntentForPackage(ChatGPTPackageIdentity.CandidatePackageName);
+            if (launchIntent is null)
+            {
+                _chatGptStatus.Text = "ChatGPT binding: CHATGPT_NOT_INSTALLED";
+                return;
+            }
+
+            launchIntent.AddFlags(ActivityFlags.ReorderToFront);
+            StartActivity(launchIntent);
+            _chatGptStatus.Text = "ChatGPT binding: LAUNCHED — return after ChatGPT UI is visible";
+        }
+        catch (Exception)
+        {
+            _chatGptStatus.Text = "ChatGPT binding: CHATGPT_LAUNCH_FAILED";
+        }
+    }
+
+    private void RefreshChatGptBindingStatus()
+    {
+        if (_chatGptStatus is null)
+            return;
+
+        var nodeCount = AndroidAccessibilityService.LatestChatGptSnapshot.Count;
+        _chatGptStatus.Text = nodeCount > 0
+            ? $"ChatGPT binding: CONNECTED — {nodeCount} semantic node(s) captured"
+            : "ChatGPT binding: WAITING — open ChatGPT, expose its UI, then return";
+    }
+
+    private void ArmOverride()
+    {
+        if (_notionTasks is null || _context is null || _reasoning is null || _overrideStatus is null)
+            return;
+
+        var taskIndex = _notionTasks.SelectedItemPosition;
+        if (_loadedNotionTasks.Count == 0 || taskIndex < 0 || taskIndex >= _loadedNotionTasks.Count)
+        {
+            _overrideStatus.Text = "Override: LOAD_AND_SELECT_NOTION_TASK_FIRST";
+            return;
+        }
+
+        var task = _loadedNotionTasks[taskIndex];
+        var contextIndex = _context.SelectedItemPosition;
+        var conversation = _conversation?.Text?.Trim();
+        var project = _project?.Text?.Trim();
+
+        ContextTarget target;
+        switch (contextIndex)
+        {
+            case 0:
+                target = ContextTarget.NewChat();
+                break;
+            case 1:
+                if (string.IsNullOrWhiteSpace(conversation))
+                {
+                    _overrideStatus.Text = "Override: RECENT_CONVERSATION_REQUIRED";
+                    return;
+                }
+                target = new ContextTarget(ContextTargetType.RecentChat, conversation);
+                break;
+            case 2:
+                if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(conversation))
+                {
+                    _overrideStatus.Text = "Override: PROJECT_AND_CONVERSATION_REQUIRED";
+                    return;
+                }
+                target = new ContextTarget(ContextTargetType.ProjectChat, conversation, project);
+                break;
+            default:
+                _overrideStatus.Text = "Override: CONTEXT_SELECTION_INVALID";
+                return;
+        }
+
+        var selectedReasoning = _reasoning.SelectedItem?.ToString();
+        if (!Enum.TryParse<ReasoningProfile>(selectedReasoning, out var reasoning))
+        {
+            _overrideStatus.Text = "Override: REASONING_SELECTION_INVALID";
+            return;
+        }
+
+        _armedWorkItem = new WorkItem(
+            task.BlockId,
+            task.Text,
+            target,
+            reasoning);
+
+        var targetLabel = target.Type switch
+        {
+            ContextTargetType.NewChat => "NEW CHAT",
+            ContextTargetType.RecentChat => $"RECENTS → {target.Conversation}",
+            ContextTargetType.ProjectChat => $"PROJECTS → {target.Project} → {target.Conversation}",
+            _ => target.Type.ToString()
+        };
+
+        _overrideStatus.Text =
+            $"Override: ARMED\nTask: {task.Text}\nTarget: {targetLabel}\nReasoning: {reasoning}\nExecution: NOT STARTED";
+    }
+
     private void ResetNotionDiscovery()
     {
         _loadedNotionPages = [];
         _loadedNotionTasks = [];
+        _armedWorkItem = null;
 
         if (_notionPages is not null)
             _notionPages.Adapter = new ArrayAdapter<string>(this,
@@ -367,6 +506,9 @@ public sealed class BkeWorkerActivity : Activity
             _notionTasks.Adapter = new ArrayAdapter<string>(this,
                 global::Android.Resource.Layout.SimpleSpinnerItem,
                 new[] { "(load unchecked checklist tasks)" });
+
+        if (_overrideStatus is not null)
+            _overrideStatus.Text = "Override: NOT ARMED";
     }
 
     private void RefreshNotionSecretStatus()
