@@ -6,7 +6,11 @@ using BKE.Worker.Core;
 using BKE.Worker.GitHub;
 using BKE.Worker.Notion;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot")
+});
 var settings = WorkerServerSettings.FromConfiguration(builder.Configuration);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -43,6 +47,9 @@ builder.Services.AddHostedService<WorkerHostedService>();
 
 var app = builder.Build();
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
@@ -72,6 +79,48 @@ app.MapGet("/health/ready", () =>
 
 app.MapGet("/control/state", async (IWorkerLoop loop, CancellationToken cancellationToken) =>
     Results.Ok(await loop.GetState(cancellationToken)));
+
+app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancellationToken) =>
+{
+    var snapshot = await loop.GetState(cancellationToken);
+    return Results.Ok(new
+    {
+        runtime = "vps-playwright",
+        ready = settings.IsConfigured,
+        snapshot,
+        target = settings.IsConfigured ? settings.Target : null,
+        configuration = new
+        {
+            notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
+            chatGptConfigured = !string.IsNullOrWhiteSpace(settings.ChatGptProject) && !string.IsNullOrWhiteSpace(settings.ChatGptConversation),
+            githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret)
+        },
+        browserProfileDirectory = settings.ChatGptProfileDirectory,
+        chatGptBaseUrl = settings.ChatGptBaseUrl
+    });
+});
+
+app.MapPost("/control/reconcile", async (
+    IWorkerWakeSink wakeSink,
+    CancellationToken cancellationToken) =>
+{
+    if (!settings.IsConfigured)
+        return Results.Problem(
+            title: "BKE Worker is not configured",
+            detail: "Configure Notion, ChatGPT target, and GitHub webhook secret before manual reconciliation.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    await wakeSink.Enqueue(
+        new WorkerWakeEvent(WorkerWakeReason.Manual, null, DateTimeOffset.UtcNow),
+        cancellationToken);
+
+    return Results.Accepted(value: new
+    {
+        accepted = true,
+        reason = WorkerWakeReason.Manual,
+        message = "Manual reconciliation queued."
+    });
+});
 
 app.MapPost("/webhooks/github", (
     HttpRequest request,
