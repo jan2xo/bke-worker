@@ -1,0 +1,109 @@
+name: Phase 4 Operator UI
+on: [push, pull_request]
+
+jobs:
+  operator-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore Phase 4 projects
+        run: |
+          dotnet restore src/BKE.Worker.Server/BKE.Worker.Server.csproj
+          dotnet restore tests/BKE.Worker.Server.Ui.Tests/BKE.Worker.Server.Ui.Tests.csproj
+
+      - name: Build Phase 4 projects
+        run: |
+          dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj --configuration Release --no-restore
+          dotnet build tests/BKE.Worker.Server.Ui.Tests/BKE.Worker.Server.Ui.Tests.csproj --configuration Release --no-restore
+
+      - name: Install Playwright Chromium
+        run: pwsh tests/BKE.Worker.Server.Ui.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Publish actual BKE Worker server with UI
+        run: dotnet publish src/BKE.Worker.Server/BKE.Worker.Server.csproj --configuration Release --no-build --output artifacts/bke-worker-server
+
+      - name: Certify rendered operator UI and Force Reconcile
+        run: |
+          set -euo pipefail
+
+          FIXTURE=http://127.0.0.1:5094
+          WORKER=http://127.0.0.1:5084
+          STATE_FILE="$RUNNER_TEMP/bke-worker-phase4/state.json"
+          PROFILE_DIR="$RUNNER_TEMP/bke-worker-phase4/chatgpt-profile"
+          WORKER_LOG="$RUNNER_TEMP/bke-worker-phase4.log"
+          FIXTURE_LOG="$RUNNER_TEMP/bke-worker-phase4-fixture.log"
+
+          mkdir -p "$(dirname "$STATE_FILE")"
+
+          python3 tests/integration/phase3_fixture.py --port 5094 > "$FIXTURE_LOG" 2>&1 &
+          FIXTURE_PID=$!
+
+          cleanup() {
+            kill "${WORKER_PID:-0}" 2>/dev/null || true
+            wait "${WORKER_PID:-0}" 2>/dev/null || true
+            kill "$FIXTURE_PID" 2>/dev/null || true
+            wait "$FIXTURE_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent "$FIXTURE/fixture-health" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$FIXTURE/fixture-health" >/dev/null
+
+          export ASPNETCORE_URLS="$WORKER"
+          export BKE_WORKER_NOTION_TOKEN=phase4-fixture-token
+          export BKE_WORKER_NOTION_PAGE=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+          export BKE_WORKER_NOTION_BASE_URL="$FIXTURE/"
+          export BKE_WORKER_CHATGPT_PROJECT="BKE Worker"
+          export BKE_WORKER_CHATGPT_CONVERSATION="Worker Engineering"
+          export BKE_WORKER_CHATGPT_BASE_URL="$FIXTURE/chatgpt/"
+          export BKE_WORKER_GITHUB_WEBHOOK_SECRET=phase4-ci-secret
+          export BKE_WORKER_CHATGPT_PROFILE="$PROFILE_DIR"
+          export BKE_WORKER_STATE_FILE="$STATE_FILE"
+          export BKE_WORKER_HEADLESS=true
+          export BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS=1
+          export BKE_WORKER_RECOVERY_SECONDS=300
+          export BKE_WORKER_MIN_DISPATCH_SECONDS=1
+
+          dotnet artifacts/bke-worker-server/BKE.Worker.Server.dll > "$WORKER_LOG" 2>&1 &
+          WORKER_PID=$!
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "$WORKER/health/ready" >/dev/null; then break; fi
+            if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+              cat "$WORKER_LOG"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent "$WORKER/health/ready" >/dev/null
+
+          for attempt in $(seq 1 30); do
+            count=$(curl --fail --silent "$FIXTURE/admin/state" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["prompts"]))')
+            if [ "$count" = "1" ]; then break; fi
+            sleep 1
+          done
+
+          curl --fail --silent "$WORKER/" | grep -q 'Operator Control Surface'
+          curl --fail --silent "$WORKER/control/summary" | grep -q '"githubWebhookConfigured":true'
+          ! curl --fail --silent "$WORKER/control/summary" | grep -q 'phase4-ci-secret'
+          ! curl --fail --silent "$WORKER/control/summary" | grep -q 'phase4-fixture-token'
+
+          export BKE_WORKER_UI_BASE_URL="$WORKER"
+          export BKE_WORKER_UI_FIXTURE_URL="$FIXTURE"
+          dotnet test tests/BKE.Worker.Server.Ui.Tests/BKE.Worker.Server.Ui.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+          echo 'PHASE4 OPERATOR UI: GREEN'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-phase4-ui-server
+          path: artifacts/bke-worker-server/**
+          if-no-files-found: error
