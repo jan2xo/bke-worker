@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Text;
 using Android.App;
 using Android.Content;
@@ -54,8 +55,9 @@ public sealed class AndroidNotionSecretVault(Activity activity)
     {
         if (string.IsNullOrWhiteSpace(token))
             throw new ArgumentException("A Notion access token is required.", nameof(token));
+        if (!IsAndroid11OrLater())
+            throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
-        EnsureSecureAuthenticationSupported();
         EnsureKeyExists();
         await Authenticate(activity, "Save Notion connection", cancellationToken);
 
@@ -91,8 +93,9 @@ public sealed class AndroidNotionSecretVault(Activity activity)
     {
         if (!IsConfigured)
             throw new InvalidOperationException("NOTION_SECRET_NOT_CONFIGURED");
+        if (!IsAndroid11OrLater())
+            throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
-        EnsureSecureAuthenticationSupported();
         EnsureKeyExists();
         await Authenticate(activity, "Unlock Notion", cancellationToken);
 
@@ -140,11 +143,8 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         activity.GetSharedPreferences(PreferenceName, FileCreationMode.Private)
         ?? throw new InvalidOperationException("NOTION_SECRET_STORAGE_UNAVAILABLE");
 
-    private static void EnsureSecureAuthenticationSupported()
-    {
-        if (Build.VERSION.SdkInt < BuildVersionCodes.R)
-            throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
-    }
+    [SupportedOSPlatformGuard("android30.0")]
+    private static bool IsAndroid11OrLater() => Build.VERSION.SdkInt >= BuildVersionCodes.R;
 
     private static KeyStore LoadKeyStore()
     {
@@ -156,7 +156,7 @@ public sealed class AndroidNotionSecretVault(Activity activity)
 
     private static void EnsureKeyExists()
     {
-        if (Build.VERSION.SdkInt < BuildVersionCodes.R)
+        if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
         var keyStore = LoadKeyStore();
@@ -184,7 +184,7 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         string title,
         CancellationToken cancellationToken)
     {
-        if (Build.VERSION.SdkInt < BuildVersionCodes.R)
+        if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
