@@ -7,6 +7,7 @@ using Android.Widget;
 using BKE.Worker.Core;
 using BKE.Worker.Notion;
 using BKE.Worker.Platform.Android.Configuration;
+using BKE.Worker.Platform.Android.Security;
 
 namespace BKE.Worker.Platform.Android;
 
@@ -19,6 +20,7 @@ public sealed class BkeWorkerActivity : Activity
 {
     private TextView? _status;
     private TextView? _notionStatus;
+    private TextView? _notionSecretStatus;
     private Spinner? _notionPages;
     private Spinner? _notionTasks;
     private Spinner? _context;
@@ -27,6 +29,7 @@ public sealed class BkeWorkerActivity : Activity
     private EditText? _project;
     private EditText? _probe;
     private EditText? _notionToken;
+    private AndroidNotionSecretVault? _notionVault;
     private IReadOnlyList<NotionPageSummary> _loadedNotionPages = [];
     private IReadOnlyList<NotionChecklistTask> _loadedNotionTasks = [];
 
@@ -34,6 +37,7 @@ public sealed class BkeWorkerActivity : Activity
     {
         base.OnCreate(savedInstanceState);
         ActionBar?.Hide();
+        _notionVault = new AndroidNotionSecretVault(this);
         BuildUi();
     }
 
@@ -41,6 +45,13 @@ public sealed class BkeWorkerActivity : Activity
     {
         base.OnResume();
         RefreshStatus();
+        RefreshNotionSecretStatus();
+    }
+
+    protected override void OnDestroy()
+    {
+        _notionVault?.Lock();
+        base.OnDestroy();
     }
 
     private void BuildUi()
@@ -63,9 +74,28 @@ public sealed class BkeWorkerActivity : Activity
             new[] { "NOTION" });
         layout.AddView(workSource);
 
-        _notionToken = new EditText(this) { Hint = "Notion access token (memory only)" };
+        _notionSecretStatus = new TextView(this);
+        layout.AddView(_notionSecretStatus);
+
+        _notionToken = new EditText(this) { Hint = "Notion token — first setup/change only" };
         _notionToken.InputType = InputTypes.ClassText | InputTypes.TextVariationPassword;
         layout.AddView(_notionToken);
+
+        var saveNotionToken = new Button(this) { Text = "SAVE / CHANGE NOTION TOKEN SECURELY" };
+        saveNotionToken.Click += async (_, _) => await SaveNotionToken(saveNotionToken);
+        layout.AddView(saveNotionToken);
+
+        var unlockNotion = new Button(this) { Text = "UNLOCK NOTION" };
+        unlockNotion.Click += async (_, _) => await UnlockNotion(unlockNotion);
+        layout.AddView(unlockNotion);
+
+        var lockNotion = new Button(this) { Text = "LOCK NOTION" };
+        lockNotion.Click += (_, _) => LockNotion();
+        layout.AddView(lockNotion);
+
+        var forgetNotion = new Button(this) { Text = "FORGET NOTION TOKEN" };
+        forgetNotion.Click += (_, _) => ForgetNotion();
+        layout.AddView(forgetNotion);
 
         var discoverNotion = new Button(this) { Text = "DISCOVER NOTION PAGES" };
         discoverNotion.Click += async (_, _) => await DiscoverNotionPages(discoverNotion);
@@ -124,17 +154,108 @@ public sealed class BkeWorkerActivity : Activity
         scroll.AddView(layout);
         SetContentView(scroll);
         RefreshStatus();
+        RefreshNotionSecretStatus();
     }
 
-    private async Task DiscoverNotionPages(Button button)
+    private async Task SaveNotionToken(Button button)
     {
-        if (_notionToken is null || _notionPages is null || _notionStatus is null)
+        if (_notionVault is null || _notionToken is null || _notionStatus is null)
             return;
 
         var token = _notionToken.Text?.Trim();
         if (string.IsNullOrWhiteSpace(token))
         {
             _notionStatus.Text = "Notion: TOKEN_REQUIRED";
+            return;
+        }
+
+        button.Enabled = false;
+        _notionStatus.Text = "Notion: WAITING FOR DEVICE AUTH";
+        try
+        {
+            await _notionVault.SaveAsync(token, CancellationToken.None);
+            _notionToken.Text = string.Empty;
+            _notionStatus.Text = "Notion: TOKEN SAVED SECURELY";
+        }
+        catch (ArgumentException ex)
+        {
+            _notionStatus.Text = $"Notion: {ex.Message}";
+        }
+        catch (InvalidOperationException ex)
+        {
+            _notionStatus.Text = $"Notion: {ex.Message}";
+        }
+        finally
+        {
+            button.Enabled = true;
+            RefreshNotionSecretStatus();
+        }
+    }
+
+    private async Task UnlockNotion(Button button)
+    {
+        if (_notionVault is null || _notionStatus is null)
+            return;
+
+        button.Enabled = false;
+        _notionStatus.Text = "Notion: WAITING FOR DEVICE AUTH";
+        try
+        {
+            await _notionVault.UnlockAsync(CancellationToken.None);
+            _notionStatus.Text = "Notion: UNLOCKED";
+        }
+        catch (InvalidOperationException ex)
+        {
+            _notionStatus.Text = $"Notion: {ex.Message}";
+        }
+        finally
+        {
+            button.Enabled = true;
+            RefreshNotionSecretStatus();
+        }
+    }
+
+    private void LockNotion()
+    {
+        _notionVault?.Lock();
+        if (_notionStatus is not null)
+            _notionStatus.Text = "Notion: LOCKED";
+        RefreshNotionSecretStatus();
+    }
+
+    private void ForgetNotion()
+    {
+        try
+        {
+            _notionVault?.Forget();
+            if (_notionToken is not null)
+                _notionToken.Text = string.Empty;
+            ResetNotionDiscovery();
+            if (_notionStatus is not null)
+                _notionStatus.Text = "Notion: TOKEN FORGOTTEN";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (_notionStatus is not null)
+                _notionStatus.Text = $"Notion: {ex.Message}";
+        }
+        finally
+        {
+            RefreshNotionSecretStatus();
+        }
+    }
+
+    private async Task DiscoverNotionPages(Button button)
+    {
+        if (_notionVault is null || _notionPages is null || _notionStatus is null)
+            return;
+
+        var token = _notionVault.GetUnlockedToken();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _notionStatus.Text = _notionVault.State == NotionSecretState.NotConfigured
+                ? "Notion: CONFIGURE_TOKEN_FIRST"
+                : "Notion: AUTH_REQUIRED — UNLOCK NOTION";
             return;
         }
 
@@ -173,13 +294,15 @@ public sealed class BkeWorkerActivity : Activity
 
     private async Task LoadNotionTasks(Button button)
     {
-        if (_notionToken is null || _notionPages is null || _notionTasks is null || _notionStatus is null)
+        if (_notionVault is null || _notionPages is null || _notionTasks is null || _notionStatus is null)
             return;
 
-        var token = _notionToken.Text?.Trim();
+        var token = _notionVault.GetUnlockedToken();
         if (string.IsNullOrWhiteSpace(token))
         {
-            _notionStatus.Text = "Notion: TOKEN_REQUIRED";
+            _notionStatus.Text = _notionVault.State == NotionSecretState.NotConfigured
+                ? "Notion: CONFIGURE_TOKEN_FIRST"
+                : "Notion: AUTH_REQUIRED — UNLOCK NOTION";
             return;
         }
 
@@ -224,6 +347,36 @@ public sealed class BkeWorkerActivity : Activity
         {
             button.Enabled = true;
         }
+    }
+
+    private void ResetNotionDiscovery()
+    {
+        _loadedNotionPages = [];
+        _loadedNotionTasks = [];
+
+        if (_notionPages is not null)
+            _notionPages.Adapter = new ArrayAdapter<string>(this,
+                global::Android.Resource.Layout.SimpleSpinnerItem,
+                new[] { "(discover shared pages)" });
+
+        if (_notionTasks is not null)
+            _notionTasks.Adapter = new ArrayAdapter<string>(this,
+                global::Android.Resource.Layout.SimpleSpinnerItem,
+                new[] { "(load unchecked checklist tasks)" });
+    }
+
+    private void RefreshNotionSecretStatus()
+    {
+        if (_notionSecretStatus is null || _notionVault is null)
+            return;
+
+        _notionSecretStatus.Text = _notionVault.State switch
+        {
+            NotionSecretState.NotConfigured => "Notion credential: NOT CONFIGURED",
+            NotionSecretState.Locked => "Notion credential: LOCKED — fingerprint/PIN required",
+            NotionSecretState.Unlocked => "Notion credential: UNLOCKED — token in memory only",
+            _ => "Notion credential: UNKNOWN"
+        };
     }
 
     private void RefreshStatus()
