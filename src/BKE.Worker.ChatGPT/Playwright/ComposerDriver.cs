@@ -3,23 +3,34 @@ using Microsoft.Playwright;
 
 namespace BKE.Worker.ChatGPT.Playwright;
 
+public sealed record ComposerProbe(
+    bool ComposerAvailable,
+    bool TurnBusy,
+    bool CanSendNextTurn);
+
 public sealed class ComposerDriver
 {
     private static readonly Regex StopPattern = new("stop", RegexOptions.IgnoreCase);
     private static readonly Regex SendPattern = new("^send", RegexOptions.IgnoreCase);
 
-    public async Task<bool> CanSendNextTurn(IPage page, CancellationToken cancellationToken)
+    public async Task<ComposerProbe> Probe(IPage page, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (page.IsClosed)
-            return false;
+            return new(false, false, false);
 
         var stopButtons = page.GetByRole(AriaRole.Button, new() { NameRegex = StopPattern });
-        if (await ProjectNavigator.FindFirstVisible(stopButtons, cancellationToken) is not null)
-            return false;
+        var turnBusy = await ProjectNavigator.FindFirstVisible(stopButtons, cancellationToken) is not null;
+        var composerAvailable = await FindComposer(page, cancellationToken) is not null;
 
-        return await FindComposer(page, cancellationToken) is not null;
+        return new(
+            composerAvailable,
+            turnBusy,
+            composerAvailable && !turnBusy);
     }
+
+    public async Task<bool> CanSendNextTurn(IPage page, CancellationToken cancellationToken) =>
+        (await Probe(page, cancellationToken)).CanSendNextTurn;
 
     public async Task Send(IPage page, string instruction, CancellationToken cancellationToken)
     {

@@ -26,7 +26,8 @@ builder.Services.AddSingleton(new ChromiumHostOptions(
     settings.Headless,
     settings.ChatGptBaseUrl));
 builder.Services.AddSingleton<ChromiumHost>();
-builder.Services.AddSingleton<IChatGPTDriver, ChatGPTWebDriver>();
+builder.Services.AddSingleton<ChatGPTWebDriver>();
+builder.Services.AddSingleton<IChatGPTDriver>(services => services.GetRequiredService<ChatGPTWebDriver>());
 builder.Services.AddSingleton<INotionChecklistClient>(_ =>
     new NotionChecklistClient(
         new HttpClient(),
@@ -92,7 +93,7 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         configuration = new
         {
             notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
-            chatGptConfigured = !string.IsNullOrWhiteSpace(settings.ChatGptProject) && !string.IsNullOrWhiteSpace(settings.ChatGptConversation),
+            chatGptConfigured = settings.ChatGptTargetConfigured,
             githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret)
         },
         browserProfileDirectory = settings.ChatGptProfileDirectory,
@@ -122,6 +123,38 @@ app.MapPost("/control/reconcile", async (
     });
 });
 
+app.MapPost("/control/chatgpt/probe", async (
+    IWorkerLoop loop,
+    ChatGPTWebDriver driver,
+    CancellationToken cancellationToken) =>
+{
+    if (!settings.ChatGptTargetConfigured)
+        return Results.Problem(
+            title: "ChatGPT target is not configured",
+            detail: "Configure the exact ChatGPT Project and Conversation before probing the live adapter.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    var snapshot = await loop.GetState(cancellationToken);
+    if (snapshot.State is WorkerRuntimeState.DISPATCHING or
+        WorkerRuntimeState.RECONCILING or
+        WorkerRuntimeState.CONTINUING)
+    {
+        return Results.Problem(
+            title: "Worker browser is active",
+            detail: "Adapter probing is blocked while the worker is dispatching or reconciling. Retry from a stable worker state.",
+            statusCode: StatusCodes.Status409Conflict);
+    }
+
+    var result = await driver.ProbeExactContext(
+        settings.ChatGptProject,
+        settings.ChatGptConversation,
+        cancellationToken);
+
+    return result.Compatible
+        ? Results.Ok(result)
+        : Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
 app.MapPost("/webhooks/github", (
     HttpRequest request,
     GitHubWebhookEndpoint endpoint,
@@ -144,11 +177,14 @@ public sealed record WorkerServerSettings(
     TimeSpan RecoveryInterval,
     TimeSpan MinimumDispatchInterval)
 {
+    public bool ChatGptTargetConfigured =>
+        !string.IsNullOrWhiteSpace(ChatGptProject) &&
+        !string.IsNullOrWhiteSpace(ChatGptConversation);
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(NotionToken) &&
         !string.IsNullOrWhiteSpace(NotionPageId) &&
-        !string.IsNullOrWhiteSpace(ChatGptProject) &&
-        !string.IsNullOrWhiteSpace(ChatGptConversation) &&
+        ChatGptTargetConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
     public EngineeringTarget Target => new(
