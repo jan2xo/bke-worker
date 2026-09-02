@@ -23,7 +23,8 @@ jobs:
             src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
             src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
             src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
-            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
+            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj \
+            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj
           do
             echo "RESTORE $project"
             dotnet restore "$project"
@@ -38,7 +39,8 @@ jobs:
             src/BKE.Worker.Notion/BKE.Worker.Notion.csproj \
             src/BKE.Worker.Platform.Windows/BKE.Worker.Platform.Windows.csproj \
             src/BKE.Worker.Platform.MacOS/BKE.Worker.Platform.MacOS.csproj \
-            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
+            tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj \
+            tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj
           do
             echo "BUILD $project"
             dotnet build "$project" --configuration Release --no-restore
@@ -46,6 +48,9 @@ jobs:
 
       - name: Execute Core tests
         run: dotnet test tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Execute Notion tests
+        run: dotnet test tests/BKE.Worker.Notion.Tests/BKE.Worker.Notion.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
 
       - name: Restore Android project
         run: dotnet restore src/BKE.Worker.Platform.Android/BKE.Worker.Platform.Android.csproj
