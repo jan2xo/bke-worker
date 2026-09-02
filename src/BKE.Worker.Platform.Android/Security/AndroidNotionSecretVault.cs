@@ -156,6 +156,9 @@ public sealed class AndroidNotionSecretVault(Activity activity)
 
     private static void EnsureKeyExists()
     {
+        if (Build.VERSION.SdkInt < BuildVersionCodes.R)
+            throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
+
         var keyStore = LoadKeyStore();
         if (keyStore.ContainsAlias(KeyAlias))
             return;
@@ -181,6 +184,9 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         string title,
         CancellationToken cancellationToken)
     {
+        if (Build.VERSION.SdkInt < BuildVersionCodes.R)
+            throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
+
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationSignal = new CancellationSignal();
         using var registration = cancellationToken.Register(cancellationSignal.Cancel);
@@ -196,7 +202,9 @@ public sealed class AndroidNotionSecretVault(Activity activity)
             .SetAllowedAuthenticators(authenticators)
             .Build();
 
-        prompt.Authenticate(cancellationSignal, activity.MainExecutor, callback);
+        var executor = activity.MainExecutor
+            ?? throw new InvalidOperationException("NOTION_AUTH_EXECUTOR_UNAVAILABLE");
+        prompt.Authenticate(cancellationSignal, executor, callback);
         await completion.Task.WaitAsync(cancellationToken);
     }
 
