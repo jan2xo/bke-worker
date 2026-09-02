@@ -275,7 +275,8 @@ public class AndroidAccessibilityService : AccessibilityService
             string.IsNullOrWhiteSpace(node.Text?.ToString()) &&
             string.IsNullOrWhiteSpace(node.ContentDescription?.ToString()) &&
             string.IsNullOrWhiteSpace(node.ViewIdResourceName) &&
-            !ContainsEditableDescendant(node))
+            !ContainsEditableDescendant(node) &&
+            !ContainsSemanticDescendant(node))
         {
             candidates.Add((node, depth));
         }
@@ -298,6 +299,26 @@ public class AndroidAccessibilityService : AccessibilityService
 
             if (child.Editable || ContainsEditableDescendant(child))
                 return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsSemanticDescendant(AccessibilityNodeInfo node)
+    {
+        for (var index = 0; index < node.ChildCount; index++)
+        {
+            var child = node.GetChild(index);
+            if (child is null)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(child.Text?.ToString()) ||
+                !string.IsNullOrWhiteSpace(child.ContentDescription?.ToString()) ||
+                !string.IsNullOrWhiteSpace(child.ViewIdResourceName) ||
+                ContainsSemanticDescendant(child))
+            {
+                return true;
+            }
         }
 
         return false;
