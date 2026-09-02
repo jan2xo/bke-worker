@@ -17,6 +17,12 @@ public class CoreTests
         Assert.Equal(type, new ContextTarget(type).Type);
 
     [Fact]
+    public void Project_chat_defaults_to_chat_execution_surface() =>
+        Assert.Equal(
+            ChatGptExecutionSurface.Chat,
+            ContextTarget.ProjectChat("DUMP", "Engineering").Surface);
+
+    [Fact]
     public void Default_resolves_to_policy() =>
         Assert.Equal(
             ReasoningProfile.HIGH,
@@ -41,6 +47,28 @@ public class CoreTests
         Assert.Single(driver.Sent);
         Assert.Equal(WorkerPrompts.ContinueFromNotionChecklist, driver.Sent[0]);
         Assert.Equal(0, driver.ExecutionStateCalls);
+    }
+
+    [Fact]
+    public async Task Work_surface_fails_closed_before_notion_or_chatgpt()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+
+        var result = await loop.Start(
+            Target() with { Surface = ChatGptExecutionSurface.Work },
+            CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", result.Message);
+        Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", store.Snapshot.Failure);
+        Assert.Equal(0, checklist.Calls);
+        Assert.Empty(driver.Sent);
     }
 
     [Theory]
@@ -167,11 +195,16 @@ public class CoreTests
     private sealed class FakeChecklist(ChecklistReconciliation reconciliation) : IChecklistReconciler
     {
         public ChecklistReconciliation Reconciliation { get; set; } = reconciliation;
+        public int Calls { get; private set; }
 
         public Task<ChecklistReconciliation> Reconcile(
             string notionPageId,
             string? currentChecklistIdentifier,
-            CancellationToken cancellationToken) => Task.FromResult(Reconciliation);
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(Reconciliation);
+        }
     }
 
     private sealed class FakeStore(WorkerSnapshot? initial = null) : IWorkerStateStore

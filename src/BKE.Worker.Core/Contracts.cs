@@ -1,12 +1,20 @@
 namespace BKE.Worker.Core;
 
 public enum ContextTargetType { RecentChat, ProjectChat, NewChat }
+public enum ChatGptExecutionSurface { Chat, Work }
 
-public sealed record ContextTarget(ContextTargetType Type, string? Conversation = null, string? Project = null)
+public sealed record ContextTarget(
+    ContextTargetType Type,
+    string? Conversation = null,
+    string? Project = null,
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat)
 {
     public static ContextTarget NewChat() => new(ContextTargetType.NewChat);
-    public static ContextTarget ProjectChat(string project, string conversation) =>
-        new(ContextTargetType.ProjectChat, conversation, project);
+    public static ContextTarget ProjectChat(
+        string project,
+        string conversation,
+        ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
+        new(ContextTargetType.ProjectChat, conversation, project, surface);
 }
 
 public enum ReasoningProfile { DEFAULT, MEDIUM, HIGH, MAX_AVAILABLE }
@@ -61,7 +69,8 @@ public sealed record EngineeringTarget(
     string Conversation,
     string NotionPageId,
     ReasoningProfile ReasoningProfile = ReasoningProfile.HIGH,
-    string Instruction = WorkerPrompts.ContinueFromNotionChecklist);
+    string Instruction = WorkerPrompts.ContinueFromNotionChecklist,
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat);
 
 public sealed record ChecklistGate(string Id, string Text, bool Checked);
 

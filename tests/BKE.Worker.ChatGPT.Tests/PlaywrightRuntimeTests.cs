@@ -55,7 +55,8 @@ public sealed class PlaywrightRuntimeTests
                 new ContextTarget(
                     ContextTargetType.ProjectChat,
                     Conversation: "Engineering Loop",
-                    Project: "DUMP"),
+                    Project: "DUMP",
+                    Surface: ChatGptExecutionSurface.Chat),
                 CancellationToken.None);
 
             Assert.True(await driver.CanSendNextTurn(CancellationToken.None));
@@ -68,6 +69,39 @@ public sealed class PlaywrightRuntimeTests
 
             await page.EvaluateAsync("document.getElementById('stop').hidden = false");
             Assert.False(await driver.CanSendNextTurn(CancellationToken.None));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
+    public async Task Work_surface_is_rejected_before_browser_navigation_or_send()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: true,
+            "http://127.0.0.1:1/"));
+        var driver = new ChatGPTWebDriver(
+            host,
+            new ProjectNavigator(),
+            new ConversationNavigator(),
+            new ComposerDriver());
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                driver.OpenContext(
+                    ContextTarget.ProjectChat(
+                        "DUMP",
+                        "Engineering Loop",
+                        ChatGptExecutionSurface.Work),
+                    CancellationToken.None));
+
+            Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", exception.Message);
         }
         finally
         {
