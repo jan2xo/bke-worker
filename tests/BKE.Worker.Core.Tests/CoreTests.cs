@@ -43,6 +43,35 @@ public class CoreTests
         Assert.Equal(0, driver.ExecutionStateCalls);
     }
 
+    [Theory]
+    [InlineData(WorkerRuntimeState.DISPATCHING)]
+    [InlineData(WorkerRuntimeState.CONTINUING)]
+    public async Task Restart_with_uncertain_dispatch_outcome_fails_closed_without_resending(
+        WorkerRuntimeState persistedState)
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore(new WorkerSnapshot(
+            persistedState,
+            Target(),
+            "gate-1",
+            null,
+            null,
+            null,
+            null));
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+
+        var result = await loop.Start(Target(), CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART", result.Message);
+        Assert.Equal("DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART", store.Snapshot.Failure);
+        Assert.Empty(driver.Sent);
+    }
+
     [Fact]
     public async Task Unchecked_gate_after_github_wake_continues_same_conversation_when_idle()
     {
@@ -145,9 +174,9 @@ public class CoreTests
             CancellationToken cancellationToken) => Task.FromResult(Reconciliation);
     }
 
-    private sealed class FakeStore : IWorkerStateStore
+    private sealed class FakeStore(WorkerSnapshot? initial = null) : IWorkerStateStore
     {
-        public WorkerSnapshot Snapshot { get; private set; } = WorkerSnapshot.Empty;
+        public WorkerSnapshot Snapshot { get; private set; } = initial ?? WorkerSnapshot.Empty;
         public Task<WorkerSnapshot> Load(CancellationToken cancellationToken) => Task.FromResult(Snapshot);
         public Task Save(WorkerSnapshot snapshot, CancellationToken cancellationToken)
         {

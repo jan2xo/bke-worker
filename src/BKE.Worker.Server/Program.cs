@@ -9,6 +9,8 @@ using BKE.Worker.Notion;
 var builder = WebApplication.CreateBuilder(args);
 var settings = WorkerServerSettings.FromConfiguration(builder.Configuration);
 
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(new GitHubWebhookOptions(settings.GitHubWebhookSecret));
 builder.Services.AddSingleton<GitHubSignatureVerifier>();
@@ -17,13 +19,15 @@ builder.Services.AddSingleton<ConversationNavigator>();
 builder.Services.AddSingleton<ComposerDriver>();
 builder.Services.AddSingleton(new ChromiumHostOptions(
     settings.ChatGptProfileDirectory,
-    settings.Headless));
+    settings.Headless,
+    settings.ChatGptBaseUrl));
 builder.Services.AddSingleton<ChromiumHost>();
 builder.Services.AddSingleton<IChatGPTDriver, ChatGPTWebDriver>();
 builder.Services.AddSingleton<INotionChecklistClient>(_ =>
     new NotionChecklistClient(
         new HttpClient(),
-        string.IsNullOrWhiteSpace(settings.NotionToken) ? "UNCONFIGURED" : settings.NotionToken));
+        string.IsNullOrWhiteSpace(settings.NotionToken) ? "UNCONFIGURED" : settings.NotionToken,
+        new Uri(settings.NotionBaseUrl, UriKind.Absolute)));
 builder.Services.AddSingleton<IChecklistReconciler, ChecklistReconciler>();
 builder.Services.AddSingleton<IWorkerStateStore>(_ => new JsonWorkerStateStore(settings.StateFile));
 builder.Services.AddSingleton(new WorkerPolicy(MinimumDispatchInterval: settings.MinimumDispatchInterval));
@@ -46,6 +50,26 @@ app.MapGet("/health", () => Results.Ok(new
     runtime = "vps-playwright"
 }));
 
+app.MapGet("/health/live", () => Results.Ok(new
+{
+    status = "alive",
+    runtime = "vps-playwright"
+}));
+
+app.MapGet("/health/ready", () =>
+{
+    var payload = new
+    {
+        status = settings.IsConfigured ? "ready" : "not_ready",
+        configured = settings.IsConfigured,
+        runtime = "vps-playwright"
+    };
+
+    return settings.IsConfigured
+        ? Results.Ok(payload)
+        : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
 app.MapGet("/control/state", async (IWorkerLoop loop, CancellationToken cancellationToken) =>
     Results.Ok(await loop.GetState(cancellationToken)));
 
@@ -59,8 +83,10 @@ await app.RunAsync();
 public sealed record WorkerServerSettings(
     string NotionToken,
     string NotionPageId,
+    string NotionBaseUrl,
     string ChatGptProject,
     string ChatGptConversation,
+    string ChatGptBaseUrl,
     string GitHubWebhookSecret,
     string ChatGptProfileDirectory,
     string StateFile,
@@ -73,7 +99,8 @@ public sealed record WorkerServerSettings(
         !string.IsNullOrWhiteSpace(NotionToken) &&
         !string.IsNullOrWhiteSpace(NotionPageId) &&
         !string.IsNullOrWhiteSpace(ChatGptProject) &&
-        !string.IsNullOrWhiteSpace(ChatGptConversation);
+        !string.IsNullOrWhiteSpace(ChatGptConversation) &&
+        !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
     public EngineeringTarget Target => new(
         ChatGptProject,
@@ -85,8 +112,10 @@ public sealed record WorkerServerSettings(
         return new WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_TOKEN"] ?? string.Empty,
             configuration["BKE_WORKER_NOTION_PAGE"] ?? string.Empty,
+            configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_PROJECT"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_CONVERSATION"] ?? string.Empty,
+            configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
             configuration["BKE_WORKER_GITHUB_WEBHOOK_SECRET"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
             configuration["BKE_WORKER_STATE_FILE"] ?? "/var/lib/bke-worker/state/worker.json",
@@ -177,7 +206,7 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion and ChatGPT target environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target, and GitHub webhook environment variables.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }

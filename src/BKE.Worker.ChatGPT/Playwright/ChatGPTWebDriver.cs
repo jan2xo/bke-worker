@@ -14,8 +14,8 @@ public sealed class ChatGPTWebDriver(
     public async Task Launch(CancellationToken cancellationToken)
     {
         var page = await host.GetPage(cancellationToken);
-        if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var current) ||
-            !string.Equals(current.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase))
+        var baseUri = new Uri(host.Options.ChatGptBaseUrl, UriKind.Absolute);
+        if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var current) || !IsSameOrigin(current, baseUri))
         {
             await page.GotoAsync(host.Options.ChatGptBaseUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         }
@@ -116,6 +116,11 @@ public sealed class ChatGPTWebDriver(
         await page.GotoAsync(host.Options.ChatGptBaseUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await ThrowIfAuthenticationRequired(page, cancellationToken);
     }
+
+    private static bool IsSameOrigin(Uri left, Uri right) =>
+        string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+        left.Port == right.Port;
 
     private static async Task ThrowIfAuthenticationRequired(
         IPage page,

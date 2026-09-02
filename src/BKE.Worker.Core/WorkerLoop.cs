@@ -6,6 +6,7 @@ public sealed class WorkerLoop(
     IWorkerStateStore stateStore,
     WorkerPolicy policy) : IWorkerLoop
 {
+    private const string DispatchOutcomeUnknown = "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
@@ -18,6 +19,22 @@ public sealed class WorkerLoop(
         try
         {
             var existing = await stateStore.Load(cancellationToken);
+
+            // DISPATCHING/CONTINUING persisted across process startup means the prior process
+            // may have sent the browser instruction but died before it could persist WAITING.
+            // Exactly-once delivery cannot be proven from local state alone, so fail closed
+            // instead of risking a duplicate engineering turn.
+            if (existing.State is WorkerRuntimeState.DISPATCHING or WorkerRuntimeState.CONTINUING)
+            {
+                var blocked = existing with
+                {
+                    State = WorkerRuntimeState.BLOCKED,
+                    Failure = DispatchOutcomeUnknown
+                };
+                await stateStore.Save(blocked, cancellationToken);
+                return new(blocked.State, false, false, DispatchOutcomeUnknown);
+            }
+
             if (IsActive(existing.State))
             {
                 if (existing.Target == target)
