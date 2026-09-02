@@ -47,6 +47,8 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         }
     }
 
+    public bool IsDeviceAuthenticationConfigured => IsDeviceSecure(activity);
+
     public string? GetUnlockedToken() => _unlockedToken;
 
     public void Lock() => _unlockedToken = null;
@@ -58,7 +60,8 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
-        EnsureKeyExists();
+        EnsureDeviceAuthenticationConfigured(activity);
+        EnsureKeyExists(activity);
         await Authenticate(activity, "Save Notion connection", cancellationToken);
 
         var keyStore = LoadKeyStore();
@@ -96,7 +99,8 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
 
-        EnsureKeyExists();
+        EnsureDeviceAuthenticationConfigured(activity);
+        EnsureKeyExists(activity);
         await Authenticate(activity, "Unlock Notion", cancellationToken);
 
         var encodedCiphertext = Preferences.GetString(CiphertextPreference, null);
@@ -146,6 +150,18 @@ public sealed class AndroidNotionSecretVault(Activity activity)
     [SupportedOSPlatformGuard("android30.0")]
     private static bool IsAndroid11OrLater() => OperatingSystem.IsAndroidVersionAtLeast(30);
 
+    private static bool IsDeviceSecure(Activity activity)
+    {
+        var keyguard = activity.GetSystemService(Context.KeyguardService) as KeyguardManager;
+        return keyguard?.IsDeviceSecure == true;
+    }
+
+    private static void EnsureDeviceAuthenticationConfigured(Activity activity)
+    {
+        if (!IsDeviceSecure(activity))
+            throw new InvalidOperationException("NOTION_DEVICE_LOCK_REQUIRED");
+    }
+
     private static KeyStore LoadKeyStore()
     {
         var keyStore = KeyStore.GetInstance(AndroidKeyStore)
@@ -154,10 +170,12 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         return keyStore;
     }
 
-    private static void EnsureKeyExists()
+    private static void EnsureKeyExists(Activity activity)
     {
         if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
+
+        EnsureDeviceAuthenticationConfigured(activity);
 
         var keyStore = LoadKeyStore();
         if (keyStore.ContainsAlias(KeyAlias))
@@ -175,8 +193,19 @@ public sealed class AndroidNotionSecretVault(Activity activity)
                 AuthenticationWindowSeconds,
                 (int)(KeyPropertiesAuthType.BiometricStrong | KeyPropertiesAuthType.DeviceCredential));
 
-        generator.Init(builder.Build());
-        generator.GenerateKey();
+        try
+        {
+            generator.Init(builder.Build());
+            generator.GenerateKey();
+        }
+        catch (InvalidAlgorithmParameterException ex)
+        {
+            throw new InvalidOperationException("NOTION_DEVICE_LOCK_REQUIRED", ex);
+        }
+        catch (Java.Lang.IllegalStateException ex)
+        {
+            throw new InvalidOperationException("NOTION_DEVICE_LOCK_REQUIRED", ex);
+        }
     }
 
     private static async Task Authenticate(
@@ -186,6 +215,8 @@ public sealed class AndroidNotionSecretVault(Activity activity)
     {
         if (!IsAndroid11OrLater())
             throw new InvalidOperationException("NOTION_SECURE_STORAGE_REQUIRES_ANDROID_11");
+
+        EnsureDeviceAuthenticationConfigured(activity);
 
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationSignal = new CancellationSignal();
