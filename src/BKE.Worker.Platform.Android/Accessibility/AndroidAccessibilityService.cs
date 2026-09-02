@@ -90,6 +90,14 @@ public class AndroidAccessibilityService : AccessibilityService
 
         var trigger = FindFirst(root, IsSemanticSidebarTrigger);
         if (trigger is null)
+        {
+            var structural = FindUniqueShallowestUnlabeledClickableView(root);
+            if (structural.FailureCode is not null)
+                return structural.FailureCode;
+            trigger = structural.Node;
+        }
+
+        if (trigger is null)
             return "CHATGPT_SIDEBAR_TRIGGER_NOT_FOUND";
 
         if (!trigger.PerformAction(global::Android.Views.Accessibility.Action.Click))
@@ -237,6 +245,62 @@ public class AndroidAccessibilityService : AccessibilityService
                semanticLabel.Contains("navigation", StringComparison.Ordinal) ||
                semanticLabel.Contains("sidebar", StringComparison.Ordinal) ||
                semanticLabel.Contains("drawer", StringComparison.Ordinal);
+    }
+
+    private static (AccessibilityNodeInfo? Node, string? FailureCode) FindUniqueShallowestUnlabeledClickableView(
+        AccessibilityNodeInfo root)
+    {
+        var candidates = new List<(AccessibilityNodeInfo Node, int Depth)>();
+        CollectUnlabeledClickableViews(root, 0, candidates);
+
+        if (candidates.Count == 0)
+            return (null, "CHATGPT_SIDEBAR_TRIGGER_NOT_FOUND");
+
+        var shallowestDepth = candidates.Min(candidate => candidate.Depth);
+        var shallowest = candidates.Where(candidate => candidate.Depth == shallowestDepth).ToArray();
+        if (shallowest.Length != 1)
+            return (null, "CHATGPT_SIDEBAR_STRUCTURAL_TRIGGER_AMBIGUOUS");
+
+        return (shallowest[0].Node, null);
+    }
+
+    private static void CollectUnlabeledClickableViews(
+        AccessibilityNodeInfo node,
+        int depth,
+        ICollection<(AccessibilityNodeInfo Node, int Depth)> candidates)
+    {
+        if (node.Clickable &&
+            !node.Editable &&
+            string.Equals(node.ClassName?.ToString(), "android.view.View", StringComparison.Ordinal) &&
+            string.IsNullOrWhiteSpace(node.Text?.ToString()) &&
+            string.IsNullOrWhiteSpace(node.ContentDescription?.ToString()) &&
+            string.IsNullOrWhiteSpace(node.ViewIdResourceName) &&
+            !ContainsEditableDescendant(node))
+        {
+            candidates.Add((node, depth));
+        }
+
+        for (var index = 0; index < node.ChildCount; index++)
+        {
+            var child = node.GetChild(index);
+            if (child is not null)
+                CollectUnlabeledClickableViews(child, depth + 1, candidates);
+        }
+    }
+
+    private static bool ContainsEditableDescendant(AccessibilityNodeInfo node)
+    {
+        for (var index = 0; index < node.ChildCount; index++)
+        {
+            var child = node.GetChild(index);
+            if (child is null)
+                continue;
+
+            if (child.Editable || ContainsEditableDescendant(child))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool ContainsExactText(AccessibilityNodeInfo node, string text)
