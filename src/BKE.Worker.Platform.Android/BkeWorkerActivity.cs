@@ -27,6 +27,7 @@ public sealed class BkeWorkerActivity : Activity
     private Spinner? _notionPages;
     private Spinner? _notionTasks;
     private Spinner? _context;
+    private Spinner? _recentChats;
     private Spinner? _reasoning;
     private EditText? _conversation;
     private EditText? _project;
@@ -36,6 +37,7 @@ public sealed class BkeWorkerActivity : Activity
     private WorkItem? _armedWorkItem;
     private IReadOnlyList<NotionPageSummary> _loadedNotionPages = [];
     private IReadOnlyList<NotionChecklistTask> _loadedNotionTasks = [];
+    private IReadOnlyList<string> _loadedRecentTitles = [];
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -152,9 +154,22 @@ public sealed class BkeWorkerActivity : Activity
         _context.SetSelection(1);
         layout.AddView(_context);
 
+        var discoverRecents = new Button(this) { Text = "DISCOVER RECENTS" };
+        discoverRecents.Click += async (_, _) => await DiscoverRecents(discoverRecents);
+        layout.AddView(discoverRecents);
+
+        _recentChats = new Spinner(this);
+        _recentChats.Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem,
+            new[] { "(discover real ChatGPT recents)" });
+        layout.AddView(_recentChats);
+
+        var openSelectedRecent = new Button(this) { Text = "OPEN SELECTED RECENT" };
+        openSelectedRecent.Click += async (_, _) => await OpenSelectedRecent(openSelectedRecent);
+        layout.AddView(openSelectedRecent);
+
         _project = new EditText(this) { Hint = "Project (PROJECTS only)" };
         layout.AddView(_project);
-        _conversation = new EditText(this) { Hint = "Conversation override (RECENTS / PROJECTS)" };
+        _conversation = new EditText(this) { Hint = "Conversation (PROJECTS only)" };
         layout.AddView(_conversation);
 
         _reasoning = new Spinner(this);
@@ -392,23 +407,195 @@ public sealed class BkeWorkerActivity : Activity
         if (_chatGptStatus is null)
             return;
 
+        _chatGptStatus.Text = TryLaunchChatGpt()
+            ? "ChatGPT binding: LAUNCHED"
+            : "ChatGPT binding: CHATGPT_LAUNCH_FAILED";
+    }
+
+    private bool TryLaunchChatGpt()
+    {
         try
         {
             var launchIntent = PackageManager?.GetLaunchIntentForPackage(ChatGPTPackageIdentity.CandidatePackageName);
             if (launchIntent is null)
-            {
-                _chatGptStatus.Text = "ChatGPT binding: CHATGPT_NOT_INSTALLED";
-                return;
-            }
+                return false;
 
             launchIntent.AddFlags(ActivityFlags.ReorderToFront);
             StartActivity(launchIntent);
-            _chatGptStatus.Text = "ChatGPT binding: LAUNCHED — return after ChatGPT UI is visible";
+            return true;
         }
         catch (Exception)
         {
-            _chatGptStatus.Text = "ChatGPT binding: CHATGPT_LAUNCH_FAILED";
+            return false;
         }
+    }
+
+    private async Task DiscoverRecents(Button button)
+    {
+        if (_chatGptStatus is null || _recentChats is null)
+            return;
+
+        button.Enabled = false;
+        _chatGptStatus.Text = "ChatGPT recents: LAUNCHING";
+
+        try
+        {
+            if (!TryLaunchChatGpt())
+            {
+                _chatGptStatus.Text = "ChatGPT recents: CHATGPT_LAUNCH_FAILED";
+                return;
+            }
+
+            var sidebarFailure = await WaitForSidebarOpen(CancellationToken.None);
+            if (sidebarFailure is not null)
+            {
+                BringWorkerToFront();
+                _chatGptStatus.Text = $"ChatGPT recents: {sidebarFailure}";
+                return;
+            }
+
+            var recentsReady = await WaitUntil(
+                () => AndroidAccessibilityService.SnapshotContainsExactText("Recents"),
+                TimeSpan.FromSeconds(4),
+                CancellationToken.None);
+
+            if (!recentsReady)
+            {
+                BringWorkerToFront();
+                _chatGptStatus.Text = "ChatGPT recents: RECENTS_SECTION_NOT_FOUND";
+                return;
+            }
+
+            var discovery = AndroidAccessibilityService.DiscoverVisibleRecentChats();
+            BringWorkerToFront();
+
+            if (!discovery.Success)
+            {
+                _loadedRecentTitles = [];
+                _recentChats.Adapter = new ArrayAdapter<string>(this,
+                    global::Android.Resource.Layout.SimpleSpinnerItem,
+                    new[] { "(recents discovery failed)" });
+                _chatGptStatus.Text = $"ChatGPT recents: {discovery.FailureCode}";
+                return;
+            }
+
+            _loadedRecentTitles = discovery.Titles;
+            _recentChats.Adapter = new ArrayAdapter<string>(this,
+                global::Android.Resource.Layout.SimpleSpinnerItem,
+                _loadedRecentTitles.ToArray());
+            _chatGptStatus.Text = $"ChatGPT recents: DISCOVERED — {_loadedRecentTitles.Count} visible conversation(s)";
+            _armedWorkItem = null;
+            if (_overrideStatus is not null)
+                _overrideStatus.Text = "Override: NOT ARMED";
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
+    private async Task OpenSelectedRecent(Button button)
+    {
+        if (_chatGptStatus is null || _recentChats is null)
+            return;
+
+        var selectedIndex = _recentChats.SelectedItemPosition;
+        if (_loadedRecentTitles.Count == 0 || selectedIndex < 0 || selectedIndex >= _loadedRecentTitles.Count)
+        {
+            _chatGptStatus.Text = "ChatGPT recents: DISCOVER_RECENTS_FIRST";
+            return;
+        }
+
+        var title = _loadedRecentTitles[selectedIndex];
+        button.Enabled = false;
+        _chatGptStatus.Text = "ChatGPT recents: OPENING SELECTED CONVERSATION";
+
+        try
+        {
+            if (!TryLaunchChatGpt())
+            {
+                _chatGptStatus.Text = "ChatGPT recents: CHATGPT_LAUNCH_FAILED";
+                return;
+            }
+
+            var sidebarFailure = await WaitForSidebarOpen(CancellationToken.None);
+            if (sidebarFailure is not null)
+            {
+                BringWorkerToFront();
+                _chatGptStatus.Text = $"ChatGPT recents: {sidebarFailure}";
+                return;
+            }
+
+            var recentsReady = await WaitUntil(
+                () => AndroidAccessibilityService.SnapshotContainsExactText("Recents"),
+                TimeSpan.FromSeconds(4),
+                CancellationToken.None);
+            if (!recentsReady)
+            {
+                BringWorkerToFront();
+                _chatGptStatus.Text = "ChatGPT recents: RECENTS_SECTION_NOT_FOUND";
+                return;
+            }
+
+            var failure = AndroidAccessibilityService.TryOpenRecentChat(title);
+            if (failure is not null)
+            {
+                BringWorkerToFront();
+                _chatGptStatus.Text = $"ChatGPT recents: {failure}";
+                return;
+            }
+
+            _chatGptStatus.Text = $"ChatGPT recents: OPENED — {title}";
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
+    private static async Task<string?> WaitForSidebarOpen(CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(6);
+        string? lastFailure = null;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var failure = AndroidAccessibilityService.TryOpenRecentsSidebar();
+            if (failure is null)
+                return null;
+
+            lastFailure = failure;
+            if (failure is "CHATGPT_SIDEBAR_TRIGGER_NOT_FOUND" or "CHATGPT_SIDEBAR_OPEN_FAILED")
+                return failure;
+
+            await Task.Delay(150, cancellationToken);
+        }
+
+        return lastFailure ?? "ACCESSIBILITY_ROOT_UNAVAILABLE";
+    }
+
+    private static async Task<bool> WaitUntil(
+        Func<bool> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (condition())
+                return true;
+            await Task.Delay(100, cancellationToken);
+        }
+        return condition();
+    }
+
+    private void BringWorkerToFront()
+    {
+        var intent = new Intent(this, typeof(BkeWorkerActivity));
+        intent.AddFlags(ActivityFlags.ReorderToFront | ActivityFlags.SingleTop);
+        StartActivity(intent);
     }
 
     private void RefreshChatGptBindingStatus()
@@ -417,9 +604,10 @@ public sealed class BkeWorkerActivity : Activity
             return;
 
         var nodeCount = AndroidAccessibilityService.LatestChatGptSnapshot.Count;
+        var service = AndroidAccessibilityService.IsServiceConnected ? "service connected" : "service unavailable";
         _chatGptStatus.Text = nodeCount > 0
-            ? $"ChatGPT binding: CONNECTED — {nodeCount} semantic node(s) captured"
-            : "ChatGPT binding: WAITING — open ChatGPT, expose its UI, then return";
+            ? $"ChatGPT binding: CONNECTED — {nodeCount} semantic node(s); {service}"
+            : $"ChatGPT binding: WAITING — {service}";
     }
 
     private void ArmOverride()
@@ -436,8 +624,8 @@ public sealed class BkeWorkerActivity : Activity
 
         var task = _loadedNotionTasks[taskIndex];
         var contextIndex = _context.SelectedItemPosition;
-        var conversation = _conversation?.Text?.Trim();
         var project = _project?.Text?.Trim();
+        var projectConversation = _conversation?.Text?.Trim();
 
         ContextTarget target;
         switch (contextIndex)
@@ -446,20 +634,26 @@ public sealed class BkeWorkerActivity : Activity
                 target = ContextTarget.NewChat();
                 break;
             case 1:
-                if (string.IsNullOrWhiteSpace(conversation))
+                if (_recentChats is null || _loadedRecentTitles.Count == 0)
                 {
-                    _overrideStatus.Text = "Override: RECENT_CONVERSATION_REQUIRED";
+                    _overrideStatus.Text = "Override: DISCOVER_RECENTS_FIRST";
                     return;
                 }
-                target = new ContextTarget(ContextTargetType.RecentChat, conversation);
+                var recentIndex = _recentChats.SelectedItemPosition;
+                if (recentIndex < 0 || recentIndex >= _loadedRecentTitles.Count)
+                {
+                    _overrideStatus.Text = "Override: SELECT_RECENT_CONVERSATION";
+                    return;
+                }
+                target = new ContextTarget(ContextTargetType.RecentChat, _loadedRecentTitles[recentIndex]);
                 break;
             case 2:
-                if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(conversation))
+                if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(projectConversation))
                 {
                     _overrideStatus.Text = "Override: PROJECT_AND_CONVERSATION_REQUIRED";
                     return;
                 }
-                target = new ContextTarget(ContextTargetType.ProjectChat, conversation, project);
+                target = new ContextTarget(ContextTargetType.ProjectChat, projectConversation, project);
                 break;
             default:
                 _overrideStatus.Text = "Override: CONTEXT_SELECTION_INVALID";
@@ -473,11 +667,7 @@ public sealed class BkeWorkerActivity : Activity
             return;
         }
 
-        _armedWorkItem = new WorkItem(
-            task.BlockId,
-            task.Text,
-            target,
-            reasoning);
+        _armedWorkItem = new WorkItem(task.BlockId, task.Text, target, reasoning);
 
         var targetLabel = target.Type switch
         {
