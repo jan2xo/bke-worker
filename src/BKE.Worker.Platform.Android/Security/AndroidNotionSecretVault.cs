@@ -144,7 +144,7 @@ public sealed class AndroidNotionSecretVault(Activity activity)
         ?? throw new InvalidOperationException("NOTION_SECRET_STORAGE_UNAVAILABLE");
 
     [SupportedOSPlatformGuard("android30.0")]
-    private static bool IsAndroid11OrLater() => Build.VERSION.SdkInt >= BuildVersionCodes.R;
+    private static bool IsAndroid11OrLater() => OperatingSystem.IsAndroidVersionAtLeast(30);
 
     private static KeyStore LoadKeyStore()
     {
