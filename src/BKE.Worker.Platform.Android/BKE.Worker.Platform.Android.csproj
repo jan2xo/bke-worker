@@ -22,5 +22,6 @@
   <ItemGroup>
     <ProjectReference Include="../BKE.Worker.Core/BKE.Worker.Core.csproj" />
     <ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
+    <ProjectReference Include="../BKE.Worker.Notion/BKE.Worker.Notion.csproj" />
   </ItemGroup>
 </Project>
