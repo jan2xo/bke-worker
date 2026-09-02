@@ -7,6 +7,7 @@ public sealed class WorkerLoop(
     WorkerPolicy policy) : IWorkerLoop
 {
     private const string DispatchOutcomeUnknown = "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
+    private const string ExecutionSurfaceMismatch = "CHATGPT_EXECUTION_SURFACE_MISMATCH";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
@@ -41,6 +42,22 @@ public sealed class WorkerLoop(
                     return new(existing.State, false, false, "ALREADY_ACTIVE");
 
                 return new(existing.State, false, false, "ACTIVE_DISPATCH_EXISTS");
+            }
+
+            // The current autonomous engineering loop is intentionally Chat-only.
+            // Work is a separate agentic execution surface and must never be selected as a fallback.
+            if (target.Surface != ChatGptExecutionSurface.Chat)
+            {
+                var blocked = new WorkerSnapshot(
+                    WorkerRuntimeState.BLOCKED,
+                    target,
+                    null,
+                    existing.LastDispatchAt,
+                    existing.LastGitHubDeliveryId,
+                    existing.LastReconciliationAt,
+                    ExecutionSurfaceMismatch);
+                await stateStore.Save(blocked, cancellationToken);
+                return new(blocked.State, false, false, ExecutionSurfaceMismatch);
             }
 
             var reconciliation = await checklist.Reconcile(target.NotionPageId, null, cancellationToken);
@@ -104,6 +121,20 @@ public sealed class WorkerLoop(
                 return new(snapshot.State, false, false, "NO_ACTIVE_ENGINEERING_LOOP");
             }
 
+            if (snapshot.Target.Surface != ChatGptExecutionSurface.Chat)
+            {
+                var blocked = snapshot with
+                {
+                    State = WorkerRuntimeState.BLOCKED,
+                    LastGitHubDeliveryId = string.IsNullOrWhiteSpace(deliveryId)
+                        ? snapshot.LastGitHubDeliveryId
+                        : deliveryId,
+                    Failure = ExecutionSurfaceMismatch
+                };
+                await stateStore.Save(blocked, cancellationToken);
+                return new(blocked.State, false, false, ExecutionSurfaceMismatch);
+            }
+
             var reconciling = snapshot with
             {
                 State = WorkerRuntimeState.RECONCILING,
@@ -164,7 +195,10 @@ public sealed class WorkerLoop(
             {
                 await driver.Launch(cancellationToken);
                 await driver.OpenContext(
-                    ContextTarget.ProjectChat(waiting.Target.Project, waiting.Target.Conversation),
+                    ContextTarget.ProjectChat(
+                        waiting.Target.Project,
+                        waiting.Target.Conversation,
+                        waiting.Target.Surface),
                     cancellationToken);
 
                 if (!await driver.CanSendNextTurn(cancellationToken))
@@ -201,7 +235,9 @@ public sealed class WorkerLoop(
         {
             var target = snapshot.Target ?? throw new InvalidOperationException("ENGINEERING_TARGET_REQUIRED");
             await driver.Launch(cancellationToken);
-            await driver.OpenContext(ContextTarget.ProjectChat(target.Project, target.Conversation), cancellationToken);
+            await driver.OpenContext(
+                ContextTarget.ProjectChat(target.Project, target.Conversation, target.Surface),
+                cancellationToken);
             await driver.Send(instruction, cancellationToken);
 
             var waiting = snapshot with
@@ -231,7 +267,8 @@ public sealed class WorkerLoop(
         var failure = exception.Message;
         var blocked = failure.Contains("PROJECT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CONTEXT_NOT_FOUND", StringComparison.Ordinal) ||
-                      failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal);
+                      failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal) ||
+                      failure.Contains(ExecutionSurfaceMismatch, StringComparison.Ordinal);
         var failed = snapshot with
         {
             State = blocked ? WorkerRuntimeState.BLOCKED : WorkerRuntimeState.FAILED,

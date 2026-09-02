@@ -21,6 +21,7 @@ public sealed class ChatGPTWebDriver(
     ConversationNavigator conversations,
     ComposerDriver composer) : IChatGPTDriver
 {
+    private const string ExecutionSurfaceMismatch = "CHATGPT_EXECUTION_SURFACE_MISMATCH";
     private ReasoningProfile _compatibilityReasoning = ReasoningProfile.HIGH;
 
     public async Task Launch(CancellationToken cancellationToken)
@@ -51,7 +52,7 @@ public sealed class ChatGPTWebDriver(
             currentUrl = (await host.GetPage(cancellationToken)).Url;
 
             await OpenContext(
-                ContextTarget.ProjectChat(project, conversation),
+                ContextTarget.ProjectChat(project, conversation, ChatGptExecutionSurface.Chat),
                 cancellationToken);
 
             var page = await host.GetPage(cancellationToken);
@@ -98,7 +99,10 @@ public sealed class ChatGPTWebDriver(
     {
         var page = await host.GetPage(cancellationToken);
         var names = await projects.ListProjects(page, cancellationToken);
-        return names.Select(name => new ContextTarget(ContextTargetType.ProjectChat, Project: name)).ToArray();
+        return names.Select(name => new ContextTarget(
+            ContextTargetType.ProjectChat,
+            Project: name,
+            Surface: ChatGptExecutionSurface.Chat)).ToArray();
     }
 
     public async Task<IReadOnlyList<string>> ListProjects(CancellationToken cancellationToken)
@@ -119,6 +123,11 @@ public sealed class ChatGPTWebDriver(
 
     public async Task OpenContext(ContextTarget target, CancellationToken cancellationToken)
     {
+        // This driver is specifically the persistent Chat conversation adapter.
+        // Work is a distinct agentic surface and must never be silently substituted.
+        if (target.Surface != ChatGptExecutionSurface.Chat)
+            throw new InvalidOperationException(ExecutionSurfaceMismatch);
+
         if (target.Type != ContextTargetType.ProjectChat ||
             string.IsNullOrWhiteSpace(target.Project) ||
             string.IsNullOrWhiteSpace(target.Conversation))
