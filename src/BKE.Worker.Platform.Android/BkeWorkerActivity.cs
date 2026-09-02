@@ -566,9 +566,6 @@ public sealed class BkeWorkerActivity : Activity
                 return null;
 
             lastFailure = failure;
-            if (failure is "CHATGPT_SIDEBAR_TRIGGER_NOT_FOUND" or "CHATGPT_SIDEBAR_OPEN_FAILED")
-                return failure;
-
             await Task.Delay(150, cancellationToken);
         }
 
