@@ -37,7 +37,8 @@ builder.Services.AddSingleton<INotionChecklistClient>(_ =>
 builder.Services.AddSingleton<NotionWorkSource>(services =>
     new NotionWorkSource(
         services.GetRequiredService<INotionChecklistClient>(),
-        settings.NotionPageId));
+        settings.NotionPageId,
+        settings.Target));
 builder.Services.AddSingleton<IWorkSource>(services => services.GetRequiredService<NotionWorkSource>());
 builder.Services.AddSingleton<IChecklistReconciler, ChecklistReconciler>();
 builder.Services.AddSingleton<IWorkerStateStore>(_ => new JsonWorkerStateStore(settings.StateFile));
@@ -99,8 +100,9 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         configuration = new
         {
             notionConfigured = settings.NotionConfigured,
-            notionTargetSource = true,
-            notionTargetHeader = NotionChecklistClient.TargetHeader,
+            notionTaskSource = true,
+            workerTargetSource = "configuration",
+            autonomousOverrideConfigured = settings.AutonomousOverrideConfigured,
             probeChatGptConfigured = settings.ChatGptTargetConfigured,
             chatGptSemanticTargetConfigured = settings.ChatGptSemanticTargetConfigured,
             chatGptSemanticTargetPartial = settings.ChatGptSemanticTargetPartial,
@@ -129,7 +131,7 @@ app.MapPost("/control/reconcile", async (
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Configure Notion, browser runtime, and GitHub webhook secret before manual reconciliation.",
+            detail: "Configure Notion, the deterministic ChatGPT override conversation, browser runtime, and GitHub webhook secret before manual reconciliation.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     await wakeSink.Enqueue(
@@ -144,8 +146,8 @@ app.MapPost("/control/reconcile", async (
     });
 });
 
-// Operator-only adapter probe. These environment target fields are intentionally
-// separate from the autonomous Notion-driven target used by WorkerHostedService.
+// Operator probe may exercise any supported target mode. The autonomous worker itself
+// is stricter: it owns one deterministic conversation through the configured override URL.
 app.MapPost("/control/chatgpt/probe", async (
     IWorkerLoop loop,
     ChatGPTWebDriver driver,
@@ -240,11 +242,15 @@ public sealed record WorkerServerSettings(
     public bool ChatGptUsesNewChat =>
         !ChatGptOverridePresent && !ChatGptProjectPresent && !ChatGptConversationPresent;
 
-    // Probe/send-smoke target configuration only. The autonomous loop target is read from Notion.
     public bool ChatGptTargetConfigured =>
         !ChatGptTargetAmbiguous &&
         !ChatGptSemanticTargetPartial &&
         (ChatGptOverridePresent ? ChatGptOverrideConfigured : true);
+
+    public bool AutonomousOverrideConfigured =>
+        ChatGptOverrideConfigured &&
+        !ChatGptTargetAmbiguous &&
+        !ChatGptSemanticTargetPartial;
 
     public string ChatGptTargetMode =>
         ChatGptTargetAmbiguous ? "invalid-ambiguous" :
@@ -268,6 +274,7 @@ public sealed record WorkerServerSettings(
     public bool IsConfigured =>
         NotionConfigured &&
         BrowserRuntimeConfigured &&
+        AutonomousOverrideConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
     public EngineeringTarget Target => new(
@@ -404,7 +411,7 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion page/token, loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion page/token, deterministic ChatGPT override URL, loopback browser CDP for live chatgpt.com, and GitHub webhook secret.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }
@@ -425,7 +432,7 @@ public sealed class WorkerHostedService(
         if (existing.Target is not null && IsActive(existing.State))
             return await loop.Start(existing.Target, cancellationToken);
 
-        // GUARD: human authentication is checked before the first Notion task/target read.
+        // GUARD: human authentication is checked before the first Notion task read.
         try
         {
             await driver.Launch(cancellationToken);
@@ -519,8 +526,6 @@ public sealed class WorkerHostedService(
                       failure.Contains("CHATGPT_TARGET_AMBIGUOUS", StringComparison.Ordinal) ||
                       failure.Contains("CHATGPT_TARGET_INCOMPLETE", StringComparison.Ordinal) ||
                       failure.Contains("CHATGPT_OVERRIDE_URL_INVALID", StringComparison.Ordinal) ||
-                      failure.Contains("NOTION_TARGET_BLOCK_AMBIGUOUS", StringComparison.Ordinal) ||
-                      failure.Contains("NOTION_TARGET_BLOCK_INVALID", StringComparison.Ordinal) ||
                       failure.Contains("LIVE_CHATGPT_REQUIRES_CDP_ATTACH", StringComparison.Ordinal) ||
                       failure.Contains("BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK", StringComparison.Ordinal);
 
