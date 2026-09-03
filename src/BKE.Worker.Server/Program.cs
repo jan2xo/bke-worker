@@ -96,8 +96,11 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
             notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
             chatGptConfigured = settings.ChatGptTargetConfigured,
             chatGptSemanticTargetConfigured = settings.ChatGptSemanticTargetConfigured,
+            chatGptOverridePresent = settings.ChatGptOverridePresent,
             chatGptOverrideConfigured = settings.ChatGptOverrideConfigured,
-            chatGptTargetMode = settings.ChatGptOverrideConfigured ? "override-link" : "project-chat",
+            chatGptTargetMode = settings.ChatGptOverridePresent
+                ? (settings.ChatGptOverrideConfigured ? "override-link" : "override-link-invalid")
+                : "project-chat",
             githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret),
             browserCdpConfigured = settings.BrowserCdpConfigured
         },
@@ -141,7 +144,9 @@ app.MapPost("/control/chatgpt/probe", async (
     if (!settings.ChatGptTargetConfigured)
         return Results.Problem(
             title: "ChatGPT target is not configured",
-            detail: "Configure Project + Conversation, or a validated ChatGPT conversation override URL, before probing the live adapter.",
+            detail: settings.ChatGptOverridePresent
+                ? "The configured ChatGPT override URL is invalid. Use an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>."
+                : "Configure Project + Conversation, or a validated ChatGPT conversation override URL, before probing the live adapter.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     var snapshot = await loop.GetState(cancellationToken);
@@ -195,11 +200,18 @@ public sealed record WorkerServerSettings(
         !string.IsNullOrWhiteSpace(ChatGptProject) &&
         !string.IsNullOrWhiteSpace(ChatGptConversation);
 
-    public bool ChatGptOverrideConfigured =>
+    public bool ChatGptOverridePresent =>
         !string.IsNullOrWhiteSpace(ChatGptOverrideUrl);
 
+    public bool ChatGptOverrideConfigured =>
+        ChatGptOverridePresent && IsValidChatGptConversationOverride(ChatGptOverrideUrl);
+
+    // Override presence is authoritative. A malformed override must fail closed rather than
+    // silently falling back to Project + Conversation.
     public bool ChatGptTargetConfigured =>
-        ChatGptOverrideConfigured || ChatGptSemanticTargetConfigured;
+        ChatGptOverridePresent
+            ? ChatGptOverrideConfigured
+            : ChatGptSemanticTargetConfigured;
 
     public bool LiveChatGptBaseUrl =>
         Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
@@ -246,6 +258,30 @@ public sealed record WorkerServerSettings(
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS"], 10)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_RECOVERY_SECONDS"], 300)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_MIN_DISPATCH_SECONDS"], 30)));
+    }
+
+    private static bool IsValidChatGptConversationOverride(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !(string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(uri.Host, "www.chatgpt.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            if (string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(segments[index + 1]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ParseBool(string? value, bool defaultValue) =>
