@@ -1,6 +1,6 @@
 # Phase 6 — Live Host / Production Adapter Certification
 
-Status: **ACTIVE CANDIDATE — LIVE HOST PATH PROVEN MANUALLY; AUTOMATED REGRESSION REQUIRED**
+Status: **ACTIVE CANDIDATE — REAL PHASE 6A PROBE GREEN; CURRENT REGRESSION PENDING**
 
 Base branch:
 
@@ -44,8 +44,7 @@ SYSTEM CHROMIUM
         v
 BKE WORKER
         |
-        +--> exact Chat Project
-        +--> exact Conversation
+        +--> selected Chat target
         +--> semantic composer / busy guard
         +--> GitHub wake
         +--> Notion reconciliation
@@ -91,6 +90,87 @@ Rules:
 8. The dedicated browser profile persists across worker restarts and normal browser restarts. Reauthentication occurs only when the service actually requires it.
 9. Current autonomous execution remains **Chat-only**. Work remains a separate unsupported execution surface and never receives fallback traffic.
 
+## Chat target selection — canonical rule
+
+A Notion task may select exactly one explicit Chat target mode:
+
+```text
+A. Project + Conversation
+OR
+B. Override Link
+```
+
+If the task selects neither explicit mode:
+
+```text
+C. New Chat
+```
+
+This is the **only fallback/default**.
+
+There is no fallback chain between explicit modes:
+
+```text
+Override -> Project + Conversation   ❌
+Project + Conversation -> Override   ❌
+```
+
+Configuration rules:
+
+- Project + Conversation only -> `ProjectChat`.
+- Override Link only -> `OverrideLink`.
+- neither -> `NewChat`.
+- both explicit modes -> `CHATGPT_TARGET_AMBIGUOUS`.
+- only Project or only Conversation -> `CHATGPT_TARGET_INCOMPLETE`.
+- failure of an explicit target remains a failure/block condition; the worker does not silently switch targets.
+
+Accepted Override Links are restricted to HTTPS `chatgpt.com` conversation URLs containing `/c/<conversation-id>`. Invalid URLs fail as `CHATGPT_OVERRIDE_URL_INVALID`.
+
+Intended Notion authority:
+
+```text
+NOTION TASK
+  -> Project + Chat
+     OR Override Link
+     OR neither
+          -> New Chat
+  -> BKE Worker
+```
+
+Physical Notion target ingestion is not yet claimed complete because `NotionWorkSource` remains scaffold-only.
+
+## Live Project navigation convergence
+
+Current production ChatGPT project navigation is treated as a stable route rather than a responsive-sidebar traversal:
+
+```text
+https://chatgpt.com/projects
+-> wait for exact project row
+-> click exact project row
+-> locate exact conversation
+```
+
+The live adapter does not depend on `Open sidebar`, `Recents`, or responsive sidebar project controls.
+
+## Phase 6A real authenticated evidence
+
+A real non-mutating operator-host probe on 2026-09-03 returned:
+
+```text
+compatible=true
+authenticated=true
+project=BKE Worker
+conversation=Worker Engineering
+composerAvailable=true
+turnBusy=false
+canSendNextTurn=true
+failure=null
+```
+
+The probe sent no prompt.
+
+This is real Level-2 adapter evidence against current authenticated `chatgpt.com`.
+
 ## GUI requirement
 
 The production host must be **GUI-capable** because authentication is deliberately human-only.
@@ -120,38 +200,16 @@ normal Ubuntu system Chromium
 -> BKE Worker attaches with ConnectOverCDP
 ```
 
-This split prevents live OAuth from becoming part of the autonomous worker contract.
-
 ## Operator scripts
 
-The manual UTM discovery steps are converted into repository scripts:
-
 - `scripts/bootstrap-linux-host.sh`
-  - verifies Ubuntu/architecture;
-  - installs Git, curl, jq, .NET 10, system Chromium, and PowerShell;
-  - installs the pinned Playwright browser used by controlled tests;
-  - creates protected config/profile/state directories;
-  - runs Core and ChatGPT regression tests.
-
 - `scripts/start-chatgpt-browser.sh`
-  - starts normal system Chromium;
-  - uses a dedicated BKE browser profile;
-  - binds CDP to `127.0.0.1` only;
-  - opens `https://chatgpt.com`;
-  - leaves authentication entirely to the human operator.
-
 - `scripts/verify-live-host.sh`
-  - verifies Chromium, .NET, profile, CDP metadata, a ChatGPT tab, and loopback-only debugger exposure;
-  - does not inspect or export browser credentials.
-
+- `scripts/probe-chatgpt-live.sh`
 - `scripts/run-worker.sh`
-  - loads the protected local environment file;
-  - validates required non-browser configuration;
-  - verifies the live browser first;
-  - starts BKE Worker in CDP-attach mode.
-
 - `scripts/bke-worker.env.example`
-  - documents configuration keys without storing real secrets.
+
+The scripts now report the selected target mode as `project-chat`, `override-link`, or `new-chat`, and reject ambiguous/incomplete target configuration.
 
 ## Live evidence observed during Phase 6 discovery
 
@@ -161,14 +219,6 @@ Host:
 UTM on Apple Silicon
 Ubuntu Desktop 26.04 ARM64
 .NET 10
-```
-
-Playwright browser installation observed:
-
-```text
-chromium-1234
-chromium_headless_shell-1234
-ffmpeg-1011
 ```
 
 System Chromium CDP evidence observed:
@@ -190,23 +240,6 @@ system Chromium + persistent profile  -> authenticated live browser path
 system Chromium + localhost CDP       -> available for BKE Worker attach
 ```
 
-These are operator-observed live-host facts, not GitHub Actions proof.
-
-## Phase 6 automated certification goals
-
-GitHub Actions must prove at minimum:
-
-- Core auth hard-stop occurs before Notion reconciliation.
-- Work execution surface remains fail-closed before browser/Notion activity.
-- Controlled Playwright semantic regression remains green.
-- Live `chatgpt.com` cannot use Playwright browser-launch mode.
-- Non-loopback CDP endpoints are rejected.
-- Server readiness is false for live `chatgpt.com` without loopback CDP configuration.
-- Operator scripts are shell-syntax valid.
-- Repository scripts never add `--no-sandbox`.
-
-GitHub Actions cannot certify a real authenticated ChatGPT account. The final live adapter probe remains an operator-host certification step.
-
 ## Phase 6 completion boundary
 
 Phase 6 may be called **LIVE HOST CERTIFIED** only when all of the following are recorded together:
@@ -215,9 +248,9 @@ Phase 6 may be called **LIVE HOST CERTIFIED** only when all of the following are
 2. green automated regression runs for that SHA;
 3. live GUI host OS/architecture/browser evidence;
 4. loopback CDP evidence;
-5. real authenticated `chatgpt.com` adapter probe against the exact Project and Conversation;
+5. real authenticated `chatgpt.com` adapter probe;
 6. probe sends no prompt;
 7. one bounded live loop is completed with real Notion + GitHub webhook + ChatGPT;
 8. no authentication secret is stored in GitHub, Notion, CI, or logs.
 
-Until then, Phase 6 remains an active candidate and earlier certified phases remain preserved unchanged.
+The real adapter probe is now complete. The bounded Notion + GitHub + ChatGPT loop and current exact-head regression remain required before full Phase 6 certification.
