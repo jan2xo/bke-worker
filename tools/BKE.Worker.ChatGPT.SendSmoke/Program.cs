@@ -50,25 +50,34 @@ await using var host = new ChromiumHost(new ChromiumHostOptions(
     ChatGptBaseUrl: baseUrl,
     CdpEndpoint: cdpEndpoint));
 
+var composer = new ComposerDriver();
 var driver = new ChatGPTWebDriver(
     host,
     new ProjectNavigator(),
     new ConversationNavigator(),
-    new ComposerDriver());
+    composer);
 
 try
 {
     await driver.Launch(CancellationToken.None);
     await driver.OpenContext(target, CancellationToken.None);
 
-    if (!await driver.CanSendNextTurn(CancellationToken.None))
+    var page = await host.GetPage(CancellationToken.None);
+    Console.WriteLine("waiting: stable composer readiness");
+    if (!await composer.WaitUntilCanSendNextTurn(
+            page,
+            CancellationToken.None,
+            TimeSpan.FromSeconds(15)))
     {
-        Console.Error.WriteLine("ERROR: CHATGPT_TURN_NOT_IDLE");
+        var state = await composer.Probe(page, CancellationToken.None);
+        Console.Error.WriteLine(state.TurnBusy
+            ? "ERROR: CHATGPT_TURN_NOT_IDLE"
+            : "ERROR: CHATGPT_COMPOSER_NOT_AVAILABLE");
         return 3;
     }
 
     await driver.Send(message, CancellationToken.None);
-    var page = await host.GetPage(CancellationToken.None);
+    page = await host.GetPage(CancellationToken.None);
 
     Console.WriteLine("LIVE CHATGPT SEND SMOKE DISPATCHED");
     Console.WriteLine($"target: {target.Type}");
