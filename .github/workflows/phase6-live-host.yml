@@ -26,12 +26,14 @@ jobs:
           dotnet restore src/BKE.Worker.Server/BKE.Worker.Server.csproj
           dotnet restore tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
           dotnet restore tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj
+          dotnet restore tools/BKE.Worker.Notion.DispatchSmoke/BKE.Worker.Notion.DispatchSmoke.csproj
 
       - name: Build Phase 6 projects
         run: |
           dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj --configuration Release --no-restore
           dotnet build tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj --configuration Release --no-restore
           dotnet build tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj --configuration Release --no-restore
+          dotnet build tools/BKE.Worker.Notion.DispatchSmoke/BKE.Worker.Notion.DispatchSmoke.csproj --configuration Release --no-restore
 
       - name: Certify authentication hard-stop before Notion
         run: dotnet test tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
