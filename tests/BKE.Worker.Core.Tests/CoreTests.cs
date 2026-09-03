@@ -13,6 +13,7 @@ public class CoreTests
     [InlineData(ContextTargetType.RecentChat)]
     [InlineData(ContextTargetType.ProjectChat)]
     [InlineData(ContextTargetType.NewChat)]
+    [InlineData(ContextTargetType.OverrideLink)]
     public void Context_targets_are_supported(ContextTargetType type) =>
         Assert.Equal(type, new ContextTarget(type).Type);
 
@@ -21,6 +22,27 @@ public class CoreTests
         Assert.Equal(
             ChatGptExecutionSurface.Chat,
             ContextTarget.ProjectChat("DUMP", "Engineering").Surface);
+
+    [Fact]
+    public void Override_link_defaults_to_chat_execution_surface() =>
+        Assert.Equal(
+            ChatGptExecutionSurface.Chat,
+            ContextTarget.OverrideLink("https://chatgpt.com/c/test").Surface);
+
+    [Fact]
+    public void Engineering_override_wins_over_project_and_conversation()
+    {
+        const string overrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation";
+        var target = Target() with { OverrideUrl = overrideUrl };
+
+        var context = target.ResolveContextTarget();
+
+        Assert.True(target.UsesOverrideLink);
+        Assert.Equal(ContextTargetType.OverrideLink, context.Type);
+        Assert.Equal(overrideUrl, context.OverrideUrl);
+        Assert.Null(context.Project);
+        Assert.Null(context.Conversation);
+    }
 
     [Fact]
     public void Default_resolves_to_policy() =>
@@ -47,6 +69,31 @@ public class CoreTests
         Assert.Single(driver.Sent);
         Assert.Equal(WorkerPrompts.ContinueFromNotionChecklist, driver.Sent[0]);
         Assert.Equal(0, driver.ExecutionStateCalls);
+    }
+
+    [Fact]
+    public async Task Start_accepts_override_without_semantic_project_or_conversation()
+    {
+        const string overrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation";
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = new EngineeringTarget(
+            string.Empty,
+            string.Empty,
+            "notion-page",
+            OverrideUrl: overrideUrl);
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.True(result.PromptSent);
+        Assert.Single(driver.Opened);
+        Assert.Equal(ContextTargetType.OverrideLink, driver.Opened[0].Type);
+        Assert.Equal(overrideUrl, driver.Opened[0].OverrideUrl);
     }
 
     [Fact]
@@ -272,6 +319,7 @@ public class CoreTests
     private sealed class FakeDriver : IChatGPTDriver
     {
         public List<string> Sent { get; } = [];
+        public List<ContextTarget> Opened { get; } = [];
         public int ExecutionStateCalls { get; private set; }
         public int LaunchCalls { get; private set; }
         public bool CanSend { get; set; } = true;
@@ -287,7 +335,11 @@ public class CoreTests
 
         public Task<IReadOnlyList<ContextTarget>> GetAvailableContexts(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContextTarget>>([]);
-        public Task OpenContext(ContextTarget target, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task OpenContext(ContextTarget target, CancellationToken cancellationToken)
+        {
+            Opened.Add(target);
+            return Task.CompletedTask;
+        }
         public Task<IReadOnlyList<ReasoningProfile>> GetAvailableReasoningProfiles(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ReasoningProfile>>([ReasoningProfile.HIGH]);
         public Task SetReasoning(ReasoningProfile profile, CancellationToken cancellationToken) => Task.CompletedTask;
