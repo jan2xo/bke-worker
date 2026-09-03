@@ -11,16 +11,13 @@ public sealed class WorkerLoop(
     private const string LiveChatGptRequiresCdp = "LIVE_CHATGPT_REQUIRES_CDP_ATTACH";
     private const string CdpMustBeLoopback = "BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK";
     private const string OverrideUrlInvalid = "CHATGPT_OVERRIDE_URL_INVALID";
+    private const string TargetAmbiguous = "CHATGPT_TARGET_AMBIGUOUS";
+    private const string TargetIncomplete = "CHATGPT_TARGET_INCOMPLETE";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(target.NotionPageId);
-        if (!target.UsesOverrideLink)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(target.Project);
-            ArgumentException.ThrowIfNullOrWhiteSpace(target.Conversation);
-        }
 
         await _mutex.WaitAsync(cancellationToken);
         try
@@ -64,6 +61,29 @@ public sealed class WorkerLoop(
                     ExecutionSurfaceMismatch);
                 await stateStore.Save(blocked, cancellationToken);
                 return new(blocked.State, false, false, ExecutionSurfaceMismatch);
+            }
+
+            // Resolve target mode before authentication/Notion so malformed explicit target
+            // configuration cannot mutate loop state or reconcile a checklist. New Chat is valid
+            // only when no explicit Project+Chat or Override Link was selected.
+            try
+            {
+                _ = target.ResolveContextTarget();
+            }
+            catch (Exception ex) when (
+                ex.Message.Contains(TargetAmbiguous, StringComparison.Ordinal) ||
+                ex.Message.Contains(TargetIncomplete, StringComparison.Ordinal))
+            {
+                var blocked = new WorkerSnapshot(
+                    WorkerRuntimeState.BLOCKED,
+                    target,
+                    null,
+                    existing.LastDispatchAt,
+                    existing.LastGitHubDeliveryId,
+                    existing.LastReconciliationAt,
+                    ex.Message);
+                await stateStore.Save(blocked, cancellationToken);
+                return new(blocked.State, false, false, ex.Message);
             }
 
             // GUARD: authentication is checked before Notion reconciliation or any engineering movement.
@@ -310,6 +330,8 @@ public sealed class WorkerLoop(
                       failure.Contains("CONTEXT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal) ||
                       failure.Contains(OverrideUrlInvalid, StringComparison.Ordinal) ||
+                      failure.Contains(TargetAmbiguous, StringComparison.Ordinal) ||
+                      failure.Contains(TargetIncomplete, StringComparison.Ordinal) ||
                       failure.Contains(ExecutionSurfaceMismatch, StringComparison.Ordinal) ||
                       failure.Contains(LiveChatGptRequiresCdp, StringComparison.Ordinal) ||
                       failure.Contains(CdpMustBeLoopback, StringComparison.Ordinal);
