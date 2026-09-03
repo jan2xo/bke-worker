@@ -13,7 +13,8 @@ public sealed record ChatGptAdapterProbeResult(
     bool CanSendNextTurn,
     string? CurrentUrl,
     string? Failure,
-    DateTimeOffset CheckedAt);
+    DateTimeOffset CheckedAt,
+    string? OverrideUrl = null);
 
 public sealed class ChatGPTWebDriver(
     ChromiumHost host,
@@ -22,6 +23,7 @@ public sealed class ChatGPTWebDriver(
     ComposerDriver composer) : IChatGPTDriver
 {
     private const string ExecutionSurfaceMismatch = "CHATGPT_EXECUTION_SURFACE_MISMATCH";
+    private const string OverrideUrlInvalid = "CHATGPT_OVERRIDE_URL_INVALID";
     private ReasoningProfile _compatibilityReasoning = ReasoningProfile.HIGH;
 
     public async Task Launch(CancellationToken cancellationToken)
@@ -36,14 +38,34 @@ public sealed class ChatGPTWebDriver(
         await ThrowIfAuthenticationRequired(page, cancellationToken);
     }
 
-    public async Task<ChatGptAdapterProbeResult> ProbeExactContext(
+    public Task<ChatGptAdapterProbeResult> ProbeExactContext(
         string project,
         string conversation,
+        CancellationToken cancellationToken) =>
+        ProbeTarget(
+            ContextTarget.ProjectChat(project, conversation, ChatGptExecutionSurface.Chat),
+            project,
+            conversation,
+            null,
+            cancellationToken);
+
+    public Task<ChatGptAdapterProbeResult> ProbeOverrideLink(
+        string overrideUrl,
+        CancellationToken cancellationToken) =>
+        ProbeTarget(
+            ContextTarget.OverrideLink(overrideUrl, ChatGptExecutionSurface.Chat),
+            string.Empty,
+            string.Empty,
+            overrideUrl,
+            cancellationToken);
+
+    private async Task<ChatGptAdapterProbeResult> ProbeTarget(
+        ContextTarget target,
+        string project,
+        string conversation,
+        string? overrideUrl,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(project);
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversation);
-
         string? currentUrl = null;
         var checkedAt = DateTimeOffset.UtcNow;
         try
@@ -51,9 +73,7 @@ public sealed class ChatGPTWebDriver(
             await Launch(cancellationToken);
             currentUrl = (await host.GetPage(cancellationToken)).Url;
 
-            await OpenContext(
-                ContextTarget.ProjectChat(project, conversation, ChatGptExecutionSurface.Chat),
-                cancellationToken);
+            await OpenContext(target, cancellationToken);
 
             var page = await host.GetPage(cancellationToken);
             currentUrl = page.Url;
@@ -73,7 +93,8 @@ public sealed class ChatGPTWebDriver(
                 CanSendNextTurn: composerState.CanSendNextTurn,
                 CurrentUrl: currentUrl,
                 Failure: null,
-                CheckedAt: checkedAt);
+                CheckedAt: checkedAt,
+                OverrideUrl: overrideUrl);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -91,7 +112,8 @@ public sealed class ChatGPTWebDriver(
                 CanSendNextTurn: false,
                 CurrentUrl: currentUrl,
                 Failure: ex.Message,
-                CheckedAt: checkedAt);
+                CheckedAt: checkedAt,
+                OverrideUrl: overrideUrl);
         }
     }
 
@@ -127,6 +149,12 @@ public sealed class ChatGPTWebDriver(
         // Work is a distinct agentic surface and must never be silently substituted.
         if (target.Surface != ChatGptExecutionSurface.Chat)
             throw new InvalidOperationException(ExecutionSurfaceMismatch);
+
+        if (target.Type == ContextTargetType.OverrideLink)
+        {
+            await OpenOverrideLink(target.OverrideUrl, cancellationToken);
+            return;
+        }
 
         if (target.Type != ContextTargetType.ProjectChat ||
             string.IsNullOrWhiteSpace(target.Project) ||
@@ -190,12 +218,97 @@ public sealed class ChatGPTWebDriver(
     public Task<string?> GetLatestResponse(CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
 
+    private async Task OpenOverrideLink(string? overrideUrl, CancellationToken cancellationToken)
+    {
+        if (!TryParseConversationOverride(overrideUrl, out var targetUri, out var conversationId))
+            throw new InvalidOperationException(OverrideUrlInvalid);
+
+        await Launch(cancellationToken);
+        var page = await host.GetPage(cancellationToken);
+        try
+        {
+            await page.GotoAsync(
+                targetUri.AbsoluteUri,
+                new()
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 15_000
+                });
+        }
+        catch (PlaywrightException)
+        {
+            throw new InvalidOperationException("CONTEXT_NOT_FOUND");
+        }
+
+        await ThrowIfAuthenticationRequired(page, cancellationToken);
+
+        if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var landed) ||
+            !IsChatGptHost(landed) ||
+            !ContainsConversationId(landed, conversationId))
+        {
+            throw new InvalidOperationException("CONTEXT_NOT_FOUND");
+        }
+    }
+
     private async Task ResetUi(IPage page, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         await page.GotoAsync(host.Options.ChatGptBaseUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await ThrowIfAuthenticationRequired(page, cancellationToken);
     }
+
+    private static bool TryParseConversationOverride(
+        string? value,
+        out Uri uri,
+        out string conversationId)
+    {
+        uri = null!;
+        conversationId = string.Empty;
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var parsed) ||
+            !string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !IsChatGptHost(parsed))
+        {
+            return false;
+        }
+
+        var segments = parsed.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            if (!string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (string.IsNullOrWhiteSpace(segments[index + 1]))
+                return false;
+
+            conversationId = segments[index + 1];
+            uri = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsConversationId(Uri uri, string conversationId)
+    {
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            if (string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(segments[index + 1], conversationId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsChatGptHost(Uri uri) =>
+        string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(uri.Host, "www.chatgpt.com", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSameOrigin(Uri left, Uri right) =>
         string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
