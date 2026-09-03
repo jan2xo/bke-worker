@@ -72,6 +72,7 @@ bash scripts/verify-live-host.sh
 
 echo "Starting BKE Worker in live CDP-attach mode."
 echo "target: $target_mode"
+echo "target rule: Project+Chat OR Override Link; neither means New Chat. No cross-target fallback."
 echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block all further movement."
 
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
