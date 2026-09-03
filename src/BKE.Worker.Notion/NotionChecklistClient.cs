@@ -12,6 +12,11 @@ public sealed record NotionChecklistTask(
     bool Checked,
     bool HasChildren);
 
+public sealed record NotionExecutionTarget(
+    string Project,
+    string Chat,
+    string? OverrideUrl);
+
 public interface INotionChecklistClient
 {
     Task<IReadOnlyList<NotionPageSummary>> GetSharedPages(CancellationToken cancellationToken);
@@ -20,11 +25,16 @@ public interface INotionChecklistClient
         string pageIdOrUrl,
         bool includeChecked,
         CancellationToken cancellationToken);
+
+    Task<NotionExecutionTarget> GetExecutionTarget(
+        string pageIdOrUrl,
+        CancellationToken cancellationToken);
 }
 
 public sealed class NotionChecklistClient : INotionChecklistClient
 {
     public const string ApiVersion = "2026-03-11";
+    public const string TargetHeader = "[BKE WORKER TARGET]";
 
     private readonly HttpClient _http;
 
@@ -111,6 +121,58 @@ public sealed class NotionChecklistClient : INotionChecklistClient
         return tasks;
     }
 
+    public async Task<NotionExecutionTarget> GetExecutionTarget(
+        string pageIdOrUrl,
+        CancellationToken cancellationToken)
+    {
+        var pageId = NormalizeNotionId(pageIdOrUrl);
+        var targetBlocks = new List<string>();
+        string? cursor = null;
+
+        do
+        {
+            var path = $"v1/blocks/{Uri.EscapeDataString(pageId)}/children?page_size=100";
+            if (!string.IsNullOrWhiteSpace(cursor))
+                path += $"&start_cursor={Uri.EscapeDataString(cursor)}";
+
+            using var response = await _http.GetAsync(path, cancellationToken);
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
+
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            foreach (var block in root.GetProperty("results").EnumerateArray())
+            {
+                if (!block.TryGetProperty("type", out var typeProperty))
+                    continue;
+
+                var type = typeProperty.GetString();
+                if (type is not ("callout" or "paragraph" or "code"))
+                    continue;
+                if (!block.TryGetProperty(type!, out var body))
+                    continue;
+
+                var text = ReadPlainText(body).Trim();
+                if (text.StartsWith(TargetHeader, StringComparison.Ordinal))
+                    targetBlocks.Add(text);
+            }
+
+            cursor = root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
+                && root.TryGetProperty("next_cursor", out var nextCursor)
+                ? nextCursor.GetString()
+                : null;
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+
+        if (targetBlocks.Count == 0)
+            return new NotionExecutionTarget(string.Empty, string.Empty, null);
+        if (targetBlocks.Count > 1)
+            throw new InvalidOperationException("NOTION_TARGET_BLOCK_AMBIGUOUS");
+
+        return ParseExecutionTarget(targetBlocks[0]);
+    }
+
     private async Task ReadChildren(
         string blockId,
         bool includeChecked,
@@ -161,6 +223,42 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                 : null;
         }
         while (!string.IsNullOrWhiteSpace(cursor));
+    }
+
+    private static NotionExecutionTarget ParseExecutionTarget(string text)
+    {
+        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n');
+        if (lines.Length == 0 || !string.Equals(lines[0].Trim(), TargetHeader, StringComparison.Ordinal))
+            throw new InvalidOperationException("NOTION_TARGET_BLOCK_INVALID");
+
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 1; index < lines.Length; index++)
+        {
+            var line = lines[index].Trim();
+            if (line.Length == 0)
+                continue;
+
+            var separator = line.IndexOf('=');
+            if (separator <= 0)
+                throw new InvalidOperationException("NOTION_TARGET_BLOCK_INVALID");
+
+            var key = line[..separator].Trim();
+            var value = line[(separator + 1)..].Trim();
+            if (key is not ("PROJECT" or "CHAT" or "OVERRIDE_URL"))
+                throw new InvalidOperationException("NOTION_TARGET_BLOCK_INVALID");
+            if (!values.TryAdd(key, value))
+                throw new InvalidOperationException("NOTION_TARGET_BLOCK_INVALID");
+        }
+
+        values.TryGetValue("PROJECT", out var project);
+        values.TryGetValue("CHAT", out var chat);
+        values.TryGetValue("OVERRIDE_URL", out var overrideUrl);
+
+        return new NotionExecutionTarget(
+            project ?? string.Empty,
+            chat ?? string.Empty,
+            string.IsNullOrWhiteSpace(overrideUrl) ? null : overrideUrl);
     }
 
     private static string ReadPageTitle(JsonElement page)
