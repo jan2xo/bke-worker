@@ -66,9 +66,18 @@ public sealed class ProjectNavigator
         }
 
         // Controlled fixtures from the earlier certification phases can expose the exact
-        // project directly or behind a semantic Projects control. Preserve that behavior
-        // independently from the current live chatgpt.com adapter.
+        // project directly, behind a collapsed semantic sidebar, or behind a Projects control.
+        // Preserve those paths independently from the current live chatgpt.com adapter.
         var visible = await FindExactProject(page, project, cancellationToken);
+        if (visible is not null)
+        {
+            await visible.ClickAsync();
+            return;
+        }
+
+        await EnsureControlledSidebarOpen(page, cancellationToken);
+
+        visible = await FindExactProject(page, project, cancellationToken);
         if (visible is not null)
         {
             await visible.ClickAsync();
@@ -140,6 +149,34 @@ public sealed class ProjectNavigator
         }
 
         return null;
+    }
+
+    private static async Task EnsureControlledSidebarOpen(
+        IPage page,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var label in new[] { "Open sidebar", "Show sidebar", "Open navigation", "Show navigation" })
+        {
+            var opener = page.GetByRole(
+                AriaRole.Button,
+                new() { Name = label, Exact = true });
+            var visible = await FindFirstVisible(opener, cancellationToken);
+            if (visible is null)
+                continue;
+
+            try
+            {
+                await visible.ClickAsync(new() { Timeout = 1500 });
+            }
+            catch (PlaywrightException)
+            {
+                // Controlled fixtures fail closed later if the target remains unavailable.
+            }
+
+            return;
+        }
     }
 
     private static async Task<bool> OpenControlledProjectsIndex(
