@@ -38,42 +38,15 @@ for name in "${required[@]}"; do
   fi
 done
 
-present_value() {
-  [[ -n "${1:-}" && "$1" != "REPLACE_ME" ]]
-}
-
-has_override=false
-has_project=false
-has_conversation=false
-present_value "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && has_override=true
-present_value "${BKE_WORKER_CHATGPT_PROJECT:-}" && has_project=true
-present_value "${BKE_WORKER_CHATGPT_CONVERSATION:-}" && has_conversation=true
-
-if [[ "$has_override" == true && ( "$has_project" == true || "$has_conversation" == true ) ]]; then
-  echo "ERROR: ChatGPT target is ambiguous. Configure Override Link OR Project + Conversation, not both." >&2
-  exit 1
-fi
-
-if [[ "$has_project" != "$has_conversation" ]]; then
-  echo "ERROR: ChatGPT Project and Conversation must be configured together." >&2
-  exit 1
-fi
-
-if [[ "$has_override" == true ]]; then
-  target_mode="override-link"
-elif [[ "$has_project" == true ]]; then
-  target_mode="project-chat"
-else
-  target_mode="new-chat"
-fi
-
 cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting BKE Worker in live CDP-attach mode."
-echo "target: $target_mode"
-echo "target rule: Project+Chat OR Override Link; neither means New Chat. No cross-target fallback."
-echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block all further movement."
+echo "target authority: Notion execution page"
+echo "target block: [BKE WORKER TARGET]"
+echo "target rule: Project+Chat OR Override Link; no explicit target means New Chat. No cross-target fallback."
+echo "task truth: ordered Notion todo checkboxes"
+echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block before the first Notion read."
 
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
   if [[ ! -f "$BKE_WORKER_SERVER_DLL" ]]; then
