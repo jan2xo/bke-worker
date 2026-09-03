@@ -115,12 +115,7 @@ public sealed record ChecklistGate(string Id, string Text, bool Checked);
 public sealed record ChecklistReconciliation(
     ChecklistGate? CurrentGate,
     ChecklistGate? FirstUncheckedGate,
-    bool ChecklistAllComplete)
-{
-    // Hard scope fence: one autonomous loop owns one Notion task. Once that exact
-    // task is checked, the loop terminates even if later unchecked tasks still exist.
-    public bool AllComplete => ChecklistAllComplete || CurrentGate?.Checked == true;
-}
+    bool AllComplete);
 
 public sealed record WorkerSnapshot(
     WorkerRuntimeState State,
