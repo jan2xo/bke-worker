@@ -156,10 +156,25 @@ public sealed class ChatGPTWebDriver(
 
     public async Task OpenContext(ContextTarget target, CancellationToken cancellationToken)
     {
-        // This driver is specifically the persistent Chat conversation adapter.
-        // Work is a distinct agentic surface and must never be silently substituted.
+        // Target validity is established before any browser access. A malformed explicit
+        // target must fail closed without navigation, even when URL-memory optimization is active.
         if (target.Surface != ChatGptExecutionSurface.Chat)
             throw new InvalidOperationException(ExecutionSurfaceMismatch);
+
+        if (target.Type == ContextTargetType.OverrideLink &&
+            !TryParseConversationOverride(target.OverrideUrl, out _, out _))
+        {
+            throw new InvalidOperationException(OverrideUrlInvalid);
+        }
+
+        if (target.Type == ContextTargetType.ProjectChat &&
+            (string.IsNullOrWhiteSpace(target.Project) || string.IsNullOrWhiteSpace(target.Conversation)))
+        {
+            throw new InvalidOperationException("PROJECT_CONTEXT_REQUIRED");
+        }
+
+        if (target.Type is not (ContextTargetType.NewChat or ContextTargetType.OverrideLink or ContextTargetType.ProjectChat))
+            throw new InvalidOperationException("PROJECT_CONTEXT_REQUIRED");
 
         var targetKey = BuildResolvedTargetKey(target);
         await Launch(cancellationToken);
@@ -192,20 +207,13 @@ public sealed class ChatGPTWebDriver(
             return;
         }
 
-        if (target.Type != ContextTargetType.ProjectChat ||
-            string.IsNullOrWhiteSpace(target.Project) ||
-            string.IsNullOrWhiteSpace(target.Conversation))
-        {
-            throw new InvalidOperationException("PROJECT_CONTEXT_REQUIRED");
-        }
-
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var page = await host.GetPage(cancellationToken);
             try
             {
-                await projects.OpenExactProject(page, target.Project, cancellationToken);
-                await conversations.OpenExactConversation(page, target.Conversation, cancellationToken);
+                await projects.OpenExactProject(page, target.Project!, cancellationToken);
+                await conversations.OpenExactConversation(page, target.Conversation!, cancellationToken);
                 _activeResolvedTargetKey = targetKey;
                 RememberResolvedTargetUrl(targetKey, page.Url);
                 return;
