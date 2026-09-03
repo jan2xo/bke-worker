@@ -64,8 +64,38 @@ def notion_target_block():
     }
 
 
+def turn_state_sync_script():
+    # Real ChatGPT mutates the current conversation DOM when generation starts/stops.
+    # The controlled fixture must do the same now that the live adapter deliberately
+    # keeps the already-resolved conversation open instead of navigating on every wake.
+    return """
+<script>
+async function syncTurnState() {
+  try {
+    const response = await fetch('/admin/state', {cache: 'no-store'});
+    const current = await response.json();
+    let stop = document.getElementById('bke-fixture-stop');
+    if (current.busy && !stop) {
+      stop = document.createElement('button');
+      stop.id = 'bke-fixture-stop';
+      stop.type = 'button';
+      stop.textContent = 'Stop generating';
+      document.body.appendChild(stop);
+    } else if (!current.busy && stop) {
+      stop.remove();
+    }
+  } catch (_) {
+    // The fixture fails through normal browser assertions if state cannot be read.
+  }
+}
+setInterval(syncTurnState, 50);
+syncTurnState();
+</script>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "BKEPhase3Fixture/1.2"
+    server_version = "BKEPhase3Fixture/1.3"
 
     def log_message(self, fmt, *args):
         print(f"fixture: {self.address_string()} {fmt % args}", flush=True)
@@ -74,6 +104,7 @@ class Handler(BaseHTTPRequestHandler):
         data = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -106,6 +137,13 @@ class Handler(BaseHTTPRequestHandler):
     def set_flag(self, name, value):
         with state_lock:
             state[name] = value
+
+        # Busy is represented by live DOM state. Give the already-open controlled
+        # conversation enough time to observe the state transition before the admin
+        # call returns to the test driver, making busy/on and busy/off deterministic.
+        if name == "busy":
+            time.sleep(0.25)
+
         self.send_json(200, snapshot())
 
     def do_GET(self):
@@ -162,9 +200,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/projects/bke-worker/worker-engineering":
             current = snapshot()
-            stop = "<button type='button'>Stop generating</button>" if current["busy"] else ""
+            stop = "<button id='bke-fixture-stop' type='button'>Stop generating</button>" if current["busy"] else ""
+            sync = turn_state_sync_script()
             if not current["show_composer"]:
-                self.send_html(200, self.chat_body(f"<a href='/projects'>Projects</a>{stop}"))
+                self.send_html(200, self.chat_body(f"<a href='/projects'>Projects</a>{stop}{sync}"))
                 return
             if current["block_send"]:
                 body = f"""
@@ -174,6 +213,7 @@ class Handler(BaseHTTPRequestHandler):
 <button type='submit' aria-label='Send message'>Send</button>
 </form>
 {stop}
+{sync}
 """
             else:
                 body = f"""
@@ -192,6 +232,7 @@ async function sendPrompt() {{
   box.value = '';
 }}
 </script>
+{sync}
 """
             self.send_html(200, self.chat_body(body))
             return
