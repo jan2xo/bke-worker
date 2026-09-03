@@ -8,7 +8,9 @@ public sealed class ProjectNavigator
 {
     public async Task<IReadOnlyList<string>> ListProjects(IPage page, CancellationToken cancellationToken)
     {
-        await OpenProjectsIndex(page, cancellationToken);
+        await EnsureSidebarOpen(page, cancellationToken);
+        _ = await TryOpenProjectsIndex(page, cancellationToken);
+
         var links = await page.GetByRole(AriaRole.Link).AllTextContentsAsync();
         var buttons = await page.GetByRole(AriaRole.Button).AllTextContentsAsync();
 
@@ -22,17 +24,73 @@ public sealed class ProjectNavigator
     public async Task OpenExactProject(IPage page, string project, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(project);
-        await OpenProjectsIndex(page, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var target = page.GetByText(project, new() { Exact = true });
-        var visible = await FindFirstVisible(target, cancellationToken);
-        if (visible is null)
-            throw new ChatGptNavigationException("PROJECT_NOT_FOUND");
+        await EnsureSidebarOpen(page, cancellationToken);
 
-        await visible.ClickAsync();
+        var visible = await FindExactProject(page, project, cancellationToken);
+        if (visible is not null)
+        {
+            await visible.ClickAsync();
+            return;
+        }
+
+        if (await TryOpenProjectsIndex(page, cancellationToken))
+        {
+            visible = await FindExactProject(page, project, cancellationToken);
+            if (visible is not null)
+            {
+                await visible.ClickAsync();
+                return;
+            }
+        }
+
+        throw new ChatGptNavigationException("PROJECT_NOT_FOUND");
     }
 
-    private static async Task OpenProjectsIndex(IPage page, CancellationToken cancellationToken)
+    private static async Task EnsureSidebarOpen(IPage page, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var label in new[] { "Open sidebar", "Show sidebar", "Open navigation", "Show navigation" })
+        {
+            var opener = page.GetByRole(
+                AriaRole.Button,
+                new() { Name = label, Exact = true });
+            var visible = await FindFirstVisible(opener, cancellationToken);
+            if (visible is null)
+                continue;
+
+            await visible.ClickAsync();
+            return;
+        }
+    }
+
+    private static async Task<ILocator?> FindExactProject(
+        IPage page,
+        string project,
+        CancellationToken cancellationToken)
+    {
+        var link = page.GetByRole(
+            AriaRole.Link,
+            new() { Name = project, Exact = true });
+        var visible = await FindFirstVisible(link, cancellationToken);
+        if (visible is not null)
+            return visible;
+
+        var button = page.GetByRole(
+            AriaRole.Button,
+            new() { Name = project, Exact = true });
+        visible = await FindFirstVisible(button, cancellationToken);
+        if (visible is not null)
+            return visible;
+
+        return await FindFirstVisible(
+            page.GetByText(project, new() { Exact = true }),
+            cancellationToken);
+    }
+
+    private static async Task<bool> TryOpenProjectsIndex(IPage page, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -56,9 +114,10 @@ public sealed class ProjectNavigator
         }
 
         if (visible is null)
-            throw new ChatGptNavigationException("PROJECTS_NOT_FOUND");
+            return false;
 
         await visible.ClickAsync();
+        return true;
     }
 
     internal static async Task<ILocator?> FindFirstVisible(
