@@ -206,6 +206,12 @@ public sealed class ChatGPTWebDriver(
         IPage page,
         CancellationToken cancellationToken)
     {
+        if (Uri.TryCreate(page.Url, UriKind.Absolute, out var current) &&
+            string.Equals(current.Host, "auth.openai.com", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("CHATGPT_AUTH_REQUIRED");
+        }
+
         var login = page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true });
         if (await ProjectNavigator.FindFirstVisible(login, cancellationToken) is not null)
             throw new InvalidOperationException("CHATGPT_AUTH_REQUIRED");
