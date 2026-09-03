@@ -132,11 +132,11 @@ public sealed class ProjectNavigatorModernUiTests
                 </html>
                 """);
 
-            var projects = await new ProjectNavigator().ListProjects(
-                page,
-                CancellationToken.None);
+            await Assert.ThrowsAsync<ChatGptNavigationException>(() =>
+                new ProjectNavigator().ListProjects(
+                    page,
+                    CancellationToken.None));
 
-            Assert.Contains("Other navigation", projects);
             Assert.Null(await page.GetAttributeAsync("body", "data-sidebar-opener-clicked"));
         }
         finally
@@ -147,7 +147,7 @@ public sealed class ProjectNavigatorModernUiTests
     }
 
     [Fact]
-    public async Task Collapsed_sidebar_is_opened_semantically_before_exact_project_selection()
+    public async Task Collapsed_sidebar_is_opened_semantically_before_projects_navigation()
     {
         var profile = CreateProfileDirectory();
         var host = new ChromiumHost(new ChromiumHostOptions(
@@ -185,6 +185,78 @@ public sealed class ProjectNavigatorModernUiTests
                 "BKE Worker",
                 CancellationToken.None);
 
+            Assert.Equal(
+                "true",
+                await page.GetAttributeAsync("body", "data-project-opened"));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
+    public async Task Projects_navigation_waits_for_route_and_delayed_project_render()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: true,
+            "http://127.0.0.1:1/"));
+
+        try
+        {
+            var page = await host.GetPage(CancellationToken.None);
+            await page.RouteAsync("http://chatgpt.test/**", async route =>
+            {
+                var body = new Uri(route.Request.Url).AbsolutePath == "/projects"
+                    ? """
+                        <!doctype html>
+                        <html>
+                        <body>
+                          <script>
+                            setTimeout(() => {
+                              const project = document.createElement('a');
+                              project.href = '#';
+                              project.id = 'project';
+                              project.textContent = 'BKE Worker';
+                              project.addEventListener('click', event => {
+                                event.preventDefault();
+                                document.body.dataset.projectOpened = 'true';
+                              });
+                              document.body.appendChild(project);
+                            }, 300);
+                          </script>
+                        </body>
+                        </html>
+                        """
+                    : """
+                        <!doctype html>
+                        <html>
+                        <body>
+                          <button aria-expanded="true">Recents</button>
+                          <a href="/projects">Projects</a>
+                        </body>
+                        </html>
+                        """;
+
+                await route.FulfillAsync(new()
+                {
+                    Status = 200,
+                    ContentType = "text/html",
+                    Body = body
+                });
+            });
+
+            await page.GotoAsync("http://chatgpt.test/");
+
+            await new ProjectNavigator().OpenExactProject(
+                page,
+                "BKE Worker",
+                CancellationToken.None);
+
+            Assert.Equal("/projects", new Uri(page.Url).AbsolutePath);
             Assert.Equal(
                 "true",
                 await page.GetAttributeAsync("body", "data-project-opened"));
