@@ -26,9 +26,19 @@ public sealed class ProjectNavigator
         ArgumentException.ThrowIfNullOrWhiteSpace(project);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Current ChatGPT can render the project directly in an already-open sidebar while
+        // still exposing an "Open sidebar" control from another responsive surface. Prefer
+        // the exact project itself and do not touch the opener unless the project is absent.
+        var visible = await FindExactProject(page, project, cancellationToken);
+        if (visible is not null)
+        {
+            await visible.ClickAsync();
+            return;
+        }
+
         await EnsureSidebarOpen(page, cancellationToken);
 
-        var visible = await FindExactProject(page, project, cancellationToken);
+        visible = await FindExactProject(page, project, cancellationToken);
         if (visible is not null)
         {
             await visible.ClickAsync();
@@ -61,7 +71,19 @@ public sealed class ProjectNavigator
             if (visible is null)
                 continue;
 
-            await visible.ClickAsync();
+            try
+            {
+                // Do not let a responsive/overlapped sidebar control stall the adapter for
+                // Playwright's default 30-second action timeout. If another visible sidebar
+                // surface intercepts the click, the caller will retry exact project discovery.
+                await visible.ClickAsync(new() { Timeout = 1500 });
+            }
+            catch (PlaywrightException)
+            {
+                // The visible sidebar may already own the pointer surface. Continue with
+                // semantic discovery instead of forcing the click or bypassing actionability.
+            }
+
             return;
         }
     }
@@ -116,8 +138,15 @@ public sealed class ProjectNavigator
         if (visible is null)
             return false;
 
-        await visible.ClickAsync();
-        return true;
+        try
+        {
+            await visible.ClickAsync(new() { Timeout = 1500 });
+            return true;
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
     }
 
     internal static async Task<ILocator?> FindFirstVisible(
