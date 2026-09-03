@@ -13,6 +13,7 @@ public sealed class WorkerLoop(
     private const string OverrideUrlInvalid = "CHATGPT_OVERRIDE_URL_INVALID";
     private const string TargetAmbiguous = "CHATGPT_TARGET_AMBIGUOUS";
     private const string TargetIncomplete = "CHATGPT_TARGET_INCOMPLETE";
+    private const string WakeDeferredNotSafe = "WAKE_DEFERRED_CHATGPT_NOT_SAFE_TO_INTERRUPT";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
@@ -262,8 +263,12 @@ public sealed class WorkerLoop(
                     waiting.Target.ResolveContextTarget(),
                     cancellationToken);
 
+                // A push/recovery wake is only consumed when ChatGPT positively proves it is
+                // safe to interrupt. Busy, hydrating, missing-composer, and ambiguous UI states
+                // all defer without failing the loop. The active five-minute recovery watchdog
+                // will retry, so no additional durable WAKE_PENDING flag is required.
                 if (!await driver.CanSendNextTurn(cancellationToken))
-                    return new(waiting.State, false, false, "CHATGPT_TURN_NOT_IDLE");
+                    return new(waiting.State, false, false, WakeDeferredNotSafe);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
