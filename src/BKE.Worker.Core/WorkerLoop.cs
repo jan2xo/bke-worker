@@ -10,13 +10,17 @@ public sealed class WorkerLoop(
     private const string ExecutionSurfaceMismatch = "CHATGPT_EXECUTION_SURFACE_MISMATCH";
     private const string LiveChatGptRequiresCdp = "LIVE_CHATGPT_REQUIRES_CDP_ATTACH";
     private const string CdpMustBeLoopback = "BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK";
+    private const string OverrideUrlInvalid = "CHATGPT_OVERRIDE_URL_INVALID";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target.Project);
-        ArgumentException.ThrowIfNullOrWhiteSpace(target.Conversation);
         ArgumentException.ThrowIfNullOrWhiteSpace(target.NotionPageId);
+        if (!target.UsesOverrideLink)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(target.Project);
+            ArgumentException.ThrowIfNullOrWhiteSpace(target.Conversation);
+        }
 
         await _mutex.WaitAsync(cancellationToken);
         try
@@ -235,10 +239,7 @@ public sealed class WorkerLoop(
             try
             {
                 await driver.OpenContext(
-                    ContextTarget.ProjectChat(
-                        waiting.Target.Project,
-                        waiting.Target.Conversation,
-                        waiting.Target.Surface),
+                    waiting.Target.ResolveContextTarget(),
                     cancellationToken);
 
                 if (!await driver.CanSendNextTurn(cancellationToken))
@@ -276,7 +277,7 @@ public sealed class WorkerLoop(
             var target = snapshot.Target ?? throw new InvalidOperationException("ENGINEERING_TARGET_REQUIRED");
             await driver.Launch(cancellationToken);
             await driver.OpenContext(
-                ContextTarget.ProjectChat(target.Project, target.Conversation, target.Surface),
+                target.ResolveContextTarget(),
                 cancellationToken);
             await driver.Send(instruction, cancellationToken);
 
@@ -308,6 +309,7 @@ public sealed class WorkerLoop(
         var blocked = failure.Contains("PROJECT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CONTEXT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal) ||
+                      failure.Contains(OverrideUrlInvalid, StringComparison.Ordinal) ||
                       failure.Contains(ExecutionSurfaceMismatch, StringComparison.Ordinal) ||
                       failure.Contains(LiveChatGptRequiresCdp, StringComparison.Ordinal) ||
                       failure.Contains(CdpMustBeLoopback, StringComparison.Ordinal);
