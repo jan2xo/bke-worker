@@ -95,6 +95,9 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         {
             notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
             chatGptConfigured = settings.ChatGptTargetConfigured,
+            chatGptSemanticTargetConfigured = settings.ChatGptSemanticTargetConfigured,
+            chatGptOverrideConfigured = settings.ChatGptOverrideConfigured,
+            chatGptTargetMode = settings.ChatGptOverrideConfigured ? "override-link" : "project-chat",
             githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret),
             browserCdpConfigured = settings.BrowserCdpConfigured
         },
@@ -138,7 +141,7 @@ app.MapPost("/control/chatgpt/probe", async (
     if (!settings.ChatGptTargetConfigured)
         return Results.Problem(
             title: "ChatGPT target is not configured",
-            detail: "Configure the exact ChatGPT Project and Conversation before probing the live adapter.",
+            detail: "Configure Project + Conversation, or a validated ChatGPT conversation override URL, before probing the live adapter.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     var snapshot = await loop.GetState(cancellationToken);
@@ -152,10 +155,12 @@ app.MapPost("/control/chatgpt/probe", async (
             statusCode: StatusCodes.Status409Conflict);
     }
 
-    var result = await driver.ProbeExactContext(
-        settings.ChatGptProject,
-        settings.ChatGptConversation,
-        cancellationToken);
+    var result = settings.ChatGptOverrideConfigured
+        ? await driver.ProbeOverrideLink(settings.ChatGptOverrideUrl, cancellationToken)
+        : await driver.ProbeExactContext(
+            settings.ChatGptProject,
+            settings.ChatGptConversation,
+            cancellationToken);
 
     return result.Compatible
         ? Results.Ok(result)
@@ -175,6 +180,7 @@ public sealed record WorkerServerSettings(
     string NotionBaseUrl,
     string ChatGptProject,
     string ChatGptConversation,
+    string ChatGptOverrideUrl,
     string ChatGptBaseUrl,
     string GitHubWebhookSecret,
     string ChatGptProfileDirectory,
@@ -185,9 +191,15 @@ public sealed record WorkerServerSettings(
     TimeSpan RecoveryInterval,
     TimeSpan MinimumDispatchInterval)
 {
-    public bool ChatGptTargetConfigured =>
+    public bool ChatGptSemanticTargetConfigured =>
         !string.IsNullOrWhiteSpace(ChatGptProject) &&
         !string.IsNullOrWhiteSpace(ChatGptConversation);
+
+    public bool ChatGptOverrideConfigured =>
+        !string.IsNullOrWhiteSpace(ChatGptOverrideUrl);
+
+    public bool ChatGptTargetConfigured =>
+        ChatGptOverrideConfigured || ChatGptSemanticTargetConfigured;
 
     public bool LiveChatGptBaseUrl =>
         Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
@@ -208,10 +220,13 @@ public sealed record WorkerServerSettings(
         BrowserRuntimeConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
+    // OverrideUrl is intentionally passed even when Project/Conversation are also configured.
+    // Core target resolution gives the override deterministic precedence.
     public EngineeringTarget Target => new(
         ChatGptProject,
         ChatGptConversation,
-        NotionPageId);
+        NotionPageId,
+        OverrideUrl: ChatGptOverrideUrl);
 
     public static WorkerServerSettings FromConfiguration(IConfiguration configuration)
     {
@@ -221,6 +236,7 @@ public sealed record WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_PROJECT"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_CONVERSATION"] ?? string.Empty,
+            configuration["BKE_WORKER_CHATGPT_OVERRIDE_URL"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
             configuration["BKE_WORKER_GITHUB_WEBHOOK_SECRET"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
@@ -313,7 +329,7 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target (Project + Conversation or override URL), loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }
