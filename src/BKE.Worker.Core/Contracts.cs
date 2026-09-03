@@ -10,7 +10,10 @@ public sealed record ContextTarget(
     ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
     string? OverrideUrl = null)
 {
-    public static ContextTarget NewChat() => new(ContextTargetType.NewChat);
+    public static ContextTarget NewChat(
+        ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
+        new(ContextTargetType.NewChat, Surface: surface);
+
     public static ContextTarget ProjectChat(
         string project,
         string conversation,
@@ -81,9 +84,28 @@ public sealed record EngineeringTarget(
 {
     public bool UsesOverrideLink => !string.IsNullOrWhiteSpace(OverrideUrl);
 
-    public ContextTarget ResolveContextTarget() => UsesOverrideLink
-        ? ContextTarget.OverrideLink(OverrideUrl!, Surface)
-        : ContextTarget.ProjectChat(Project, Conversation, Surface);
+    public bool HasProject => !string.IsNullOrWhiteSpace(Project);
+    public bool HasConversation => !string.IsNullOrWhiteSpace(Conversation);
+    public bool HasProjectChat => HasProject && HasConversation;
+    public bool HasPartialProjectChat => HasProject != HasConversation;
+    public bool UsesNewChat => !UsesOverrideLink && !HasProject && !HasConversation;
+
+    public ContextTarget ResolveContextTarget()
+    {
+        // The modes are mutually exclusive for routing purposes. An override never falls
+        // back to Project + Chat. Project + Chat never falls back to an override.
+        // The only implicit/default target is New Chat when no explicit target was selected.
+        if (UsesOverrideLink)
+            return ContextTarget.OverrideLink(OverrideUrl!, Surface);
+
+        if (HasProjectChat)
+            return ContextTarget.ProjectChat(Project, Conversation, Surface);
+
+        if (UsesNewChat)
+            return ContextTarget.NewChat(Surface);
+
+        throw new InvalidOperationException("CHATGPT_TARGET_INCOMPLETE");
+    }
 }
 
 public sealed record ChecklistGate(string Id, string Text, bool Checked);
