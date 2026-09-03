@@ -237,6 +237,13 @@ public sealed class ProjectNavigator
                 Timeout = ProjectRenderTimeoutMs
             });
         }
+        catch (TimeoutException)
+        {
+            // Playwright .NET maps locator/API timeouts to System.TimeoutException.
+            // Missing project remains a semantic navigation failure so the driver can
+            // perform its one reset/retry and WorkerLoop can fail closed as BLOCKED.
+            throw new ChatGptNavigationException("PROJECT_NOT_FOUND");
+        }
         catch (PlaywrightException)
         {
             throw new ChatGptNavigationException("PROJECT_NOT_FOUND");
