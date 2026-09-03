@@ -14,6 +14,8 @@ public sealed class ComposerDriver
     private static readonly Regex SendPattern = new("^send", RegexOptions.IgnoreCase);
     private static readonly TimeSpan DefaultReadyTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StableReadyWindow = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan AutonomousStableIdleWindow = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan AutonomousReadyTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan ReadyPollInterval = TimeSpan.FromMilliseconds(100);
 
     public async Task<ComposerProbe> Probe(IPage page, CancellationToken cancellationToken)
@@ -32,8 +34,23 @@ public sealed class ComposerDriver
             composerAvailable && !turnBusy);
     }
 
-    public async Task<bool> CanSendNextTurn(IPage page, CancellationToken cancellationToken) =>
-        (await Probe(page, cancellationToken)).CanSendNextTurn;
+    public async Task<bool> CanSendNextTurn(IPage page, CancellationToken cancellationToken)
+    {
+        // Autonomous continuation uses a positive safety proof instead of trying to classify
+        // every transient ChatGPT state. Busy, hydrating, missing-composer, or otherwise
+        // ambiguous states all fail closed immediately. Only a continuously sendable composer
+        // for the full stable-idle window is considered safe to interrupt.
+        var initial = await Probe(page, cancellationToken);
+        if (!initial.CanSendNextTurn)
+            return false;
+
+        var ready = await WaitForStableComposer(
+            page,
+            AutonomousReadyTimeout,
+            AutonomousStableIdleWindow,
+            cancellationToken);
+        return ready is not null;
+    }
 
     public async Task<bool> WaitUntilCanSendNextTurn(
         IPage page,
@@ -43,6 +60,7 @@ public sealed class ComposerDriver
         var ready = await WaitForStableComposer(
             page,
             timeout ?? DefaultReadyTimeout,
+            StableReadyWindow,
             cancellationToken);
         return ready is not null;
     }
@@ -51,7 +69,11 @@ public sealed class ComposerDriver
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instruction);
 
-        var composer = await WaitForStableComposer(page, DefaultReadyTimeout, cancellationToken);
+        var composer = await WaitForStableComposer(
+            page,
+            DefaultReadyTimeout,
+            StableReadyWindow,
+            cancellationToken);
         if (composer is null)
         {
             var state = await Probe(page, cancellationToken);
@@ -77,6 +99,7 @@ public sealed class ComposerDriver
     private static async Task<ILocator?> WaitForStableComposer(
         IPage page,
         TimeSpan timeout,
+        TimeSpan stableWindow,
         CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -99,7 +122,7 @@ public sealed class ComposerDriver
             else
             {
                 readySince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - readySince >= StableReadyWindow)
+                if (DateTimeOffset.UtcNow - readySince >= stableWindow)
                     return composer;
             }
 
