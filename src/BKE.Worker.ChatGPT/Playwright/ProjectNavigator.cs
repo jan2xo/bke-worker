@@ -71,21 +71,45 @@ public sealed class ProjectNavigator
             if (visible is null)
                 continue;
 
+            // aria-controls is the semantic relationship between this control and the surface
+            // it claims to open. Current ChatGPT can expose an "Open sidebar" button even while
+            // that controlled surface is already visible and intercepting pointer events.
+            // In that state, the sidebar is already usable and the opener must not be clicked.
+            if (await IsControlledSurfaceVisible(page, visible, cancellationToken))
+                return;
+
             try
             {
-                // Do not let a responsive/overlapped sidebar control stall the adapter for
-                // Playwright's default 30-second action timeout. If another visible sidebar
-                // surface intercepts the click, the caller will retry exact project discovery.
+                // Bound actionability waits. If another responsive surface intercepts the click,
+                // the caller will retry semantic project discovery instead of force-clicking.
                 await visible.ClickAsync(new() { Timeout = 1500 });
             }
             catch (PlaywrightException)
             {
-                // The visible sidebar may already own the pointer surface. Continue with
-                // semantic discovery instead of forcing the click or bypassing actionability.
+                // Do not bypass actionability or force the click. The caller will continue with
+                // exact semantic discovery and fail closed if the project is still unavailable.
             }
 
             return;
         }
+    }
+
+    private static async Task<bool> IsControlledSurfaceVisible(
+        IPage page,
+        ILocator control,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var controlledId = await control.GetAttributeAsync("aria-controls");
+        if (string.IsNullOrWhiteSpace(controlledId))
+            return false;
+
+        var escapedId = controlledId
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+        var controlledSurface = page.Locator($"[id=\"{escapedId}\"]");
+        return await FindFirstVisible(controlledSurface, cancellationToken) is not null;
     }
 
     private static async Task<ILocator?> FindExactProject(
