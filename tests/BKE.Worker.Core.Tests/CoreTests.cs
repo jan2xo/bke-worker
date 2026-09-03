@@ -68,7 +68,32 @@ public class CoreTests
         Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", result.Message);
         Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", store.Snapshot.Failure);
         Assert.Equal(0, checklist.Calls);
+        Assert.Equal(0, driver.LaunchCalls);
         Assert.Empty(driver.Sent);
+    }
+
+    [Fact]
+    public async Task Authentication_required_fails_closed_before_notion_or_send()
+    {
+        var driver = new FakeDriver
+        {
+            LaunchFailure = new InvalidOperationException("CHATGPT_AUTH_REQUIRED")
+        };
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+
+        var result = await loop.Start(Target(), CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", result.Message);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", store.Snapshot.Failure);
+        Assert.Equal(0, checklist.Calls);
+        Assert.Empty(driver.Sent);
+        Assert.Equal(1, driver.LaunchCalls);
     }
 
     [Theory]
@@ -122,6 +147,32 @@ public class CoreTests
         Assert.True(result.PromptSent);
         Assert.Equal(2, driver.Sent.Count);
         Assert.Equal("delivery-1", store.Snapshot.LastGitHubDeliveryId);
+    }
+
+    [Fact]
+    public async Task Authentication_required_on_wake_blocks_before_notion_reconciliation()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        await loop.Start(Target(), CancellationToken.None);
+        Assert.Equal(1, checklist.Calls);
+        Assert.Single(driver.Sent);
+
+        driver.LaunchFailure = new InvalidOperationException("CHATGPT_AUTH_REQUIRED");
+
+        var result = await loop.Wake(WorkerWakeReason.GitHubPush, "delivery-auth", CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", result.Message);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", store.Snapshot.Failure);
+        Assert.Equal("delivery-auth", store.Snapshot.LastGitHubDeliveryId);
+        Assert.Equal(1, checklist.Calls);
+        Assert.Single(driver.Sent);
     }
 
     [Fact]
@@ -222,9 +273,18 @@ public class CoreTests
     {
         public List<string> Sent { get; } = [];
         public int ExecutionStateCalls { get; private set; }
+        public int LaunchCalls { get; private set; }
         public bool CanSend { get; set; } = true;
+        public Exception? LaunchFailure { get; set; }
 
-        public Task Launch(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task Launch(CancellationToken cancellationToken)
+        {
+            LaunchCalls++;
+            return LaunchFailure is null
+                ? Task.CompletedTask
+                : Task.FromException(LaunchFailure);
+        }
+
         public Task<IReadOnlyList<ContextTarget>> GetAvailableContexts(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContextTarget>>([]);
         public Task OpenContext(ContextTarget target, CancellationToken cancellationToken) => Task.CompletedTask;
