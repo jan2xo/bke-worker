@@ -24,7 +24,8 @@ builder.Services.AddSingleton<ComposerDriver>();
 builder.Services.AddSingleton(new ChromiumHostOptions(
     settings.ChatGptProfileDirectory,
     settings.Headless,
-    settings.ChatGptBaseUrl));
+    settings.ChatGptBaseUrl,
+    settings.BrowserCdpEndpoint));
 builder.Services.AddSingleton<ChromiumHost>();
 builder.Services.AddSingleton<ChatGPTWebDriver>();
 builder.Services.AddSingleton<IChatGPTDriver>(services => services.GetRequiredService<ChatGPTWebDriver>());
@@ -94,7 +95,13 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         {
             notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
             chatGptConfigured = settings.ChatGptTargetConfigured,
-            githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret)
+            githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret),
+            browserCdpConfigured = settings.BrowserCdpConfigured
+        },
+        browser = new
+        {
+            mode = settings.BrowserCdpConfigured ? "cdp-attach" : "playwright-launch",
+            liveChatGptRequiresCdp = settings.LiveChatGptBaseUrl
         },
         browserProfileDirectory = settings.ChatGptProfileDirectory,
         chatGptBaseUrl = settings.ChatGptBaseUrl
@@ -108,7 +115,7 @@ app.MapPost("/control/reconcile", async (
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Configure Notion, ChatGPT target, and GitHub webhook secret before manual reconciliation.",
+            detail: "Configure Notion, ChatGPT target, browser runtime, and GitHub webhook secret before manual reconciliation.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     await wakeSink.Enqueue(
@@ -172,6 +179,7 @@ public sealed record WorkerServerSettings(
     string GitHubWebhookSecret,
     string ChatGptProfileDirectory,
     string StateFile,
+    string BrowserCdpEndpoint,
     bool Headless,
     TimeSpan WebhookDebounce,
     TimeSpan RecoveryInterval,
@@ -181,10 +189,23 @@ public sealed record WorkerServerSettings(
         !string.IsNullOrWhiteSpace(ChatGptProject) &&
         !string.IsNullOrWhiteSpace(ChatGptConversation);
 
+    public bool LiveChatGptBaseUrl =>
+        Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
+        string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase);
+
+    public bool BrowserCdpConfigured =>
+        !string.IsNullOrWhiteSpace(BrowserCdpEndpoint) &&
+        Uri.TryCreate(BrowserCdpEndpoint, UriKind.Absolute, out var uri) &&
+        uri.IsLoopback;
+
+    public bool BrowserRuntimeConfigured =>
+        !LiveChatGptBaseUrl || BrowserCdpConfigured;
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(NotionToken) &&
         !string.IsNullOrWhiteSpace(NotionPageId) &&
         ChatGptTargetConfigured &&
+        BrowserRuntimeConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
     public EngineeringTarget Target => new(
@@ -204,6 +225,7 @@ public sealed record WorkerServerSettings(
             configuration["BKE_WORKER_GITHUB_WEBHOOK_SECRET"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
             configuration["BKE_WORKER_STATE_FILE"] ?? "/var/lib/bke-worker/state/worker.json",
+            configuration["BKE_WORKER_BROWSER_CDP_ENDPOINT"] ?? string.Empty,
             ParseBool(configuration["BKE_WORKER_HEADLESS"], defaultValue: true),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS"], 10)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_RECOVERY_SECONDS"], 300)),
@@ -291,7 +313,7 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target, and GitHub webhook environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }
