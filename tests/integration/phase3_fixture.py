@@ -64,38 +64,68 @@ def notion_target_block():
     }
 
 
-def turn_state_sync_script():
-    # Real ChatGPT mutates the current conversation DOM when generation starts/stops.
-    # The controlled fixture must do the same now that the live adapter deliberately
-    # keeps the already-resolved conversation open instead of navigating on every wake.
+def client_state_sync_script():
+    # Real ChatGPT is an SPA: turn state, composer readiness, authentication prompts,
+    # and target availability can change while the browser remains on the same URL.
+    # This controlled surface mirrors those same-page transitions so the production
+    # URL-memory guard is tested without forcing artificial navigation on every probe.
     return """
 <script>
-async function syncTurnState() {
+async function syncFixtureState() {
   try {
     const response = await fetch('/admin/state', {cache: 'no-store'});
     const current = await response.json();
+    const path = window.location.pathname;
+
+    let login = document.getElementById('bke-fixture-login');
+    if (current.auth_required && !login) {
+      login = document.createElement('button');
+      login.id = 'bke-fixture-login';
+      login.type = 'button';
+      login.textContent = 'Log in';
+      document.body.appendChild(login);
+    } else if (!current.auth_required && login) {
+      login.remove();
+    }
+
+    const inConversation = path.endsWith('/projects/bke-worker/worker-engineering');
     let stop = document.getElementById('bke-fixture-stop');
-    if (current.busy && !stop) {
+    if (current.busy && inConversation && !stop) {
       stop = document.createElement('button');
       stop.id = 'bke-fixture-stop';
       stop.type = 'button';
       stop.textContent = 'Stop generating';
       document.body.appendChild(stop);
-    } else if (!current.busy && stop) {
+    } else if ((!current.busy || !inConversation) && stop) {
       stop.remove();
     }
+
+    const composer = document.getElementById('bke-fixture-composer');
+    if (composer) {
+      composer.hidden = !current.show_composer;
+    }
+
+    if (!current.show_project && path.includes('/projects/bke-worker')) {
+      window.location.replace('/projects');
+      return;
+    }
+
+    if (!current.show_conversation && inConversation) {
+      window.location.replace('/projects/bke-worker');
+    }
   } catch (_) {
-    // The fixture fails through normal browser assertions if state cannot be read.
+    // Controlled tests fail through normal browser assertions if fixture state
+    // cannot be observed; do not manufacture a successful semantic state here.
   }
 }
-setInterval(syncTurnState, 50);
-syncTurnState();
+setInterval(syncFixtureState, 50);
+syncFixtureState();
 </script>
 """
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "BKEPhase3Fixture/1.3"
+    server_version = "BKEPhase3Fixture/1.4"
 
     def log_message(self, fmt, *args):
         print(f"fixture: {self.address_string()} {fmt % args}", flush=True)
@@ -127,8 +157,8 @@ class Handler(BaseHTTPRequestHandler):
     def chat_body(self, content):
         current = snapshot()
         if current["auth_required"]:
-            return html_page("<button type='button'>Log in</button>")
-        return html_page(content)
+            content = "<button id='bke-fixture-login' type='button'>Log in</button>"
+        return html_page(f"{content}{client_state_sync_script()}")
 
     def record_prompt(self, instruction):
         with state_lock:
@@ -138,10 +168,15 @@ class Handler(BaseHTTPRequestHandler):
         with state_lock:
             state[name] = value
 
-        # Busy is represented by live DOM state. Give the already-open controlled
-        # conversation enough time to observe the state transition before the admin
-        # call returns to the test driver, making busy/on and busy/off deterministic.
-        if name == "busy":
+        # These flags represent live SPA state. Give the already-open browser a bounded
+        # moment to observe the transition before returning from the admin control call.
+        if name in {
+            "busy",
+            "auth_required",
+            "show_project",
+            "show_conversation",
+            "show_composer",
+        }:
             time.sleep(0.25)
 
         self.send_json(200, snapshot())
@@ -201,29 +236,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/projects/bke-worker/worker-engineering":
             current = snapshot()
             stop = "<button id='bke-fixture-stop' type='button'>Stop generating</button>" if current["busy"] else ""
-            sync = turn_state_sync_script()
-            if not current["show_composer"]:
-                self.send_html(200, self.chat_body(f"<a href='/projects'>Projects</a>{stop}{sync}"))
-                return
+            hidden = " hidden" if not current["show_composer"] else ""
+
             if current["block_send"]:
-                body = f"""
-<a href='/projects'>Projects</a>
+                composer = f"""
+<div id='bke-fixture-composer'{hidden}>
 <form method='post' action='/admin/prompts-block'>
 <textarea name='instruction' aria-label='Message'></textarea>
 <button type='submit' aria-label='Send message'>Send</button>
 </form>
-{stop}
-{sync}
+</div>
 """
             else:
-                body = f"""
-<a href='/projects'>Projects</a>
+                composer = f"""
+<div id='bke-fixture-composer'{hidden}>
 <textarea aria-label='Message'></textarea>
 <button type='button' aria-label='Send message' onclick='sendPrompt()'>Send</button>
-{stop}
+</div>
 <script>
 async function sendPrompt() {{
-  const box = document.querySelector('textarea');
+  const box = document.querySelector('#bke-fixture-composer textarea');
   await fetch('/admin/prompts', {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
@@ -232,7 +264,12 @@ async function sendPrompt() {{
   box.value = '';
 }}
 </script>
-{sync}
+"""
+
+            body = f"""
+<a href='/projects'>Projects</a>
+{composer}
+{stop}
 """
             self.send_html(200, self.chat_body(body))
             return
