@@ -51,6 +51,56 @@ public sealed class ProjectNavigatorModernUiTests
     }
 
     [Fact]
+    public async Task Visible_exact_project_is_preferred_over_sidebar_opener()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: true,
+            "http://127.0.0.1:1/"));
+
+        try
+        {
+            var page = await host.GetPage(CancellationToken.None);
+            await page.SetContentAsync("""
+                <!doctype html>
+                <html>
+                <body>
+                  <button aria-label="Open sidebar" id="open-sidebar">Open sidebar</button>
+                  <nav aria-label="Sidebar">
+                    <a href="#" id="project">BKE Worker</a>
+                  </nav>
+                  <script>
+                    document.getElementById('open-sidebar').addEventListener('click', () => {
+                      document.body.dataset.sidebarOpenerClicked = 'true';
+                    });
+                    document.getElementById('project').addEventListener('click', event => {
+                      event.preventDefault();
+                      document.body.dataset.projectOpened = 'true';
+                    });
+                  </script>
+                </body>
+                </html>
+                """);
+
+            await new ProjectNavigator().OpenExactProject(
+                page,
+                "BKE Worker",
+                CancellationToken.None);
+
+            Assert.Equal(
+                "true",
+                await page.GetAttributeAsync("body", "data-project-opened"));
+            Assert.Null(await page.GetAttributeAsync("body", "data-sidebar-opener-clicked"));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
     public async Task Collapsed_sidebar_is_opened_semantically_before_exact_project_selection()
     {
         var profile = CreateProfileDirectory();
