@@ -59,6 +59,14 @@ public sealed class ChatGPTWebDriver(
             overrideUrl,
             cancellationToken);
 
+    public Task<ChatGptAdapterProbeResult> ProbeNewChat(CancellationToken cancellationToken) =>
+        ProbeTarget(
+            ContextTarget.NewChat(ChatGptExecutionSurface.Chat),
+            string.Empty,
+            string.Empty,
+            null,
+            cancellationToken);
+
     private async Task<ChatGptAdapterProbeResult> ProbeTarget(
         ContextTarget target,
         string project,
@@ -150,6 +158,12 @@ public sealed class ChatGPTWebDriver(
         if (target.Surface != ChatGptExecutionSurface.Chat)
             throw new InvalidOperationException(ExecutionSurfaceMismatch);
 
+        if (target.Type == ContextTargetType.NewChat)
+        {
+            await OpenNewChat(cancellationToken);
+            return;
+        }
+
         if (target.Type == ContextTargetType.OverrideLink)
         {
             await OpenOverrideLink(target.OverrideUrl, cancellationToken);
@@ -217,6 +231,28 @@ public sealed class ChatGPTWebDriver(
 
     public Task<string?> GetLatestResponse(CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
+
+    private async Task OpenNewChat(CancellationToken cancellationToken)
+    {
+        await Launch(cancellationToken);
+        var page = await host.GetPage(cancellationToken);
+        try
+        {
+            await page.GotoAsync(
+                host.Options.ChatGptBaseUrl,
+                new()
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 15_000
+                });
+        }
+        catch (PlaywrightException)
+        {
+            throw new InvalidOperationException("CONTEXT_NOT_FOUND");
+        }
+
+        await ThrowIfAuthenticationRequired(page, cancellationToken);
+    }
 
     private async Task OpenOverrideLink(string? overrideUrl, CancellationToken cancellationToken)
     {
