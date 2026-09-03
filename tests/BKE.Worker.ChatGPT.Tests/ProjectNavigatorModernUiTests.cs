@@ -101,6 +101,52 @@ public sealed class ProjectNavigatorModernUiTests
     }
 
     [Fact]
+    public async Task Visible_aria_controlled_sidebar_is_not_opened_again()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: true,
+            "http://127.0.0.1:1/"));
+
+        try
+        {
+            var page = await host.GetPage(CancellationToken.None);
+            await page.SetContentAsync("""
+                <!doctype html>
+                <html>
+                <body>
+                  <button aria-label="Open sidebar"
+                          aria-expanded="false"
+                          aria-controls="stage-slideover-sidebar"
+                          id="open-sidebar">Open sidebar</button>
+                  <div id="stage-slideover-sidebar">
+                    <a href="#">Other navigation</a>
+                  </div>
+                  <script>
+                    document.getElementById('open-sidebar').addEventListener('click', () => {
+                      document.body.dataset.sidebarOpenerClicked = 'true';
+                    });
+                  </script>
+                </body>
+                </html>
+                """);
+
+            var projects = await new ProjectNavigator().ListProjects(
+                page,
+                CancellationToken.None);
+
+            Assert.Contains("Other navigation", projects);
+            Assert.Null(await page.GetAttributeAsync("body", "data-sidebar-opener-clicked"));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
     public async Task Collapsed_sidebar_is_opened_semantically_before_exact_project_selection()
     {
         var profile = CreateProfileDirectory();
@@ -116,7 +162,7 @@ public sealed class ProjectNavigatorModernUiTests
                 <!doctype html>
                 <html>
                 <body>
-                  <button aria-label="Open sidebar" id="open-sidebar">Open sidebar</button>
+                  <button aria-label="Open sidebar" aria-controls="sidebar" id="open-sidebar">Open sidebar</button>
                   <nav aria-label="Sidebar" id="sidebar" hidden>
                     <a href="#" id="project">BKE Worker</a>
                   </nav>
