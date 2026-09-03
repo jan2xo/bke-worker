@@ -83,28 +83,30 @@ public sealed record EngineeringTarget(
     string? OverrideUrl = null)
 {
     public bool UsesOverrideLink => !string.IsNullOrWhiteSpace(OverrideUrl);
-
     public bool HasProject => !string.IsNullOrWhiteSpace(Project);
     public bool HasConversation => !string.IsNullOrWhiteSpace(Conversation);
     public bool HasProjectChat => HasProject && HasConversation;
     public bool HasPartialProjectChat => HasProject != HasConversation;
+    public bool HasAmbiguousExplicitTargets => UsesOverrideLink && (HasProject || HasConversation);
     public bool UsesNewChat => !UsesOverrideLink && !HasProject && !HasConversation;
 
     public ContextTarget ResolveContextTarget()
     {
-        // The modes are mutually exclusive for routing purposes. An override never falls
-        // back to Project + Chat. Project + Chat never falls back to an override.
-        // The only implicit/default target is New Chat when no explicit target was selected.
+        // Exactly one explicit target mode may be selected. New Chat is the only implicit
+        // fallback/default and is used only when no explicit target was selected at all.
+        if (HasAmbiguousExplicitTargets)
+            throw new InvalidOperationException("CHATGPT_TARGET_AMBIGUOUS");
+
+        if (HasPartialProjectChat)
+            throw new InvalidOperationException("CHATGPT_TARGET_INCOMPLETE");
+
         if (UsesOverrideLink)
             return ContextTarget.OverrideLink(OverrideUrl!, Surface);
 
         if (HasProjectChat)
             return ContextTarget.ProjectChat(Project, Conversation, Surface);
 
-        if (UsesNewChat)
-            return ContextTarget.NewChat(Surface);
-
-        throw new InvalidOperationException("CHATGPT_TARGET_INCOMPLETE");
+        return ContextTarget.NewChat(Surface);
     }
 }
 
