@@ -78,6 +78,43 @@ public sealed class PlaywrightRuntimeTests
     }
 
     [Fact]
+    public async Task Send_waits_for_delayed_composer_hydration()
+    {
+        await using var server = await LoopbackServer.Start(PageHtml);
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(profile, Headless: true, server.BaseUrl));
+        var driver = new ChatGPTWebDriver(
+            host,
+            new ProjectNavigator(),
+            new ConversationNavigator(),
+            new ComposerDriver());
+
+        try
+        {
+            await driver.OpenContext(
+                ContextTarget.ProjectChat("DUMP", "Engineering Loop"),
+                CancellationToken.None);
+
+            var page = await host.GetPage(CancellationToken.None);
+            await page.EvaluateAsync("""
+                const composer = document.getElementById('composer');
+                composer.hidden = true;
+                setTimeout(() => { composer.hidden = false; }, 600);
+                """);
+
+            await driver.Send("WAIT FOR COMPOSER", CancellationToken.None);
+
+            var submitted = await page.EvaluateAsync<string?>("localStorage.getItem('last-prompt')");
+            Assert.Equal("WAIT FOR COMPOSER", submitted);
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
     public async Task Work_surface_is_rejected_before_browser_navigation_or_send()
     {
         var profile = CreateProfileDirectory();
