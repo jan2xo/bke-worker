@@ -21,6 +21,9 @@ export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatg
 export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-chatgpt-profile}"
 export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/worker.json}"
 export BKE_WORKER_HEADLESS=false
+# Keep Kestrel private. Cloudflare Tunnel is the only public ingress and forwards
+# only the exact GitHub webhook path to this loopback listener.
+export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5080}"
 
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
@@ -42,6 +45,7 @@ cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting BKE Worker in live CDP-attach mode."
+echo "listen: $ASPNETCORE_URLS (loopback only)"
 echo "target authority: Notion execution page"
 echo "target block: [BKE WORKER TARGET]"
 echo "target rule: Project+Chat OR Override Link; no explicit target means New Chat. No cross-target fallback."
