@@ -28,8 +28,6 @@ chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 required=(
   BKE_WORKER_NOTION_TOKEN
   BKE_WORKER_NOTION_PAGE
-  BKE_WORKER_CHATGPT_PROJECT
-  BKE_WORKER_CHATGPT_CONVERSATION
   BKE_WORKER_GITHUB_WEBHOOK_SECRET
 )
 
@@ -40,10 +38,31 @@ for name in "${required[@]}"; do
   fi
 done
 
+has_override=false
+if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL}" != "REPLACE_ME" ]]; then
+  has_override=true
+fi
+
+has_semantic=false
+if [[ -n "${BKE_WORKER_CHATGPT_PROJECT:-}" && "${BKE_WORKER_CHATGPT_PROJECT}" != "REPLACE_ME" && \
+      -n "${BKE_WORKER_CHATGPT_CONVERSATION:-}" && "${BKE_WORKER_CHATGPT_CONVERSATION}" != "REPLACE_ME" ]]; then
+  has_semantic=true
+fi
+
+if [[ "$has_override" != true && "$has_semantic" != true ]]; then
+  echo "ERROR: configure either BKE_WORKER_CHATGPT_OVERRIDE_URL or both BKE_WORKER_CHATGPT_PROJECT and BKE_WORKER_CHATGPT_CONVERSATION." >&2
+  exit 1
+fi
+
 cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting BKE Worker in live CDP-attach mode."
+if [[ "$has_override" == true ]]; then
+  echo "target: override-link (takes precedence over Project + Conversation)"
+else
+  echo "target: project-chat"
+fi
 echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block all further movement."
 
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
