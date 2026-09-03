@@ -19,20 +19,33 @@ export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chro
 export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/worker.json}"
 export BKE_WORKER_HEADLESS=false
 
+present_value() {
+  [[ -n "${1:-}" && "$1" != "REPLACE_ME" ]]
+}
+
 has_override=false
-if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL}" != "REPLACE_ME" ]]; then
-  has_override=true
-fi
+has_project=false
+has_conversation=false
+present_value "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && has_override=true
+present_value "${BKE_WORKER_CHATGPT_PROJECT:-}" && has_project=true
+present_value "${BKE_WORKER_CHATGPT_CONVERSATION:-}" && has_conversation=true
 
-has_semantic=false
-if [[ -n "${BKE_WORKER_CHATGPT_PROJECT:-}" && "${BKE_WORKER_CHATGPT_PROJECT}" != "REPLACE_ME" && \
-      -n "${BKE_WORKER_CHATGPT_CONVERSATION:-}" && "${BKE_WORKER_CHATGPT_CONVERSATION}" != "REPLACE_ME" ]]; then
-  has_semantic=true
-fi
-
-if [[ "$has_override" != true && "$has_semantic" != true ]]; then
-  echo "ERROR: configure either BKE_WORKER_CHATGPT_OVERRIDE_URL or both BKE_WORKER_CHATGPT_PROJECT and BKE_WORKER_CHATGPT_CONVERSATION." >&2
+if [[ "$has_override" == true && ( "$has_project" == true || "$has_conversation" == true ) ]]; then
+  echo "ERROR: ChatGPT target is ambiguous. Configure Override Link OR Project + Conversation, not both." >&2
   exit 1
+fi
+
+if [[ "$has_project" != "$has_conversation" ]]; then
+  echo "ERROR: ChatGPT Project and Conversation must be configured together." >&2
+  exit 1
+fi
+
+if [[ "$has_override" == true ]]; then
+  target_mode="override-link"
+elif [[ "$has_project" == true ]]; then
+  target_mode="project-chat"
+else
+  target_mode="new-chat"
 fi
 
 # Phase 6A is intentionally ChatGPT-only. Force the hosted worker to remain
@@ -49,11 +62,7 @@ cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting isolated Phase 6A ChatGPT probe server."
-if [[ "$has_override" == true ]]; then
-  echo "target: override-link (takes precedence over Project + Conversation)"
-else
-  echo "target: project-chat"
-fi
+echo "target: $target_mode"
 echo "GUARD: Notion and GitHub are disabled for this process; the probe must not send a prompt."
 
 dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release >/dev/null
