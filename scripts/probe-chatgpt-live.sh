@@ -19,17 +19,21 @@ export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chro
 export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/worker.json}"
 export BKE_WORKER_HEADLESS=false
 
-required=(
-  BKE_WORKER_CHATGPT_PROJECT
-  BKE_WORKER_CHATGPT_CONVERSATION
-)
+has_override=false
+if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL}" != "REPLACE_ME" ]]; then
+  has_override=true
+fi
 
-for name in "${required[@]}"; do
-  if [[ -z "${!name:-}" || "${!name}" == "REPLACE_ME" ]]; then
-    echo "ERROR: required probe setting is missing: $name" >&2
-    exit 1
-  fi
-done
+has_semantic=false
+if [[ -n "${BKE_WORKER_CHATGPT_PROJECT:-}" && "${BKE_WORKER_CHATGPT_PROJECT}" != "REPLACE_ME" && \
+      -n "${BKE_WORKER_CHATGPT_CONVERSATION:-}" && "${BKE_WORKER_CHATGPT_CONVERSATION}" != "REPLACE_ME" ]]; then
+  has_semantic=true
+fi
+
+if [[ "$has_override" != true && "$has_semantic" != true ]]; then
+  echo "ERROR: configure either BKE_WORKER_CHATGPT_OVERRIDE_URL or both BKE_WORKER_CHATGPT_PROJECT and BKE_WORKER_CHATGPT_CONVERSATION." >&2
+  exit 1
+fi
 
 # Phase 6A is intentionally ChatGPT-only. Force the hosted worker to remain
 # unconfigured so no Notion reconciliation or GitHub-driven engineering loop
@@ -45,6 +49,11 @@ cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting isolated Phase 6A ChatGPT probe server."
+if [[ "$has_override" == true ]]; then
+  echo "target: override-link (takes precedence over Project + Conversation)"
+else
+  echo "target: project-chat"
+fi
 echo "GUARD: Notion and GitHub are disabled for this process; the probe must not send a prompt."
 
 dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release >/dev/null
