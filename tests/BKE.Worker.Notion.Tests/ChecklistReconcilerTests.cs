@@ -5,7 +5,7 @@ namespace BKE.Worker.Notion.Tests;
 public sealed class ChecklistReconcilerTests
 {
     [Fact]
-    public async Task Reconcile_uses_notion_order_and_checkbox_state_as_canonical_truth()
+    public async Task Checked_current_task_completes_loop_even_when_later_todos_exist()
     {
         var client = new FakeClient([
             new NotionChecklistTask("gate-1", "Gate 1", true, false),
@@ -16,13 +16,29 @@ public sealed class ChecklistReconcilerTests
 
         var result = await reconciler.Reconcile("page", "gate-1", CancellationToken.None);
 
-        Assert.False(result.AllComplete);
+        Assert.True(result.AllComplete);
         Assert.True(result.CurrentGate?.Checked);
         Assert.Equal("gate-2", result.FirstUncheckedGate?.Id);
     }
 
     [Fact]
-    public async Task Reconcile_reports_complete_only_when_no_unchecked_gate_exists()
+    public async Task Unchecked_current_task_keeps_same_loop_active()
+    {
+        var client = new FakeClient([
+            new NotionChecklistTask("gate-1", "Gate 1", false, false),
+            new NotionChecklistTask("gate-2", "Gate 2", false, false)
+        ]);
+        var reconciler = new ChecklistReconciler(client);
+
+        var result = await reconciler.Reconcile("page", "gate-1", CancellationToken.None);
+
+        Assert.False(result.AllComplete);
+        Assert.False(result.CurrentGate?.Checked);
+        Assert.Equal("gate-1", result.FirstUncheckedGate?.Id);
+    }
+
+    [Fact]
+    public async Task Reconcile_reports_complete_when_no_unchecked_gate_exists()
     {
         var client = new FakeClient([
             new NotionChecklistTask("gate-1", "Gate 1", true, false)
