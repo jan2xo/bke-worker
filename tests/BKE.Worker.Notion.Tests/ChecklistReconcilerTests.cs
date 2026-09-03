@@ -44,5 +44,10 @@ public sealed class ChecklistReconcilerTests
             string pageIdOrUrl,
             bool includeChecked,
             CancellationToken cancellationToken) => Task.FromResult(tasks);
+
+        public Task<NotionExecutionTarget> GetExecutionTarget(
+            string pageIdOrUrl,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new NotionExecutionTarget(string.Empty, string.Empty, null));
     }
 }
