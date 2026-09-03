@@ -12,6 +12,9 @@ public sealed class ComposerDriver
 {
     private static readonly Regex StopPattern = new("stop", RegexOptions.IgnoreCase);
     private static readonly Regex SendPattern = new("^send", RegexOptions.IgnoreCase);
+    private static readonly TimeSpan DefaultReadyTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan StableReadyWindow = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan ReadyPollInterval = TimeSpan.FromMilliseconds(100);
 
     public async Task<ComposerProbe> Probe(IPage page, CancellationToken cancellationToken)
     {
@@ -32,12 +35,31 @@ public sealed class ComposerDriver
     public async Task<bool> CanSendNextTurn(IPage page, CancellationToken cancellationToken) =>
         (await Probe(page, cancellationToken)).CanSendNextTurn;
 
+    public async Task<bool> WaitUntilCanSendNextTurn(
+        IPage page,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null)
+    {
+        var ready = await WaitForStableComposer(
+            page,
+            timeout ?? DefaultReadyTimeout,
+            cancellationToken);
+        return ready is not null;
+    }
+
     public async Task Send(IPage page, string instruction, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instruction);
-        var composer = await FindComposer(page, cancellationToken);
+
+        var composer = await WaitForStableComposer(page, DefaultReadyTimeout, cancellationToken);
         if (composer is null)
-            throw new InvalidOperationException("CHATGPT_COMPOSER_NOT_AVAILABLE");
+        {
+            var state = await Probe(page, cancellationToken);
+            throw new InvalidOperationException(
+                state.TurnBusy
+                    ? "CHATGPT_TURN_NOT_IDLE"
+                    : "CHATGPT_COMPOSER_NOT_AVAILABLE");
+        }
 
         await composer.FillAsync(instruction);
 
@@ -50,6 +72,41 @@ public sealed class ComposerDriver
         }
 
         await composer.PressAsync("Enter");
+    }
+
+    private static async Task<ILocator?> WaitForStableComposer(
+        IPage page,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        DateTimeOffset? readySince = null;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (page.IsClosed)
+                return null;
+
+            var stopButtons = page.GetByRole(AriaRole.Button, new() { NameRegex = StopPattern });
+            var turnBusy = await ProjectNavigator.FindFirstVisible(stopButtons, cancellationToken) is not null;
+            var composer = turnBusy ? null : await FindComposer(page, cancellationToken);
+
+            if (composer is null)
+            {
+                readySince = null;
+            }
+            else
+            {
+                readySince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - readySince >= StableReadyWindow)
+                    return composer;
+            }
+
+            await Task.Delay(ReadyPollInterval, cancellationToken);
+        }
+
+        return null;
     }
 
     private static async Task<ILocator?> FindComposer(IPage page, CancellationToken cancellationToken)
