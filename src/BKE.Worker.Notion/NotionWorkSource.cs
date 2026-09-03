@@ -4,9 +4,11 @@ namespace BKE.Worker.Notion;
 
 public sealed class NotionWorkSource(
     INotionChecklistClient client,
-    string pageIdOrUrl) : IWorkSource
+    string pageIdOrUrl,
+    EngineeringTarget executionTarget) : IWorkSource
 {
     private readonly string _pageIdOrUrl = pageIdOrUrl;
+    private readonly EngineeringTarget _executionTarget = executionTarget;
 
     public async Task<EngineeringTarget?> GetNextEngineeringTarget(CancellationToken cancellationToken)
     {
@@ -15,16 +17,15 @@ public sealed class NotionWorkSource(
         if (tasks.Count == 0)
             return null;
 
-        var notionTarget = await client.GetExecutionTarget(pageId, cancellationToken);
-        var target = new EngineeringTarget(
-            notionTarget.Project,
-            notionTarget.Chat,
-            pageId,
-            Instruction: WorkerPrompts.ContinueFromNotionChecklist,
-            Surface: ChatGptExecutionSurface.Chat,
-            OverrideUrl: notionTarget.OverrideUrl);
+        // Notion owns only ordered work/checklist state. The worker owns the ChatGPT
+        // execution window through its configured target; Notion must never redirect it.
+        var target = _executionTarget with
+        {
+            NotionPageId = pageId,
+            Instruction = WorkerPrompts.ContinueFromNotionChecklist,
+            Surface = ChatGptExecutionSurface.Chat
+        };
 
-        // Fail closed here so malformed Notion target metadata never reaches browser movement.
         _ = target.ResolveContextTarget();
         ValidateOverride(target);
         return target;
