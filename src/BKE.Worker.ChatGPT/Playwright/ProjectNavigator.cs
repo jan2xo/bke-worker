@@ -8,10 +8,33 @@ public sealed class ProjectNavigator
 {
     private const int NavigationTimeoutMs = 10_000;
     private const int ProjectRenderTimeoutMs = 10_000;
+    private const string LiveProjectsUrl = "https://chatgpt.com/projects";
 
     public async Task<IReadOnlyList<string>> ListProjects(IPage page, CancellationToken cancellationToken)
     {
-        if (!await OpenProjectsIndex(page, cancellationToken))
+        if (IsLiveChatGpt(page.Url))
+        {
+            await OpenLiveProjectsDirectory(page, cancellationToken);
+            var rows = page.GetByRole(AriaRole.Row);
+            var values = new List<string>();
+            var count = await rows.CountAsync();
+
+            for (var index = 0; index < count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var row = rows.Nth(index);
+                if (!await row.IsVisibleAsync())
+                    continue;
+
+                var text = (await row.InnerTextAsync()).Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                    values.Add(text);
+            }
+
+            return values.Distinct(StringComparer.Ordinal).ToArray();
+        }
+
+        if (!await OpenControlledProjectsIndex(page, cancellationToken))
             throw new ChatGptNavigationException("PROJECTS_NOT_FOUND");
 
         var links = await page.GetByRole(AriaRole.Link).AllTextContentsAsync();
@@ -29,8 +52,22 @@ public sealed class ProjectNavigator
         ArgumentException.ThrowIfNullOrWhiteSpace(project);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Controlled/legacy surfaces can expose the exact project directly. Preserve that path,
-        // but current chatgpt.com normally exposes a Projects navigation link first.
+        if (IsLiveChatGpt(page.Url))
+        {
+            await OpenLiveProjectsDirectory(page, cancellationToken);
+            await WaitForExactProject(page, project, cancellationToken);
+
+            var row = await FindExactProjectRow(page, project, cancellationToken);
+            if (row is null)
+                throw new ChatGptNavigationException("PROJECT_NOT_FOUND");
+
+            await row.ClickAsync(new() { Timeout = NavigationTimeoutMs });
+            return;
+        }
+
+        // Controlled fixtures from the earlier certification phases can expose the exact
+        // project directly or behind a semantic Projects control. Preserve that behavior
+        // independently from the current live chatgpt.com adapter.
         var visible = await FindExactProject(page, project, cancellationToken);
         if (visible is not null)
         {
@@ -38,11 +75,9 @@ public sealed class ProjectNavigator
             return;
         }
 
-        if (!await OpenProjectsIndex(page, cancellationToken))
+        if (!await OpenControlledProjectsIndex(page, cancellationToken))
             throw new ChatGptNavigationException("PROJECTS_NOT_FOUND");
 
-        // /projects is an SPA route. Route completion does not imply that the project cards have
-        // rendered yet, so wait for the exact semantic target rather than racing the next click.
         await WaitForExactProject(page, project, cancellationToken);
 
         visible = await FindExactProject(page, project, cancellationToken);
@@ -52,48 +87,20 @@ public sealed class ProjectNavigator
         await visible.ClickAsync();
     }
 
-    private static async Task<bool> OpenProjectsIndex(IPage page, CancellationToken cancellationToken)
+    private static async Task OpenLiveProjectsDirectory(
+        IPage page,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (IsProjectsRoute(page.Url))
-            return true;
-
-        var projects = await FindProjectsLink(page, cancellationToken);
-        if (projects is null)
-        {
-            await EnsureRecentsExpanded(page, cancellationToken);
-            projects = await FindProjectsLink(page, cancellationToken);
-        }
-
-        if (projects is null)
-        {
-            await EnsureSidebarOpen(page, cancellationToken);
-            await EnsureRecentsExpanded(page, cancellationToken);
-            projects = await FindProjectsLink(page, cancellationToken);
-        }
-
-        if (projects is null)
-            return false;
-
-        var href = await projects.GetAttributeAsync("href");
-        var navigatesToProjects = IsProjectsHref(href);
-
-        try
-        {
-            await projects.ClickAsync(new() { Timeout = NavigationTimeoutMs });
-        }
-        catch (PlaywrightException)
-        {
-            return false;
-        }
-
-        if (navigatesToProjects)
+        if (!IsProjectsRoute(page.Url))
         {
             try
             {
-                await page.WaitForURLAsync(
-                    "**/projects*",
+                // Current live ChatGPT exposes Projects at the stable href /projects.
+                // Use the route directly instead of racing responsive sidebar controls.
+                await page.GotoAsync(
+                    LiveProjectsUrl,
                     new()
                     {
                         Timeout = NavigationTimeoutMs,
@@ -102,109 +109,79 @@ public sealed class ProjectNavigator
             }
             catch (PlaywrightException)
             {
-                if (!IsProjectsRoute(page.Url))
-                    return false;
+                throw new ChatGptNavigationException("PROJECTS_NOT_FOUND");
             }
         }
 
+        if (!IsProjectsRoute(page.Url))
+            throw new ChatGptNavigationException("PROJECTS_NOT_FOUND");
+
         cancellationToken.ThrowIfCancellationRequested();
-        return true;
     }
 
-    private static async Task<ILocator?> FindProjectsLink(
+    private static async Task<ILocator?> FindExactProjectRow(
         IPage page,
+        string project,
         CancellationToken cancellationToken)
     {
-        var links = page.GetByRole(
-            AriaRole.Link,
-            new() { Name = "Projects", Exact = true });
-        var count = await links.CountAsync();
+        var rows = page.GetByRole(AriaRole.Row);
+        var count = await rows.CountAsync();
 
         for (var index = 0; index < count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var candidate = links.Nth(index);
-            if (!await candidate.IsVisibleAsync())
+            var row = rows.Nth(index);
+            if (!await row.IsVisibleAsync())
                 continue;
 
-            var href = await candidate.GetAttributeAsync("href");
-            if (IsProjectsHref(href))
-                return candidate;
+            var exactName = row.GetByText(project, new() { Exact = true });
+            if (await FindFirstVisible(exactName, cancellationToken) is not null)
+                return row;
         }
 
         return null;
     }
 
-    private static async Task EnsureRecentsExpanded(IPage page, CancellationToken cancellationToken)
+    private static async Task<bool> OpenControlledProjectsIndex(
+        IPage page,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var recents = page.GetByRole(
-            AriaRole.Button,
-            new() { Name = "Recents", Exact = true });
-        var visible = await FindFirstVisible(recents, cancellationToken);
-        if (visible is null)
-            return;
+        if (IsProjectsRoute(page.Url))
+            return true;
 
-        var expanded = await visible.GetAttributeAsync("aria-expanded");
-        if (string.Equals(expanded, "true", StringComparison.OrdinalIgnoreCase))
-            return;
+        ILocator projects = page.GetByRole(
+            AriaRole.Link,
+            new() { Name = "Projects", Exact = true });
+        var visible = await FindFirstVisible(projects, cancellationToken);
+
+        if (visible is null)
+        {
+            projects = page.GetByRole(
+                AriaRole.Button,
+                new() { Name = "Projects", Exact = true });
+            visible = await FindFirstVisible(projects, cancellationToken);
+        }
+
+        if (visible is null)
+        {
+            projects = page.GetByText("Projects", new() { Exact = true });
+            visible = await FindFirstVisible(projects, cancellationToken);
+        }
+
+        if (visible is null)
+            return false;
 
         try
         {
             await visible.ClickAsync(new() { Timeout = NavigationTimeoutMs });
+            return true;
         }
         catch (PlaywrightException)
         {
-            // Fail closed later if the Projects link still cannot be discovered.
-        }
-    }
-
-    private static async Task EnsureSidebarOpen(IPage page, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        foreach (var label in new[] { "Open sidebar", "Show sidebar", "Open navigation", "Show navigation" })
-        {
-            var opener = page.GetByRole(
-                AriaRole.Button,
-                new() { Name = label, Exact = true });
-            var visible = await FindFirstVisible(opener, cancellationToken);
-            if (visible is null)
-                continue;
-
-            if (await IsControlledSurfaceVisible(page, visible, cancellationToken))
-                return;
-
-            try
-            {
-                await visible.ClickAsync(new() { Timeout = 1500 });
-            }
-            catch (PlaywrightException)
-            {
-                // Do not bypass actionability or force the click.
-            }
-
-            return;
-        }
-    }
-
-    private static async Task<bool> IsControlledSurfaceVisible(
-        IPage page,
-        ILocator control,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var controlledId = await control.GetAttributeAsync("aria-controls");
-        if (string.IsNullOrWhiteSpace(controlledId))
             return false;
-
-        var escapedId = controlledId
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
-
-        var controlledSurface = page.Locator($"[id=\"{escapedId}\"]");
-        return await FindFirstVisible(controlledSurface, cancellationToken) is not null;
+        }
     }
 
     private static async Task WaitForExactProject(
@@ -255,18 +232,24 @@ public sealed class ProjectNavigator
             cancellationToken);
     }
 
-    private static bool IsProjectsHref(string? href) =>
-        !string.IsNullOrWhiteSpace(href) &&
-        (string.Equals(href, "/projects", StringComparison.OrdinalIgnoreCase) ||
-         href.StartsWith("/projects?", StringComparison.OrdinalIgnoreCase) ||
-         href.StartsWith("/projects#", StringComparison.OrdinalIgnoreCase));
+    private static bool IsLiveChatGpt(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var current))
+            return false;
+
+        return string.Equals(current.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(current.Host, "www.chatgpt.com", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool IsProjectsRoute(string? url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var current))
             return false;
 
-        return string.Equals(current.AbsolutePath.TrimEnd('/'), "/projects", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(
+            current.AbsolutePath.TrimEnd('/'),
+            "/projects",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     internal static async Task<ILocator?> FindFirstVisible(
