@@ -39,8 +39,10 @@ echo "GUARD: human auth first; one Notion-driven continuation only."
 echo "GUARD: no GitHub webhook; no Notion checkbox mutation; no autonomous continuation loop."
 echo "notion page: $BKE_WORKER_NOTION_PAGE"
 
-dotnet build tools/BKE.Worker.Notion.DispatchSmoke/BKE.Worker.Notion.DispatchSmoke.csproj -c Release >/dev/null
+echo "building: BKE.Worker.Notion.DispatchSmoke"
+dotnet build tools/BKE.Worker.Notion.DispatchSmoke/BKE.Worker.Notion.DispatchSmoke.csproj -c Release --nologo -v:minimal
 
+echo "running: Notion -> target -> WorkerLoop -> ChatGPT"
 dotnet run \
   --project tools/BKE.Worker.Notion.DispatchSmoke/BKE.Worker.Notion.DispatchSmoke.csproj \
   -c Release \
