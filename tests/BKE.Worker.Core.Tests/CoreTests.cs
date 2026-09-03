@@ -30,18 +30,36 @@ public class CoreTests
             ContextTarget.OverrideLink("https://chatgpt.com/c/test").Surface);
 
     [Fact]
-    public void Engineering_override_wins_over_project_and_conversation()
+    public void Engineering_override_and_project_chat_are_ambiguous()
     {
         const string overrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation";
         var target = Target() with { OverrideUrl = overrideUrl };
 
+        var exception = Assert.Throws<InvalidOperationException>(() => target.ResolveContextTarget());
+
+        Assert.Equal("CHATGPT_TARGET_AMBIGUOUS", exception.Message);
+    }
+
+    [Fact]
+    public void Engineering_without_explicit_target_resolves_to_new_chat()
+    {
+        var target = new EngineeringTarget(string.Empty, string.Empty, "notion-page");
+
         var context = target.ResolveContextTarget();
 
-        Assert.True(target.UsesOverrideLink);
-        Assert.Equal(ContextTargetType.OverrideLink, context.Type);
-        Assert.Equal(overrideUrl, context.OverrideUrl);
-        Assert.Null(context.Project);
-        Assert.Null(context.Conversation);
+        Assert.True(target.UsesNewChat);
+        Assert.Equal(ContextTargetType.NewChat, context.Type);
+        Assert.Equal(ChatGptExecutionSurface.Chat, context.Surface);
+    }
+
+    [Fact]
+    public void Partial_project_chat_is_invalid()
+    {
+        var target = new EngineeringTarget("DUMP", string.Empty, "notion-page");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => target.ResolveContextTarget());
+
+        Assert.Equal("CHATGPT_TARGET_INCOMPLETE", exception.Message);
     }
 
     [Fact]
@@ -94,6 +112,49 @@ public class CoreTests
         Assert.Single(driver.Opened);
         Assert.Equal(ContextTargetType.OverrideLink, driver.Opened[0].Type);
         Assert.Equal(overrideUrl, driver.Opened[0].OverrideUrl);
+    }
+
+    [Fact]
+    public async Task Start_uses_new_chat_when_no_explicit_target_is_selected()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = new EngineeringTarget(string.Empty, string.Empty, "notion-page");
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.True(result.PromptSent);
+        Assert.Single(driver.Opened);
+        Assert.Equal(ContextTargetType.NewChat, driver.Opened[0].Type);
+    }
+
+    [Fact]
+    public async Task Ambiguous_target_blocks_before_notion_or_chatgpt()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = Target() with
+        {
+            OverrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation"
+        };
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_TARGET_AMBIGUOUS", result.Message);
+        Assert.Equal(0, checklist.Calls);
+        Assert.Equal(0, driver.LaunchCalls);
+        Assert.Empty(driver.Sent);
     }
 
     [Fact]
