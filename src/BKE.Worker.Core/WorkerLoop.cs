@@ -8,12 +8,16 @@ public sealed class WorkerLoop(
 {
     private const string DispatchOutcomeUnknown = "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
     private const string ExecutionSurfaceMismatch = "CHATGPT_EXECUTION_SURFACE_MISMATCH";
+    private const string LiveChatGptRequiresCdp = "LIVE_CHATGPT_REQUIRES_CDP_ATTACH";
+    private const string CdpMustBeLoopback = "BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK";
+    private const string OverrideUrlInvalid = "CHATGPT_OVERRIDE_URL_INVALID";
+    private const string TargetAmbiguous = "CHATGPT_TARGET_AMBIGUOUS";
+    private const string TargetIncomplete = "CHATGPT_TARGET_INCOMPLETE";
+    private const string WakeDeferredNotSafe = "WAKE_DEFERRED_CHATGPT_NOT_SAFE_TO_INTERRUPT";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target.Project);
-        ArgumentException.ThrowIfNullOrWhiteSpace(target.Conversation);
         ArgumentException.ThrowIfNullOrWhiteSpace(target.NotionPageId);
 
         await _mutex.WaitAsync(cancellationToken);
@@ -58,6 +62,49 @@ public sealed class WorkerLoop(
                     ExecutionSurfaceMismatch);
                 await stateStore.Save(blocked, cancellationToken);
                 return new(blocked.State, false, false, ExecutionSurfaceMismatch);
+            }
+
+            // Resolve target mode before authentication/Notion so malformed explicit target
+            // configuration cannot mutate loop state or reconcile a checklist. New Chat is valid
+            // only when no explicit Project+Chat or Override Link was selected.
+            try
+            {
+                _ = target.ResolveContextTarget();
+            }
+            catch (Exception ex) when (
+                ex.Message.Contains(TargetAmbiguous, StringComparison.Ordinal) ||
+                ex.Message.Contains(TargetIncomplete, StringComparison.Ordinal))
+            {
+                var blocked = new WorkerSnapshot(
+                    WorkerRuntimeState.BLOCKED,
+                    target,
+                    null,
+                    existing.LastDispatchAt,
+                    existing.LastGitHubDeliveryId,
+                    existing.LastReconciliationAt,
+                    ex.Message);
+                await stateStore.Save(blocked, cancellationToken);
+                return new(blocked.State, false, false, ex.Message);
+            }
+
+            // GUARD: authentication is checked before Notion reconciliation or any engineering movement.
+            // OAuth/MFA/CAPTCHA are human-only. If ChatGPT is unauthenticated, stop immediately.
+            var authenticationGuard = existing with
+            {
+                Target = target,
+                Failure = null
+            };
+            try
+            {
+                await driver.Launch(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return await Fail(authenticationGuard, ex, cancellationToken);
             }
 
             var reconciliation = await checklist.Reconcile(target.NotionPageId, null, cancellationToken);
@@ -135,12 +182,31 @@ public sealed class WorkerLoop(
                 return new(blocked.State, false, false, ExecutionSurfaceMismatch);
             }
 
-            var reconciling = snapshot with
+            var authenticationGuard = snapshot with
             {
-                State = WorkerRuntimeState.RECONCILING,
                 LastGitHubDeliveryId = string.IsNullOrWhiteSpace(deliveryId)
                     ? snapshot.LastGitHubDeliveryId
                     : deliveryId,
+                Failure = null
+            };
+
+            // GUARD: no webhook/recovery wake may reconcile Notion while ChatGPT is unauthenticated.
+            try
+            {
+                await driver.Launch(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return await Fail(authenticationGuard, ex, cancellationToken);
+            }
+
+            var reconciling = authenticationGuard with
+            {
+                State = WorkerRuntimeState.RECONCILING,
                 Failure = null
             };
             await stateStore.Save(reconciling, cancellationToken);
@@ -193,16 +259,16 @@ public sealed class WorkerLoop(
 
             try
             {
-                await driver.Launch(cancellationToken);
                 await driver.OpenContext(
-                    ContextTarget.ProjectChat(
-                        waiting.Target.Project,
-                        waiting.Target.Conversation,
-                        waiting.Target.Surface),
+                    waiting.Target.ResolveContextTarget(),
                     cancellationToken);
 
+                // A push/recovery wake is only consumed when ChatGPT positively proves it is
+                // safe to interrupt. Busy, hydrating, missing-composer, and ambiguous UI states
+                // all defer without failing the loop. The active five-minute recovery watchdog
+                // will retry, so no additional durable WAKE_PENDING flag is required.
                 if (!await driver.CanSendNextTurn(cancellationToken))
-                    return new(waiting.State, false, false, "CHATGPT_TURN_NOT_IDLE");
+                    return new(waiting.State, false, false, WakeDeferredNotSafe);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -236,7 +302,7 @@ public sealed class WorkerLoop(
             var target = snapshot.Target ?? throw new InvalidOperationException("ENGINEERING_TARGET_REQUIRED");
             await driver.Launch(cancellationToken);
             await driver.OpenContext(
-                ContextTarget.ProjectChat(target.Project, target.Conversation, target.Surface),
+                target.ResolveContextTarget(),
                 cancellationToken);
             await driver.Send(instruction, cancellationToken);
 
@@ -268,7 +334,12 @@ public sealed class WorkerLoop(
         var blocked = failure.Contains("PROJECT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CONTEXT_NOT_FOUND", StringComparison.Ordinal) ||
                       failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal) ||
-                      failure.Contains(ExecutionSurfaceMismatch, StringComparison.Ordinal);
+                      failure.Contains(OverrideUrlInvalid, StringComparison.Ordinal) ||
+                      failure.Contains(TargetAmbiguous, StringComparison.Ordinal) ||
+                      failure.Contains(TargetIncomplete, StringComparison.Ordinal) ||
+                      failure.Contains(ExecutionSurfaceMismatch, StringComparison.Ordinal) ||
+                      failure.Contains(LiveChatGptRequiresCdp, StringComparison.Ordinal) ||
+                      failure.Contains(CdpMustBeLoopback, StringComparison.Ordinal);
         var failed = snapshot with
         {
             State = blocked ? WorkerRuntimeState.BLOCKED : WorkerRuntimeState.FAILED,

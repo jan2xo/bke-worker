@@ -41,7 +41,7 @@ public sealed class OperatorUiTests
         Assert.Equal(initialPromptCount, await PromptCount());
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Force Reconcile" }).ClickAsync();
-        await Assertions.Expect(page.GetByText("Manual reconciliation queued.", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("Manual Notion reconciliation queued.", new() { Exact = true })).ToBeVisibleAsync();
 
         for (var attempt = 0; attempt < 30; attempt++)
         {

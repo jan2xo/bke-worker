@@ -13,6 +13,7 @@ public class CoreTests
     [InlineData(ContextTargetType.RecentChat)]
     [InlineData(ContextTargetType.ProjectChat)]
     [InlineData(ContextTargetType.NewChat)]
+    [InlineData(ContextTargetType.OverrideLink)]
     public void Context_targets_are_supported(ContextTargetType type) =>
         Assert.Equal(type, new ContextTarget(type).Type);
 
@@ -21,6 +22,45 @@ public class CoreTests
         Assert.Equal(
             ChatGptExecutionSurface.Chat,
             ContextTarget.ProjectChat("DUMP", "Engineering").Surface);
+
+    [Fact]
+    public void Override_link_defaults_to_chat_execution_surface() =>
+        Assert.Equal(
+            ChatGptExecutionSurface.Chat,
+            ContextTarget.OverrideLink("https://chatgpt.com/c/test").Surface);
+
+    [Fact]
+    public void Engineering_override_and_project_chat_are_ambiguous()
+    {
+        const string overrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation";
+        var target = Target() with { OverrideUrl = overrideUrl };
+
+        var exception = Assert.Throws<InvalidOperationException>(() => target.ResolveContextTarget());
+
+        Assert.Equal("CHATGPT_TARGET_AMBIGUOUS", exception.Message);
+    }
+
+    [Fact]
+    public void Engineering_without_explicit_target_resolves_to_new_chat()
+    {
+        var target = new EngineeringTarget(string.Empty, string.Empty, "notion-page");
+
+        var context = target.ResolveContextTarget();
+
+        Assert.True(target.UsesNewChat);
+        Assert.Equal(ContextTargetType.NewChat, context.Type);
+        Assert.Equal(ChatGptExecutionSurface.Chat, context.Surface);
+    }
+
+    [Fact]
+    public void Partial_project_chat_is_invalid()
+    {
+        var target = new EngineeringTarget("DUMP", string.Empty, "notion-page");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => target.ResolveContextTarget());
+
+        Assert.Equal("CHATGPT_TARGET_INCOMPLETE", exception.Message);
+    }
 
     [Fact]
     public void Default_resolves_to_policy() =>
@@ -50,6 +90,74 @@ public class CoreTests
     }
 
     [Fact]
+    public async Task Start_accepts_override_without_semantic_project_or_conversation()
+    {
+        const string overrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation";
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = new EngineeringTarget(
+            string.Empty,
+            string.Empty,
+            "notion-page",
+            OverrideUrl: overrideUrl);
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.True(result.PromptSent);
+        Assert.Single(driver.Opened);
+        Assert.Equal(ContextTargetType.OverrideLink, driver.Opened[0].Type);
+        Assert.Equal(overrideUrl, driver.Opened[0].OverrideUrl);
+    }
+
+    [Fact]
+    public async Task Start_uses_new_chat_when_no_explicit_target_is_selected()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = new EngineeringTarget(string.Empty, string.Empty, "notion-page");
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.True(result.PromptSent);
+        Assert.Single(driver.Opened);
+        Assert.Equal(ContextTargetType.NewChat, driver.Opened[0].Type);
+    }
+
+    [Fact]
+    public async Task Ambiguous_target_blocks_before_notion_or_chatgpt()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        var target = Target() with
+        {
+            OverrideUrl = "https://chatgpt.com/g/g-p-project/c/conversation"
+        };
+
+        var result = await loop.Start(target, CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_TARGET_AMBIGUOUS", result.Message);
+        Assert.Equal(0, checklist.Calls);
+        Assert.Equal(0, driver.LaunchCalls);
+        Assert.Empty(driver.Sent);
+    }
+
+    [Fact]
     public async Task Work_surface_fails_closed_before_notion_or_chatgpt()
     {
         var driver = new FakeDriver();
@@ -68,7 +176,32 @@ public class CoreTests
         Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", result.Message);
         Assert.Equal("CHATGPT_EXECUTION_SURFACE_MISMATCH", store.Snapshot.Failure);
         Assert.Equal(0, checklist.Calls);
+        Assert.Equal(0, driver.LaunchCalls);
         Assert.Empty(driver.Sent);
+    }
+
+    [Fact]
+    public async Task Authentication_required_fails_closed_before_notion_or_send()
+    {
+        var driver = new FakeDriver
+        {
+            LaunchFailure = new InvalidOperationException("CHATGPT_AUTH_REQUIRED")
+        };
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+
+        var result = await loop.Start(Target(), CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", result.Message);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", store.Snapshot.Failure);
+        Assert.Equal(0, checklist.Calls);
+        Assert.Empty(driver.Sent);
+        Assert.Equal(1, driver.LaunchCalls);
     }
 
     [Theory]
@@ -122,6 +255,32 @@ public class CoreTests
         Assert.True(result.PromptSent);
         Assert.Equal(2, driver.Sent.Count);
         Assert.Equal("delivery-1", store.Snapshot.LastGitHubDeliveryId);
+    }
+
+    [Fact]
+    public async Task Authentication_required_on_wake_blocks_before_notion_reconciliation()
+    {
+        var driver = new FakeDriver();
+        var checklist = new FakeChecklist(new ChecklistReconciliation(
+            null,
+            new ChecklistGate("gate-1", "Gate 1", false),
+            false));
+        var store = new FakeStore();
+        var loop = new WorkerLoop(driver, checklist, store, new WorkerPolicy(MinimumDispatchInterval: TimeSpan.Zero));
+        await loop.Start(Target(), CancellationToken.None);
+        Assert.Equal(1, checklist.Calls);
+        Assert.Single(driver.Sent);
+
+        driver.LaunchFailure = new InvalidOperationException("CHATGPT_AUTH_REQUIRED");
+
+        var result = await loop.Wake(WorkerWakeReason.GitHubPush, "delivery-auth", CancellationToken.None);
+
+        Assert.Equal(WorkerRuntimeState.BLOCKED, result.State);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", result.Message);
+        Assert.Equal("CHATGPT_AUTH_REQUIRED", store.Snapshot.Failure);
+        Assert.Equal("delivery-auth", store.Snapshot.LastGitHubDeliveryId);
+        Assert.Equal(1, checklist.Calls);
+        Assert.Single(driver.Sent);
     }
 
     [Fact]
@@ -221,13 +380,27 @@ public class CoreTests
     private sealed class FakeDriver : IChatGPTDriver
     {
         public List<string> Sent { get; } = [];
+        public List<ContextTarget> Opened { get; } = [];
         public int ExecutionStateCalls { get; private set; }
+        public int LaunchCalls { get; private set; }
         public bool CanSend { get; set; } = true;
+        public Exception? LaunchFailure { get; set; }
 
-        public Task Launch(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task Launch(CancellationToken cancellationToken)
+        {
+            LaunchCalls++;
+            return LaunchFailure is null
+                ? Task.CompletedTask
+                : Task.FromException(LaunchFailure);
+        }
+
         public Task<IReadOnlyList<ContextTarget>> GetAvailableContexts(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContextTarget>>([]);
-        public Task OpenContext(ContextTarget target, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task OpenContext(ContextTarget target, CancellationToken cancellationToken)
+        {
+            Opened.Add(target);
+            return Task.CompletedTask;
+        }
         public Task<IReadOnlyList<ReasoningProfile>> GetAvailableReasoningProfiles(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ReasoningProfile>>([ReasoningProfile.HIGH]);
         public Task SetReasoning(ReasoningProfile profile, CancellationToken cancellationToken) => Task.CompletedTask;

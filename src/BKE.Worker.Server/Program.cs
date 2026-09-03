@@ -24,7 +24,8 @@ builder.Services.AddSingleton<ComposerDriver>();
 builder.Services.AddSingleton(new ChromiumHostOptions(
     settings.ChatGptProfileDirectory,
     settings.Headless,
-    settings.ChatGptBaseUrl));
+    settings.ChatGptBaseUrl,
+    settings.BrowserCdpEndpoint));
 builder.Services.AddSingleton<ChromiumHost>();
 builder.Services.AddSingleton<ChatGPTWebDriver>();
 builder.Services.AddSingleton<IChatGPTDriver>(services => services.GetRequiredService<ChatGPTWebDriver>());
@@ -33,6 +34,12 @@ builder.Services.AddSingleton<INotionChecklistClient>(_ =>
         new HttpClient(),
         string.IsNullOrWhiteSpace(settings.NotionToken) ? "UNCONFIGURED" : settings.NotionToken,
         new Uri(settings.NotionBaseUrl, UriKind.Absolute)));
+builder.Services.AddSingleton<NotionWorkSource>(services =>
+    new NotionWorkSource(
+        services.GetRequiredService<INotionChecklistClient>(),
+        settings.NotionPageId,
+        settings.Target));
+builder.Services.AddSingleton<IWorkSource>(services => services.GetRequiredService<NotionWorkSource>());
 builder.Services.AddSingleton<IChecklistReconciler, ChecklistReconciler>();
 builder.Services.AddSingleton<IWorkerStateStore>(_ => new JsonWorkerStateStore(settings.StateFile));
 builder.Services.AddSingleton(new WorkerPolicy(MinimumDispatchInterval: settings.MinimumDispatchInterval));
@@ -89,12 +96,28 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         runtime = "vps-playwright",
         ready = settings.IsConfigured,
         snapshot,
-        target = settings.IsConfigured ? settings.Target : null,
+        target = snapshot.Target,
         configuration = new
         {
-            notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
-            chatGptConfigured = settings.ChatGptTargetConfigured,
-            githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret)
+            notionConfigured = settings.NotionConfigured,
+            notionTaskSource = true,
+            workerTargetSource = "configuration",
+            autonomousOverrideConfigured = settings.AutonomousOverrideConfigured,
+            probeChatGptConfigured = settings.ChatGptTargetConfigured,
+            chatGptSemanticTargetConfigured = settings.ChatGptSemanticTargetConfigured,
+            chatGptSemanticTargetPartial = settings.ChatGptSemanticTargetPartial,
+            chatGptOverridePresent = settings.ChatGptOverridePresent,
+            chatGptOverrideConfigured = settings.ChatGptOverrideConfigured,
+            chatGptTargetAmbiguous = settings.ChatGptTargetAmbiguous,
+            chatGptUsesNewChat = settings.ChatGptUsesNewChat,
+            probeChatGptTargetMode = settings.ChatGptTargetMode,
+            githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret),
+            browserCdpConfigured = settings.BrowserCdpConfigured
+        },
+        browser = new
+        {
+            mode = settings.BrowserCdpConfigured ? "cdp-attach" : "playwright-launch",
+            liveChatGptRequiresCdp = settings.LiveChatGptBaseUrl
         },
         browserProfileDirectory = settings.ChatGptProfileDirectory,
         chatGptBaseUrl = settings.ChatGptBaseUrl
@@ -108,7 +131,7 @@ app.MapPost("/control/reconcile", async (
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Configure Notion, ChatGPT target, and GitHub webhook secret before manual reconciliation.",
+            detail: "Configure Notion, the deterministic ChatGPT override conversation, browser runtime, and GitHub webhook secret before manual reconciliation.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     await wakeSink.Enqueue(
@@ -119,20 +142,30 @@ app.MapPost("/control/reconcile", async (
     {
         accepted = true,
         reason = WorkerWakeReason.Manual,
-        message = "Manual reconciliation queued."
+        message = "Manual Notion reconciliation queued."
     });
 });
 
+// Operator probe may exercise any supported target mode. The autonomous worker itself
+// is stricter: it owns one deterministic conversation through the configured override URL.
 app.MapPost("/control/chatgpt/probe", async (
     IWorkerLoop loop,
     ChatGPTWebDriver driver,
     CancellationToken cancellationToken) =>
 {
     if (!settings.ChatGptTargetConfigured)
+    {
+        var detail = settings.ChatGptTargetAmbiguous
+            ? "Project + Conversation and Override Link are mutually exclusive. Select exactly one explicit target mode, or neither to use New Chat."
+            : settings.ChatGptOverridePresent && !settings.ChatGptOverrideConfigured
+                ? "The configured ChatGPT override URL is invalid. Use an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>."
+                : "Project and Conversation must be configured together. Configure both, configure only an Override Link, or leave all target fields empty to use New Chat.";
+
         return Results.Problem(
-            title: "ChatGPT target is not configured",
-            detail: "Configure the exact ChatGPT Project and Conversation before probing the live adapter.",
+            title: "ChatGPT probe target is invalid",
+            detail: detail,
             statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 
     var snapshot = await loop.GetState(cancellationToken);
     if (snapshot.State is WorkerRuntimeState.DISPATCHING or
@@ -145,10 +178,15 @@ app.MapPost("/control/chatgpt/probe", async (
             statusCode: StatusCodes.Status409Conflict);
     }
 
-    var result = await driver.ProbeExactContext(
-        settings.ChatGptProject,
-        settings.ChatGptConversation,
-        cancellationToken);
+    var result = settings.ChatGptTargetMode switch
+    {
+        "override-link" => await driver.ProbeOverrideLink(settings.ChatGptOverrideUrl, cancellationToken),
+        "project-chat" => await driver.ProbeExactContext(
+            settings.ChatGptProject,
+            settings.ChatGptConversation,
+            cancellationToken),
+        _ => await driver.ProbeNewChat(cancellationToken)
+    };
 
     return result.Compatible
         ? Results.Ok(result)
@@ -168,29 +206,82 @@ public sealed record WorkerServerSettings(
     string NotionBaseUrl,
     string ChatGptProject,
     string ChatGptConversation,
+    string ChatGptOverrideUrl,
     string ChatGptBaseUrl,
     string GitHubWebhookSecret,
     string ChatGptProfileDirectory,
     string StateFile,
+    string BrowserCdpEndpoint,
     bool Headless,
     TimeSpan WebhookDebounce,
     TimeSpan RecoveryInterval,
     TimeSpan MinimumDispatchInterval)
 {
+    public bool NotionConfigured =>
+        !string.IsNullOrWhiteSpace(NotionToken) &&
+        !string.IsNullOrWhiteSpace(NotionPageId);
+
+    public bool ChatGptProjectPresent => !string.IsNullOrWhiteSpace(ChatGptProject);
+    public bool ChatGptConversationPresent => !string.IsNullOrWhiteSpace(ChatGptConversation);
+
+    public bool ChatGptSemanticTargetConfigured =>
+        ChatGptProjectPresent && ChatGptConversationPresent;
+
+    public bool ChatGptSemanticTargetPartial =>
+        ChatGptProjectPresent != ChatGptConversationPresent;
+
+    public bool ChatGptOverridePresent =>
+        !string.IsNullOrWhiteSpace(ChatGptOverrideUrl);
+
+    public bool ChatGptOverrideConfigured =>
+        ChatGptOverridePresent && IsValidChatGptConversationOverride(ChatGptOverrideUrl);
+
+    public bool ChatGptTargetAmbiguous =>
+        ChatGptOverridePresent && (ChatGptProjectPresent || ChatGptConversationPresent);
+
+    public bool ChatGptUsesNewChat =>
+        !ChatGptOverridePresent && !ChatGptProjectPresent && !ChatGptConversationPresent;
+
     public bool ChatGptTargetConfigured =>
-        !string.IsNullOrWhiteSpace(ChatGptProject) &&
-        !string.IsNullOrWhiteSpace(ChatGptConversation);
+        !ChatGptTargetAmbiguous &&
+        !ChatGptSemanticTargetPartial &&
+        (ChatGptOverridePresent ? ChatGptOverrideConfigured : true);
+
+    public bool AutonomousOverrideConfigured =>
+        ChatGptOverrideConfigured &&
+        !ChatGptTargetAmbiguous &&
+        !ChatGptSemanticTargetPartial;
+
+    public string ChatGptTargetMode =>
+        ChatGptTargetAmbiguous ? "invalid-ambiguous" :
+        ChatGptOverridePresent ? (ChatGptOverrideConfigured ? "override-link" : "invalid-override") :
+        ChatGptSemanticTargetPartial ? "invalid-incomplete" :
+        ChatGptSemanticTargetConfigured ? "project-chat" :
+        "new-chat";
+
+    public bool LiveChatGptBaseUrl =>
+        Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
+        string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase);
+
+    public bool BrowserCdpConfigured =>
+        !string.IsNullOrWhiteSpace(BrowserCdpEndpoint) &&
+        Uri.TryCreate(BrowserCdpEndpoint, UriKind.Absolute, out var uri) &&
+        uri.IsLoopback;
+
+    public bool BrowserRuntimeConfigured =>
+        !LiveChatGptBaseUrl || BrowserCdpConfigured;
 
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(NotionToken) &&
-        !string.IsNullOrWhiteSpace(NotionPageId) &&
-        ChatGptTargetConfigured &&
+        NotionConfigured &&
+        BrowserRuntimeConfigured &&
+        AutonomousOverrideConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
     public EngineeringTarget Target => new(
         ChatGptProject,
         ChatGptConversation,
-        NotionPageId);
+        NotionPageId,
+        OverrideUrl: ChatGptOverrideUrl);
 
     public static WorkerServerSettings FromConfiguration(IConfiguration configuration)
     {
@@ -200,14 +291,40 @@ public sealed record WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_PROJECT"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_CONVERSATION"] ?? string.Empty,
+            configuration["BKE_WORKER_CHATGPT_OVERRIDE_URL"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
             configuration["BKE_WORKER_GITHUB_WEBHOOK_SECRET"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
             configuration["BKE_WORKER_STATE_FILE"] ?? "/var/lib/bke-worker/state/worker.json",
+            configuration["BKE_WORKER_BROWSER_CDP_ENDPOINT"] ?? string.Empty,
             ParseBool(configuration["BKE_WORKER_HEADLESS"], defaultValue: true),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS"], 10)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_RECOVERY_SECONDS"], 300)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_MIN_DISPATCH_SECONDS"], 30)));
+    }
+
+    private static bool IsValidChatGptConversationOverride(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !(string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(uri.Host, "www.chatgpt.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            if (string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(segments[index + 1]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ParseBool(string? value, bool defaultValue) =>
@@ -283,6 +400,9 @@ public sealed class WorkerWakeQueue : IWorkerWakeSink
 
 public sealed class WorkerHostedService(
     IWorkerLoop loop,
+    NotionWorkSource workSource,
+    IChatGPTDriver driver,
+    IWorkerStateStore stateStore,
     WorkerWakeQueue wakeQueue,
     WorkerServerSettings settings,
     ILogger<WorkerHostedService> logger) : BackgroundService
@@ -291,17 +411,70 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target, and GitHub webhook environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion page/token, deterministic ChatGPT override URL, loopback browser CDP for live chatgpt.com, and GitHub webhook secret.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }
 
-        var start = await loop.Start(settings.Target, stoppingToken);
+        var start = await StartFromNotion(stoppingToken);
         logger.LogInformation("Worker startup result: {State} {Message}", start.State, start.Message);
 
         await Task.WhenAll(
             ConsumeWakeEvents(stoppingToken),
             RunRecoveryTimer(stoppingToken));
+    }
+
+    private async Task<WorkerLoopResult> StartFromNotion(CancellationToken cancellationToken)
+    {
+        var existing = await stateStore.Load(cancellationToken);
+
+        // Preserve crash-safety and active-loop semantics without rereading Notion on restart.
+        if (existing.Target is not null && IsActive(existing.State))
+            return await loop.Start(existing.Target, cancellationToken);
+
+        // GUARD: human authentication is checked before the first Notion task read.
+        try
+        {
+            await driver.Launch(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return await PersistStartupFailure(existing, ex, cancellationToken);
+        }
+
+        EngineeringTarget? target;
+        try
+        {
+            target = await workSource.GetNextEngineeringTarget(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return await PersistStartupFailure(existing, ex, cancellationToken);
+        }
+
+        if (target is null)
+        {
+            var complete = existing with
+            {
+                State = WorkerRuntimeState.COMPLETE,
+                Target = null,
+                CurrentChecklistIdentifier = null,
+                LastReconciliationAt = DateTimeOffset.UtcNow,
+                Failure = null
+            };
+            await stateStore.Save(complete, cancellationToken);
+            return new(complete.State, false, false, "NO_UNCHECKED_NOTION_TASK");
+        }
+
+        return await loop.Start(target, cancellationToken);
     }
 
     private async Task ConsumeWakeEvents(CancellationToken cancellationToken)
@@ -311,7 +484,11 @@ public sealed class WorkerHostedService(
             if (wakeEvent.Reason == WorkerWakeReason.GitHubPush)
                 await Task.Delay(settings.WebhookDebounce, cancellationToken);
 
-            var result = await loop.Wake(wakeEvent.Reason, wakeEvent.DeliveryId, cancellationToken);
+            var state = await loop.GetState(cancellationToken);
+            var result = wakeEvent.Reason == WorkerWakeReason.Manual && !IsActive(state.State)
+                ? await StartFromNotion(cancellationToken)
+                : await loop.Wake(wakeEvent.Reason, wakeEvent.DeliveryId, cancellationToken);
+
             logger.LogInformation(
                 "Worker wake {Reason}: {State} {Message} promptSent={PromptSent}",
                 wakeEvent.Reason,
@@ -337,6 +514,30 @@ public sealed class WorkerHostedService(
                 result.Message,
                 result.PromptSent);
         }
+    }
+
+    private async Task<WorkerLoopResult> PersistStartupFailure(
+        WorkerSnapshot existing,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var failure = exception.Message;
+        var blocked = failure.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal) ||
+                      failure.Contains("CHATGPT_TARGET_AMBIGUOUS", StringComparison.Ordinal) ||
+                      failure.Contains("CHATGPT_TARGET_INCOMPLETE", StringComparison.Ordinal) ||
+                      failure.Contains("CHATGPT_OVERRIDE_URL_INVALID", StringComparison.Ordinal) ||
+                      failure.Contains("LIVE_CHATGPT_REQUIRES_CDP_ATTACH", StringComparison.Ordinal) ||
+                      failure.Contains("BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK", StringComparison.Ordinal);
+
+        var failed = existing with
+        {
+            State = blocked ? WorkerRuntimeState.BLOCKED : WorkerRuntimeState.FAILED,
+            Target = null,
+            CurrentChecklistIdentifier = null,
+            Failure = failure
+        };
+        await stateStore.Save(failed, cancellationToken);
+        return new(failed.State, false, false, failure);
     }
 
     private static bool IsActive(WorkerRuntimeState state) => state is

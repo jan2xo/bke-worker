@@ -1,20 +1,29 @@
 namespace BKE.Worker.Core;
 
-public enum ContextTargetType { RecentChat, ProjectChat, NewChat }
+public enum ContextTargetType { RecentChat, ProjectChat, NewChat, OverrideLink }
 public enum ChatGptExecutionSurface { Chat, Work }
 
 public sealed record ContextTarget(
     ContextTargetType Type,
     string? Conversation = null,
     string? Project = null,
-    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat)
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
+    string? OverrideUrl = null)
 {
-    public static ContextTarget NewChat() => new(ContextTargetType.NewChat);
+    public static ContextTarget NewChat(
+        ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
+        new(ContextTargetType.NewChat, Surface: surface);
+
     public static ContextTarget ProjectChat(
         string project,
         string conversation,
         ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
         new(ContextTargetType.ProjectChat, conversation, project, surface);
+
+    public static ContextTarget OverrideLink(
+        string overrideUrl,
+        ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
+        new(ContextTargetType.OverrideLink, Surface: surface, OverrideUrl: overrideUrl);
 }
 
 public enum ReasoningProfile { DEFAULT, MEDIUM, HIGH, MAX_AVAILABLE }
@@ -70,7 +79,36 @@ public sealed record EngineeringTarget(
     string NotionPageId,
     ReasoningProfile ReasoningProfile = ReasoningProfile.HIGH,
     string Instruction = WorkerPrompts.ContinueFromNotionChecklist,
-    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat);
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
+    string? OverrideUrl = null)
+{
+    public bool UsesOverrideLink => !string.IsNullOrWhiteSpace(OverrideUrl);
+    public bool HasProject => !string.IsNullOrWhiteSpace(Project);
+    public bool HasConversation => !string.IsNullOrWhiteSpace(Conversation);
+    public bool HasProjectChat => HasProject && HasConversation;
+    public bool HasPartialProjectChat => HasProject != HasConversation;
+    public bool HasAmbiguousExplicitTargets => UsesOverrideLink && (HasProject || HasConversation);
+    public bool UsesNewChat => !UsesOverrideLink && !HasProject && !HasConversation;
+
+    public ContextTarget ResolveContextTarget()
+    {
+        // Exactly one explicit target mode may be selected. New Chat is the only implicit
+        // fallback/default and is used only when no explicit target was selected at all.
+        if (HasAmbiguousExplicitTargets)
+            throw new InvalidOperationException("CHATGPT_TARGET_AMBIGUOUS");
+
+        if (HasPartialProjectChat)
+            throw new InvalidOperationException("CHATGPT_TARGET_INCOMPLETE");
+
+        if (UsesOverrideLink)
+            return ContextTarget.OverrideLink(OverrideUrl!, Surface);
+
+        if (HasProjectChat)
+            return ContextTarget.ProjectChat(Project, Conversation, Surface);
+
+        return ContextTarget.NewChat(Surface);
+    }
+}
 
 public sealed record ChecklistGate(string Id, string Text, bool Checked);
 

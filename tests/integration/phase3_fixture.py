@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 GATE_1 = "11111111-1111-1111-1111-111111111111"
 GATE_2 = "22222222-2222-2222-2222-222222222222"
+TARGET_BLOCK = "33333333-3333-3333-3333-333333333333"
 
 state_lock = threading.Lock()
 state = {
@@ -49,8 +50,82 @@ def html_page(body):
     return f"<!doctype html><html><head><meta charset='utf-8'><title>BKE Fixture</title></head><body>{body}</body></html>".encode()
 
 
+def notion_target_block():
+    return {
+        "object": "block",
+        "id": TARGET_BLOCK,
+        "type": "callout",
+        "has_children": False,
+        "callout": {
+            "rich_text": [{
+                "plain_text": "[BKE WORKER TARGET]\nPROJECT=BKE Worker\nCHAT=Worker Engineering\nOVERRIDE_URL="
+            }],
+        },
+    }
+
+
+def client_state_sync_script():
+    # Real ChatGPT is an SPA: turn state, composer readiness, authentication prompts,
+    # and target availability can change while the browser remains on the same URL.
+    # This controlled surface mirrors those same-page transitions so the production
+    # URL-memory guard is tested without forcing artificial navigation on every probe.
+    return """
+<script>
+async function syncFixtureState() {
+  try {
+    const response = await fetch('/admin/state', {cache: 'no-store'});
+    const current = await response.json();
+    const path = window.location.pathname;
+
+    let login = document.getElementById('bke-fixture-login');
+    if (current.auth_required && !login) {
+      login = document.createElement('button');
+      login.id = 'bke-fixture-login';
+      login.type = 'button';
+      login.textContent = 'Log in';
+      document.body.appendChild(login);
+    } else if (!current.auth_required && login) {
+      login.remove();
+    }
+
+    const inConversation = path.endsWith('/projects/bke-worker/worker-engineering');
+    let stop = document.getElementById('bke-fixture-stop');
+    if (current.busy && inConversation && !stop) {
+      stop = document.createElement('button');
+      stop.id = 'bke-fixture-stop';
+      stop.type = 'button';
+      stop.textContent = 'Stop generating';
+      document.body.appendChild(stop);
+    } else if ((!current.busy || !inConversation) && stop) {
+      stop.remove();
+    }
+
+    const composer = document.getElementById('bke-fixture-composer');
+    if (composer) {
+      composer.hidden = !current.show_composer;
+    }
+
+    if (!current.show_project && path.includes('/projects/bke-worker')) {
+      window.location.replace('/projects');
+      return;
+    }
+
+    if (!current.show_conversation && inConversation) {
+      window.location.replace('/projects/bke-worker');
+    }
+  } catch (_) {
+    // Controlled tests fail through normal browser assertions if fixture state
+    // cannot be observed; do not manufacture a successful semantic state here.
+  }
+}
+setInterval(syncFixtureState, 50);
+syncFixtureState();
+</script>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "BKEPhase3Fixture/1.1"
+    server_version = "BKEPhase3Fixture/1.4"
 
     def log_message(self, fmt, *args):
         print(f"fixture: {self.address_string()} {fmt % args}", flush=True)
@@ -59,6 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         data = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -81,8 +157,8 @@ class Handler(BaseHTTPRequestHandler):
     def chat_body(self, content):
         current = snapshot()
         if current["auth_required"]:
-            return html_page("<button type='button'>Log in</button>")
-        return html_page(content)
+            content = "<button id='bke-fixture-login' type='button'>Log in</button>"
+        return html_page(f"{content}{client_state_sync_script()}")
 
     def record_prompt(self, instruction):
         with state_lock:
@@ -91,6 +167,18 @@ class Handler(BaseHTTPRequestHandler):
     def set_flag(self, name, value):
         with state_lock:
             state[name] = value
+
+        # These flags represent live SPA state. Give the already-open browser a bounded
+        # moment to observe the transition before returning from the admin control call.
+        if name in {
+            "busy",
+            "auth_required",
+            "show_project",
+            "show_conversation",
+            "show_composer",
+        }:
+            time.sleep(0.25)
+
         self.send_json(200, snapshot())
 
     def do_GET(self):
@@ -106,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/blocks/") and path.endswith("/children"):
             current = snapshot()
-            results = []
+            results = [notion_target_block()]
             for gate in current["gates"]:
                 results.append({
                     "object": "block",
@@ -147,28 +235,27 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/projects/bke-worker/worker-engineering":
             current = snapshot()
-            stop = "<button type='button'>Stop generating</button>" if current["busy"] else ""
-            if not current["show_composer"]:
-                self.send_html(200, self.chat_body(f"<a href='/projects'>Projects</a>{stop}"))
-                return
+            stop = "<button id='bke-fixture-stop' type='button'>Stop generating</button>" if current["busy"] else ""
+            hidden = " hidden" if not current["show_composer"] else ""
+
             if current["block_send"]:
-                body = f"""
-<a href='/projects'>Projects</a>
+                composer = f"""
+<div id='bke-fixture-composer'{hidden}>
 <form method='post' action='/admin/prompts-block'>
 <textarea name='instruction' aria-label='Message'></textarea>
 <button type='submit' aria-label='Send message'>Send</button>
 </form>
-{stop}
+</div>
 """
             else:
-                body = f"""
-<a href='/projects'>Projects</a>
+                composer = f"""
+<div id='bke-fixture-composer'{hidden}>
 <textarea aria-label='Message'></textarea>
 <button type='button' aria-label='Send message' onclick='sendPrompt()'>Send</button>
-{stop}
+</div>
 <script>
 async function sendPrompt() {{
-  const box = document.querySelector('textarea');
+  const box = document.querySelector('#bke-fixture-composer textarea');
   await fetch('/admin/prompts', {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
@@ -177,6 +264,12 @@ async function sendPrompt() {{
   box.value = '';
 }}
 </script>
+"""
+
+            body = f"""
+<a href='/projects'>Projects</a>
+{composer}
+{stop}
 """
             self.send_html(200, self.chat_body(body))
             return
