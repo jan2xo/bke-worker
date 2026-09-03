@@ -114,7 +114,7 @@ jobs:
           data = json.loads(raw)
           assert data["configuration"]["githubWebhookConfigured"] is True, data
           assert data["configuration"]["notionConfigured"] is True, data
-          assert data["configuration"]["chatGptConfigured"] is True, data
+          assert data["configuration"]["probeChatGptConfigured"] is True, data
           assert "phase4-ci-secret" not in raw
           assert "phase4-fixture-token" not in raw
           PY
