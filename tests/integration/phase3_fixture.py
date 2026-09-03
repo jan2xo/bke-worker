@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 GATE_1 = "11111111-1111-1111-1111-111111111111"
 GATE_2 = "22222222-2222-2222-2222-222222222222"
+TARGET_BLOCK = "33333333-3333-3333-3333-333333333333"
 
 state_lock = threading.Lock()
 state = {
@@ -49,8 +50,22 @@ def html_page(body):
     return f"<!doctype html><html><head><meta charset='utf-8'><title>BKE Fixture</title></head><body>{body}</body></html>".encode()
 
 
+def notion_target_block():
+    return {
+        "object": "block",
+        "id": TARGET_BLOCK,
+        "type": "callout",
+        "has_children": False,
+        "callout": {
+            "rich_text": [{
+                "plain_text": "[BKE WORKER TARGET]\nPROJECT=BKE Worker\nCHAT=Worker Engineering\nOVERRIDE_URL="
+            }],
+        },
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "BKEPhase3Fixture/1.1"
+    server_version = "BKEPhase3Fixture/1.2"
 
     def log_message(self, fmt, *args):
         print(f"fixture: {self.address_string()} {fmt % args}", flush=True)
@@ -106,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/blocks/") and path.endswith("/children"):
             current = snapshot()
-            results = []
+            results = [notion_target_block()]
             for gate in current["gates"]:
                 results.append({
                     "object": "block",
