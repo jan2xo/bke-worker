@@ -1,13 +1,14 @@
 namespace BKE.Worker.Core;
 
-public enum ContextTargetType { RecentChat, ProjectChat, NewChat }
+public enum ContextTargetType { RecentChat, ProjectChat, NewChat, OverrideLink }
 public enum ChatGptExecutionSurface { Chat, Work }
 
 public sealed record ContextTarget(
     ContextTargetType Type,
     string? Conversation = null,
     string? Project = null,
-    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat)
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
+    string? OverrideUrl = null)
 {
     public static ContextTarget NewChat() => new(ContextTargetType.NewChat);
     public static ContextTarget ProjectChat(
@@ -15,6 +16,11 @@ public sealed record ContextTarget(
         string conversation,
         ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
         new(ContextTargetType.ProjectChat, conversation, project, surface);
+
+    public static ContextTarget OverrideLink(
+        string overrideUrl,
+        ChatGptExecutionSurface surface = ChatGptExecutionSurface.Chat) =>
+        new(ContextTargetType.OverrideLink, Surface: surface, OverrideUrl: overrideUrl);
 }
 
 public enum ReasoningProfile { DEFAULT, MEDIUM, HIGH, MAX_AVAILABLE }
@@ -70,7 +76,15 @@ public sealed record EngineeringTarget(
     string NotionPageId,
     ReasoningProfile ReasoningProfile = ReasoningProfile.HIGH,
     string Instruction = WorkerPrompts.ContinueFromNotionChecklist,
-    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat);
+    ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
+    string? OverrideUrl = null)
+{
+    public bool UsesOverrideLink => !string.IsNullOrWhiteSpace(OverrideUrl);
+
+    public ContextTarget ResolveContextTarget() => UsesOverrideLink
+        ? ContextTarget.OverrideLink(OverrideUrl!, Surface)
+        : ContextTarget.ProjectChat(Project, Conversation, Surface);
+}
 
 public sealed record ChecklistGate(string Id, string Text, bool Checked);
 
