@@ -110,6 +110,53 @@ public sealed class PlaywrightRuntimeTests
         }
     }
 
+    [Fact]
+    public async Task Live_chatgpt_requires_operator_owned_cdp_browser()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: false,
+            "https://chatgpt.com/"));
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                host.GetPage(CancellationToken.None));
+
+            Assert.Equal("LIVE_CHATGPT_REQUIRES_CDP_ATTACH", exception.Message);
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
+    public async Task Cdp_endpoint_must_be_loopback()
+    {
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(
+            profile,
+            Headless: false,
+            "https://chatgpt.com/",
+            "http://192.0.2.10:9222"));
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                host.GetPage(CancellationToken.None));
+
+            Assert.Equal("BROWSER_CDP_ENDPOINT_MUST_BE_LOOPBACK", exception.Message);
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
     private static string CreateProfileDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "bke-worker-playwright", Guid.NewGuid().ToString("N"));
