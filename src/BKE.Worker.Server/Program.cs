@@ -90,17 +90,18 @@ app.MapGet("/control/summary", async (IWorkerLoop loop, CancellationToken cancel
         runtime = "vps-playwright",
         ready = settings.IsConfigured,
         snapshot,
-        target = settings.IsConfigured ? settings.Target : null,
+        target = settings.ChatGptTargetConfigured ? settings.Target : null,
         configuration = new
         {
             notionConfigured = !string.IsNullOrWhiteSpace(settings.NotionToken) && !string.IsNullOrWhiteSpace(settings.NotionPageId),
             chatGptConfigured = settings.ChatGptTargetConfigured,
             chatGptSemanticTargetConfigured = settings.ChatGptSemanticTargetConfigured,
+            chatGptSemanticTargetPartial = settings.ChatGptSemanticTargetPartial,
             chatGptOverridePresent = settings.ChatGptOverridePresent,
             chatGptOverrideConfigured = settings.ChatGptOverrideConfigured,
-            chatGptTargetMode = settings.ChatGptOverridePresent
-                ? (settings.ChatGptOverrideConfigured ? "override-link" : "override-link-invalid")
-                : "project-chat",
+            chatGptTargetAmbiguous = settings.ChatGptTargetAmbiguous,
+            chatGptUsesNewChat = settings.ChatGptUsesNewChat,
+            chatGptTargetMode = settings.ChatGptTargetMode,
             githubWebhookConfigured = !string.IsNullOrWhiteSpace(settings.GitHubWebhookSecret),
             browserCdpConfigured = settings.BrowserCdpConfigured
         },
@@ -121,7 +122,7 @@ app.MapPost("/control/reconcile", async (
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Configure Notion, ChatGPT target, browser runtime, and GitHub webhook secret before manual reconciliation.",
+            detail: "Configure Notion, a valid ChatGPT target mode, browser runtime, and GitHub webhook secret before manual reconciliation.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     await wakeSink.Enqueue(
@@ -142,12 +143,18 @@ app.MapPost("/control/chatgpt/probe", async (
     CancellationToken cancellationToken) =>
 {
     if (!settings.ChatGptTargetConfigured)
-        return Results.Problem(
-            title: "ChatGPT target is not configured",
-            detail: settings.ChatGptOverridePresent
+    {
+        var detail = settings.ChatGptTargetAmbiguous
+            ? "Project + Conversation and Override Link are mutually exclusive. Select exactly one explicit target mode, or neither to use New Chat."
+            : settings.ChatGptOverridePresent && !settings.ChatGptOverrideConfigured
                 ? "The configured ChatGPT override URL is invalid. Use an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>."
-                : "Configure Project + Conversation, or a validated ChatGPT conversation override URL, before probing the live adapter.",
+                : "Project and Conversation must be configured together. Configure both, configure only an Override Link, or leave all target fields empty to use New Chat.";
+
+        return Results.Problem(
+            title: "ChatGPT target is invalid",
+            detail: detail,
             statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 
     var snapshot = await loop.GetState(cancellationToken);
     if (snapshot.State is WorkerRuntimeState.DISPATCHING or
@@ -160,12 +167,15 @@ app.MapPost("/control/chatgpt/probe", async (
             statusCode: StatusCodes.Status409Conflict);
     }
 
-    var result = settings.ChatGptOverrideConfigured
-        ? await driver.ProbeOverrideLink(settings.ChatGptOverrideUrl, cancellationToken)
-        : await driver.ProbeExactContext(
+    var result = settings.ChatGptTargetMode switch
+    {
+        "override-link" => await driver.ProbeOverrideLink(settings.ChatGptOverrideUrl, cancellationToken),
+        "project-chat" => await driver.ProbeExactContext(
             settings.ChatGptProject,
             settings.ChatGptConversation,
-            cancellationToken);
+            cancellationToken),
+        _ => await driver.ProbeNewChat(cancellationToken)
+    };
 
     return result.Compatible
         ? Results.Ok(result)
@@ -196,9 +206,14 @@ public sealed record WorkerServerSettings(
     TimeSpan RecoveryInterval,
     TimeSpan MinimumDispatchInterval)
 {
+    public bool ChatGptProjectPresent => !string.IsNullOrWhiteSpace(ChatGptProject);
+    public bool ChatGptConversationPresent => !string.IsNullOrWhiteSpace(ChatGptConversation);
+
     public bool ChatGptSemanticTargetConfigured =>
-        !string.IsNullOrWhiteSpace(ChatGptProject) &&
-        !string.IsNullOrWhiteSpace(ChatGptConversation);
+        ChatGptProjectPresent && ChatGptConversationPresent;
+
+    public bool ChatGptSemanticTargetPartial =>
+        ChatGptProjectPresent != ChatGptConversationPresent;
 
     public bool ChatGptOverridePresent =>
         !string.IsNullOrWhiteSpace(ChatGptOverrideUrl);
@@ -206,12 +221,23 @@ public sealed record WorkerServerSettings(
     public bool ChatGptOverrideConfigured =>
         ChatGptOverridePresent && IsValidChatGptConversationOverride(ChatGptOverrideUrl);
 
-    // Override presence is authoritative. A malformed override must fail closed rather than
-    // silently falling back to Project + Conversation.
+    public bool ChatGptTargetAmbiguous =>
+        ChatGptOverridePresent && (ChatGptProjectPresent || ChatGptConversationPresent);
+
+    public bool ChatGptUsesNewChat =>
+        !ChatGptOverridePresent && !ChatGptProjectPresent && !ChatGptConversationPresent;
+
     public bool ChatGptTargetConfigured =>
-        ChatGptOverridePresent
-            ? ChatGptOverrideConfigured
-            : ChatGptSemanticTargetConfigured;
+        !ChatGptTargetAmbiguous &&
+        !ChatGptSemanticTargetPartial &&
+        (ChatGptOverridePresent ? ChatGptOverrideConfigured : true);
+
+    public string ChatGptTargetMode =>
+        ChatGptTargetAmbiguous ? "invalid-ambiguous" :
+        ChatGptOverridePresent ? (ChatGptOverrideConfigured ? "override-link" : "invalid-override") :
+        ChatGptSemanticTargetPartial ? "invalid-incomplete" :
+        ChatGptSemanticTargetConfigured ? "project-chat" :
+        "new-chat";
 
     public bool LiveChatGptBaseUrl =>
         Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
@@ -232,8 +258,6 @@ public sealed record WorkerServerSettings(
         BrowserRuntimeConfigured &&
         !string.IsNullOrWhiteSpace(GitHubWebhookSecret);
 
-    // OverrideUrl is intentionally passed even when Project/Conversation are also configured.
-    // Core target resolution gives the override deterministic precedence.
     public EngineeringTarget Target => new(
         ChatGptProject,
         ChatGptConversation,
@@ -365,7 +389,7 @@ public sealed class WorkerHostedService(
     {
         if (!settings.IsConfigured)
         {
-            logger.LogWarning("BKE Worker is running unconfigured; set Notion, ChatGPT target (Project + Conversation or override URL), loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
+            logger.LogWarning("BKE Worker is running unconfigured; set Notion, a valid ChatGPT target mode (Project + Conversation, Override Link, or neither for New Chat), loopback browser CDP for live chatgpt.com, and GitHub webhook environment variables.");
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
             return;
         }
