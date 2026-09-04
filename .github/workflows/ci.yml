@@ -85,6 +85,7 @@ jobs:
           ready_code=$(curl --silent --output "$RUNNER_TEMP/ready.json" --write-out '%{http_code}' http://127.0.0.1:5080/health/ready)
           test "$ready_code" = "503"
           grep -q '"status":"not_ready"' "$RUNNER_TEMP/ready.json"
+          grep -q '"notionConnected":false' "$RUNNER_TEMP/ready.json"
 
           webhook_code=$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://127.0.0.1:5080/webhooks/github)
           test "$webhook_code" = "404"
@@ -99,6 +100,12 @@ jobs:
         run: |
           set -euo pipefail
           ui=src/BKE.Worker.Server/wwwroot/index.html
+          grep -q 'Notion integration secret' "$ui"
+          grep -q 'memory-only' "$ui"
+          grep -q 'connectNotion' "$ui"
+          grep -q 'disconnectNotion' "$ui"
+          grep -q '/control/notion/connect' "$ui"
+          grep -q '/control/notion/disconnect' "$ui"
           grep -q 'Engineering project' "$ui"
           grep -q 'ENGINEERING:' "$ui"
           grep -q 'Notion task / TODO' "$ui"
@@ -107,7 +114,7 @@ jobs:
           grep -q 'Refresh Notion lists' "$ui"
           grep -q 'projectRefreshMs = 30000' "$ui"
           grep -q 'Names discover' "$ui"
-          grep -q 'Unchecked + ChatGPT busy' "$ui"
+          grep -q 'ChatGPT busy' "$ui"
           if grep -q 'GitHub webhook' "$ui"; then
             echo 'ERROR: webhook-era control leaked into minimal watchdog UI' >&2
             exit 1
@@ -117,17 +124,24 @@ jobs:
             exit 1
           fi
 
-      - name: Certify fixed Notion page env is retired
+      - name: Certify Notion env credentials are retired
         run: |
           set -euo pipefail
-          if grep -R --line-number 'BKE_WORKER_NOTION_PAGE' \
-            src/BKE.Worker.Server \
-            scripts/bke-worker.env.example \
-            README.md \
-            docs/notion-control-page-template.md; then
-            echo 'ERROR: fixed Notion page environment authority leaked into active runtime/docs' >&2
-            exit 1
-          fi
+          active=(
+            src/BKE.Worker.Server
+            scripts/run-worker.sh
+            scripts/bke-worker.env.example
+            README.md
+            docs/notion-control-page-template.md
+          )
+          for retired in BKE_WORKER_NOTION_PAGE BKE_WORKER_NOTION_TOKEN; do
+            if grep -R --line-number "$retired" "${active[@]}"; then
+              echo "ERROR: retired Notion environment authority leaked into active runtime/docs: $retired" >&2
+              exit 1
+            fi
+          done
+          grep -q 'operator-ui-memory-only' src/BKE.Worker.Server/Program.cs
+          grep -q 'NOTION_NOT_CONNECTED' src/BKE.Worker.Server/NotionRuntimeConnection.cs
 
       - uses: actions/upload-artifact@v4
         with:
