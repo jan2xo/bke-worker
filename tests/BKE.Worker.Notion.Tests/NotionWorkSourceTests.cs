@@ -115,6 +115,16 @@ public sealed class NotionWorkSourceTests
             CancellationToken cancellationToken) =>
             Task.FromResult(tasks);
 
+        public Task<NotionChecklistTask?> GetTask(
+            string blockId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(tasks.FirstOrDefault(task => string.Equals(task.BlockId, blockId, StringComparison.Ordinal)));
+
+        public Task<IReadOnlyList<NotionInstructionTemplate>> GetInstructionTemplates(
+            string pageIdOrUrl,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<NotionInstructionTemplate>>([]);
+
         public Task<NotionExecutionTarget> GetExecutionTarget(
             string pageIdOrUrl,
             CancellationToken cancellationToken)
