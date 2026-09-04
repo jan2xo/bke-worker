@@ -367,6 +367,7 @@ public sealed class NotionCheckboxWatchdogHostedService(
     NotionCheckboxWatchdog watchdog,
     NotionRuntimeConnection notionConnection,
     ChatGptRuntimeTarget chatGptTarget,
+    ChatGptBrowserRuntime chatGptBrowser,
     WorkerServerSettings settings,
     ILogger<NotionCheckboxWatchdogHostedService> logger) : BackgroundService
 {
@@ -375,7 +376,13 @@ public sealed class NotionCheckboxWatchdogHostedService(
         using var timer = new PeriodicTimer(settings.WatchdogInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            if (!settings.HostConfigured || !notionConnection.IsConnected || !chatGptTarget.IsConnected) continue;
+            if (!settings.HostConfigured || !notionConnection.IsConnected || !chatGptTarget.IsConnected)
+                continue;
+
+            var browser = await chatGptBrowser.GetStatus(stoppingToken);
+            if (!browser.CdpReady || browser.Authorization != ChatGptAuthorizationState.AUTHORIZED)
+                continue;
+
             WatchdogActionResult result;
             try { result = await watchdog.Tick(stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
