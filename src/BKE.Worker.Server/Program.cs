@@ -40,16 +40,6 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-async Task<bool> IsReady(CancellationToken cancellationToken)
-{
-    var browser = await chatGptBrowser.GetStatus(cancellationToken);
-    return settings.HostConfigured &&
-        notionConnection.IsConnected &&
-        chatGptTarget.IsConnected &&
-        browser.CdpReady &&
-        browser.Authorization == ChatGptAuthorizationState.AUTHORIZED;
-}
-
 app.MapGet("/health", async (CancellationToken cancellationToken) =>
 {
     var browser = await chatGptBrowser.GetStatus(cancellationToken);
