@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BKE.Worker.Core;
@@ -38,6 +37,7 @@ public sealed record WatchdogActionResult(
 
 public sealed class NotionCheckboxWatchdog(
     INotionChecklistClient notion,
+    NotionRuntimeConnection notionConnection,
     IChatGPTDriver driver,
     IWorkerStateStore stateStore,
     WorkerServerSettings settings)
@@ -45,7 +45,6 @@ public sealed class NotionCheckboxWatchdog(
     public const string EngineeringPagePrefix = "ENGINEERING:";
     private const string DispatchOutcomeUnknown = "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
     private readonly SemaphoreSlim _mutex = new(1, 1);
-    private readonly HttpClient _notionPageHttp = CreateNotionPageHttp(settings);
 
     public async Task<IReadOnlyList<WatchdogProjectOption>> GetProjects(CancellationToken cancellationToken)
     {
@@ -383,9 +382,7 @@ public sealed class NotionCheckboxWatchdog(
         CancellationToken cancellationToken)
     {
         var pageId = NotionChecklistClient.NormalizeNotionId(pageIdOrUrl);
-        using var response = await _notionPageHttp.GetAsync(
-            $"v1/pages/{Uri.EscapeDataString(pageId)}",
-            cancellationToken);
+        using var response = await notionConnection.GetPage(pageId, cancellationToken);
         var payload = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"NOTION_PAGE_IDENTITY_FAILED:{(int)response.StatusCode}");
@@ -404,19 +401,6 @@ public sealed class NotionCheckboxWatchdog(
             : null;
 
         return new NotionPageSummary(returnedId, title, url);
-    }
-
-    private static HttpClient CreateNotionPageHttp(WorkerServerSettings settings)
-    {
-        var http = new HttpClient
-        {
-            BaseAddress = new Uri(settings.NotionBaseUrl, UriKind.Absolute)
-        };
-        if (!string.IsNullOrWhiteSpace(settings.NotionToken))
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.NotionToken.Trim());
-        http.DefaultRequestHeaders.Remove("Notion-Version");
-        http.DefaultRequestHeaders.Add("Notion-Version", NotionChecklistClient.ApiVersion);
-        return http;
     }
 
     private static string ReadPageTitle(JsonElement page)
@@ -547,22 +531,18 @@ public sealed class JsonWorkerStateStore(string path) : IWorkerStateStore
 
 public sealed class NotionCheckboxWatchdogHostedService(
     NotionCheckboxWatchdog watchdog,
+    NotionRuntimeConnection notionConnection,
     WorkerServerSettings settings,
     ILogger<NotionCheckboxWatchdogHostedService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!settings.IsConfigured)
-        {
-            logger.LogWarning(
-                "BKE Worker watchdog is unconfigured; Notion token, deterministic ChatGPT override URL, and loopback CDP are required.");
-            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
-            return;
-        }
-
         using var timer = new PeriodicTimer(settings.WatchdogInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            if (!settings.IsConfigured || !notionConnection.IsConnected)
+                continue;
+
             WatchdogActionResult result;
             try
             {
