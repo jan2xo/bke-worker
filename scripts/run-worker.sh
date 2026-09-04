@@ -15,6 +15,14 @@ else
   echo "WARNING: starting the operator UI in NOT READY state." >&2
 fi
 
+# Notion authentication is UI/session-owned. Keep only non-secret Notion transport
+# configuration if legacy host files still export retired Notion authority values.
+while IFS= read -r name; do
+  if [[ "$name" != "BKE_WORKER_NOTION_BASE_URL" ]]; then
+    unset "$name"
+  fi
+done < <(compgen -A variable BKE_WORKER_NOTION_ || true)
+
 export BKE_WORKER_BROWSER_CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http://127.0.0.1:9222}"
 export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatgpt.com/}"
 export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-chatgpt-profile}"
