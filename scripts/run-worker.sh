@@ -4,17 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${BKE_WORKER_ENV_FILE:-$HOME/.config/bke-worker/bke-worker.env}"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "ERROR: missing environment file: $ENV_FILE" >&2
-  echo "Run bash scripts/bootstrap-linux-host.sh, then configure the generated file." >&2
-  exit 1
+if [[ -f "$ENV_FILE" ]]; then
+  chmod 600 "$ENV_FILE"
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+else
+  echo "WARNING: environment file not found: $ENV_FILE" >&2
+  echo "WARNING: starting the operator UI in NOT READY state." >&2
 fi
-
-chmod 600 "$ENV_FILE"
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
 
 export BKE_WORKER_BROWSER_CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http://127.0.0.1:9222}"
 export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatgpt.com/}"
@@ -37,13 +36,13 @@ required=(
 )
 
 for name in "${required[@]}"; do
-  if [[ -z "${!name:-}" || "${!name}" == "REPLACE_ME" ]]; then
-    echo "ERROR: required setting is missing: $name" >&2
-    exit 1
+  if [[ -z "${!name:-}" || "${!name:-}" == "REPLACE_ME" ]]; then
+    echo "WARNING: runtime setting missing: $name (UI will still start; watchdog remains NOT READY)" >&2
   fi
 done
 
-python3 - "$BKE_WORKER_CHATGPT_OVERRIDE_URL" <<'PY'
+if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" != "REPLACE_ME" ]]; then
+  if ! python3 - "$BKE_WORKER_CHATGPT_OVERRIDE_URL" <<'PY'
 import sys
 from urllib.parse import urlparse
 
@@ -56,12 +55,20 @@ valid = (
     and any(segments[i].lower() == 'c' and i + 1 < len(segments) and segments[i + 1]
             for i in range(len(segments)))
 )
-if not valid:
-    raise SystemExit('ERROR: BKE_WORKER_CHATGPT_OVERRIDE_URL must be an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>.')
+raise SystemExit(0 if valid else 1)
 PY
+  then
+    echo "WARNING: BKE_WORKER_CHATGPT_OVERRIDE_URL is invalid (UI will still start; watchdog remains NOT READY)." >&2
+  fi
+fi
 
 cd "$ROOT_DIR"
-bash scripts/verify-live-host.sh
+if bash scripts/verify-live-host.sh; then
+  echo "Live ChatGPT host prerequisites: READY"
+else
+  echo "WARNING: live ChatGPT host prerequisites are not ready yet." >&2
+  echo "WARNING: operator UI will still start; ChatGPT actions remain unavailable until fixed." >&2
+fi
 
 echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "operator UI: $ASPNETCORE_URLS"
