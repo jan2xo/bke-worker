@@ -104,6 +104,8 @@ jobs:
           grep -q 'Notion task / TODO' "$ui"
           grep -q 'Durable instruction' "$ui"
           grep -q 'Start watchdog' "$ui"
+          grep -q 'Refresh Notion lists' "$ui"
+          grep -q 'projectRefreshMs = 30000' "$ui"
           grep -q 'Names discover' "$ui"
           grep -q 'Unchecked + ChatGPT busy' "$ui"
           if grep -q 'GitHub webhook' "$ui"; then
@@ -112,6 +114,18 @@ jobs:
           fi
           if grep -q '>Repository<' "$ui"; then
             echo 'ERROR: repository selector/control leaked into minimal watchdog UI' >&2
+            exit 1
+          fi
+
+      - name: Certify fixed Notion page env is retired
+        run: |
+          set -euo pipefail
+          if grep -R --line-number 'BKE_WORKER_NOTION_PAGE' \
+            src/BKE.Worker.Server \
+            scripts/bke-worker.env.example \
+            README.md \
+            docs/notion-control-page-template.md; then
+            echo 'ERROR: fixed Notion page environment authority leaked into active runtime/docs' >&2
             exit 1
           fi
 
