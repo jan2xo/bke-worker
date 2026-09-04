@@ -5,40 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BKE Worker</title>
   <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #090b0f; color: #f4f6fa; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 18% -10%, rgba(94, 116, 255, .15), transparent 34rem), #090b0f; }
-    button, select, input { font: inherit; }
-    .shell { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 54px; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .mark { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: #f4f6fa; color: #090b0f; font-weight: 900; font-size: 12px; }
-    h1 { margin: 0; font-size: 19px; }
-    .subtle { color: #858e9d; font-size: 12px; }
-    .pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid #282e38; border-radius: 999px; color: #cbd1dc; font-size: 11px; background: rgba(17,20,26,.72); }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: #77808f; }
-    .dot.good { background: #55d88b; } .dot.warn { background: #f0b85d; } .dot.bad { background: #f06e79; }
-    .card { border: 1px solid #242a34; background: rgba(16,19,25,.9); border-radius: 18px; box-shadow: 0 22px 58px rgba(0,0,0,.22); }
-    .control { padding: 20px; } .eyebrow { color: #788292; text-transform: uppercase; letter-spacing: .13em; font-size: 10px; font-weight: 800; }
-    .field { margin-top: 17px; } label { display: block; margin-bottom: 8px; color: #adb5c2; font-size: 12px; font-weight: 650; }
-    select, input { width: 100%; min-height: 46px; border: 1px solid #2d3440; border-radius: 12px; background: #0d1117; color: #f4f6fa; padding: 0 13px; outline: none; }
-    select { appearance: none; padding-right: 40px; background-image: linear-gradient(45deg,transparent 50%,#7d8795 50%),linear-gradient(135deg,#7d8795 50%,transparent 50%); background-position: calc(100% - 18px) 19px,calc(100% - 13px) 19px; background-size:5px 5px; background-repeat:no-repeat; }
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#090b0f; color:#f4f6fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 18% -10%,rgba(94,116,255,.15),transparent 34rem),#090b0f; }
+    button,select,input { font:inherit; }
+    .shell { width:min(780px,calc(100% - 32px)); margin:0 auto; padding:34px 0 54px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:22px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .mark { width:38px; height:38px; border-radius:11px; display:grid; place-items:center; background:#f4f6fa; color:#090b0f; font-weight:900; font-size:12px; }
+    h1 { margin:0; font-size:19px; }
+    .subtle { color:#858e9d; font-size:12px; }
+    .pill { display:inline-flex; align-items:center; gap:7px; padding:6px 9px; border:1px solid #282e38; border-radius:999px; color:#cbd1dc; font-size:11px; background:rgba(17,20,26,.72); }
+    .dot { width:7px; height:7px; border-radius:50%; background:#77808f; }
+    .dot.good { background:#55d88b; } .dot.warn { background:#f0b85d; } .dot.bad { background:#f06e79; }
+    .card { border:1px solid #242a34; background:rgba(16,19,25,.9); border-radius:18px; box-shadow:0 22px 58px rgba(0,0,0,.22); }
+    .control { padding:20px; }
+    .eyebrow { color:#788292; text-transform:uppercase; letter-spacing:.13em; font-size:10px; font-weight:800; }
+    .field { margin-top:17px; }
+    label { display:block; margin-bottom:8px; color:#adb5c2; font-size:12px; font-weight:650; }
+    select,input { width:100%; min-height:46px; border:1px solid #2d3440; border-radius:12px; background:#0d1117; color:#f4f6fa; padding:0 13px; outline:none; }
+    select { appearance:none; padding-right:40px; background-image:linear-gradient(45deg,transparent 50%,#7d8795 50%),linear-gradient(135deg,#7d8795 50%,transparent 50%); background-position:calc(100% - 18px) 19px,calc(100% - 13px) 19px; background-size:5px 5px; background-repeat:no-repeat; }
     select:focus,input:focus { border-color:#59677b; }
     .connection-row { display:grid; grid-template-columns:1fr auto auto; gap:8px; align-items:center; }
+    .browser-actions,.actions,.utility { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
+    .browser-actions { margin-top:9px; }
     .instruction-preview { margin-top:9px; padding:11px 12px; border-radius:10px; background:#0c0f14; border:1px solid #202631; color:#8f99a8; font-size:11px; line-height:1.55; max-height:74px; overflow:hidden; white-space:pre-wrap; }
-    .actions { display:flex; gap:9px; margin-top:20px; flex-wrap:wrap; }
+    .actions { margin-top:20px; }
     button { border:1px solid #303743; background:#151a22; color:#edf1f7; border-radius:11px; padding:10px 13px; cursor:pointer; }
-    button.primary { flex:1; min-width:150px; background:#f4f6fa; color:#0a0c10; border-color:#f4f6fa; font-weight:800; } button.danger { color:#f3b5ba; }
+    button.primary { flex:1; min-width:150px; background:#f4f6fa; color:#0a0c10; border-color:#f4f6fa; font-weight:800; }
+    button.danger { color:#f3b5ba; }
     button:disabled,select:disabled,input:disabled { opacity:.42; cursor:not-allowed; }
     .message { margin-top:13px; min-height:17px; color:#858f9e; font-size:11px; }
-    .runtime { margin-top:12px; padding:18px 20px; } .state-line { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:11px 0 15px; }
-    .state { font-size:26px; font-weight:850; } .current { padding:13px 0; border-top:1px solid #232934; border-bottom:1px solid #232934; }
-    .current-title { font-size:14px; font-weight:700; line-height:1.45; margin-top:5px; } .current-id { margin-top:5px; color:#626c7b; font:10px ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
-    .meta { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:13px; } .meta strong { display:block; margin-top:4px; font-size:11px; overflow-wrap:anywhere; }
-    .utility { display:flex; gap:12px; margin-top:14px; align-items:center; flex-wrap:wrap; } .link-button { border:0; padding:0; background:transparent; color:#788596; font-size:11px; }
-    .failure { margin-top:10px; color:#f08b94; font-size:11px; line-height:1.5; } .hidden { display:none; }
+    .runtime { margin-top:12px; padding:18px 20px; }
+    .state-line { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:11px 0 15px; }
+    .state { font-size:26px; font-weight:850; }
+    .current { padding:13px 0; border-top:1px solid #232934; border-bottom:1px solid #232934; }
+    .current-title { font-size:14px; font-weight:700; line-height:1.45; margin-top:5px; }
+    .current-id { margin-top:5px; color:#626c7b; font:10px ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+    .meta { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:13px; }
+    .meta strong { display:block; margin-top:4px; font-size:11px; overflow-wrap:anywhere; }
+    .utility { margin-top:14px; }
+    .link-button { border:0; padding:0; background:transparent; color:#788596; font-size:11px; }
+    .failure { margin-top:10px; color:#f08b94; font-size:11px; line-height:1.5; }
+    .hidden { display:none; }
     footer { margin-top:18px; color:#56606f; font-size:10px; text-align:center; line-height:1.6; }
-    @media (max-width:580px){ .shell{width:min(100% - 22px,760px);padding-top:20px}.meta{grid-template-columns:1fr}.connection-row{grid-template-columns:1fr 1fr}.connection-row input{grid-column:1/-1} }
+    @media (max-width:620px){ .shell{width:min(100% - 22px,780px);padding-top:20px}.meta{grid-template-columns:1fr 1fr}.connection-row{grid-template-columns:1fr 1fr}.connection-row input{grid-column:1/-1} }
   </style>
 </head>
 <body>
@@ -49,15 +60,26 @@
     <div class="eyebrow">Run</div>
 
     <div class="field">
-      <label for="notionSecret">Notion integration secret</label>
-      <div class="connection-row"><input id="notionSecret" type="password" autocomplete="off" spellcheck="false" placeholder="Enter secret for this Worker session" /><button id="connectNotion">Connect</button><button id="disconnectNotion" class="danger">Disconnect</button></div>
-      <div id="notionConnectionText" class="subtle" style="margin-top:8px">Notion not connected · secret is memory-only</div>
+      <label>ChatGPT account / browser</label>
+      <div class="browser-actions">
+        <button id="startChatGpt">Start ChatGPT</button>
+        <button id="loginChatGpt">Login to ChatGPT</button>
+        <button id="verifyChatGptLogin">I've logged in</button>
+        <button id="clearChatGptAccount" class="danger">Clear / Logout</button>
+      </div>
+      <div id="chatGptBrowserText" class="subtle" style="margin-top:8px">Browser stopped · authorization unknown</div>
     </div>
 
     <div class="field">
       <label for="chatGptUrl">Exact ChatGPT conversation URL</label>
-      <div class="connection-row"><input id="chatGptUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://chatgpt.com/.../c/<conversation-id>" /><button id="connectChatGpt">Use URL</button><button id="disconnectChatGpt" class="danger">Clear</button></div>
+      <div class="connection-row"><input id="chatGptUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://chatgpt.com/.../c/<conversation-id>" /><button id="connectChatGpt">Use URL</button><button id="disconnectChatGpt" class="danger">Clear URL</button></div>
       <div id="chatGptConnectionText" class="subtle" style="margin-top:8px">ChatGPT target not set · URL is memory-only</div>
+    </div>
+
+    <div class="field">
+      <label for="notionSecret">Notion integration secret</label>
+      <div class="connection-row"><input id="notionSecret" type="password" autocomplete="off" spellcheck="false" placeholder="Enter secret for this Worker session" /><button id="connectNotion">Connect</button><button id="disconnectNotion" class="danger">Disconnect</button></div>
+      <div id="notionConnectionText" class="subtle" style="margin-top:8px">Notion not connected · secret is memory-only</div>
     </div>
 
     <div class="field"><label for="project">Engineering project</label><select id="project" disabled><option value="">Connect Notion first</option></select></div>
@@ -65,53 +87,63 @@
     <div class="field"><label for="instruction">Durable instruction</label><select id="instruction" disabled><option value="">Connect Notion first</option></select><div id="instructionPreview" class="instruction-preview">Connect Notion to load durable instructions.</div></div>
 
     <div class="actions"><button id="start" class="primary">Start watchdog</button><button id="stop" class="danger">Stop</button><button id="checkNow">Check now</button></div>
-    <div id="message" class="message">Notion secret + exact ChatGPT conversation URL are session memory only. Names discover. IDs execute.</div>
+    <div id="message" class="message">ChatGPT account lives in the dedicated Chromium profile. Notion secret + exact ChatGPT URL stay session-memory only.</div>
   </section>
 
   <section class="card runtime">
     <div class="eyebrow">Watchdog</div>
     <div class="state-line"><div id="state" class="state">—</div><span class="pill"><span id="readyDot" class="dot"></span><span id="readyText">Readiness unknown</span></span></div>
     <div class="current"><div class="subtle">Current TODO</div><div id="currentTask" class="current-title">No active task</div><div id="currentTaskId" class="current-id"></div><div id="failure" class="failure hidden"></div></div>
-    <div class="meta"><div><span class="subtle">Notion</span><strong id="notionState">DISCONNECTED</strong></div><div><span class="subtle">ChatGPT target</span><strong id="chatGptState">NOT SET</strong></div><div><span class="subtle">Last dispatch</span><strong id="lastDispatch">Never</strong></div></div>
-    <div class="utility"><button id="refreshLists" class="link-button">Refresh Notion lists</button><button id="probeChatGPT" class="link-button">Probe ChatGPT</button><span id="probeResult" class="subtle"></span></div>
+    <div class="meta"><div><span class="subtle">ChatGPT browser</span><strong id="browserState">STOPPED</strong></div><div><span class="subtle">Authorization</span><strong id="authState">UNKNOWN</strong></div><div><span class="subtle">Notion</span><strong id="notionState">DISCONNECTED</strong></div><div><span class="subtle">ChatGPT target</span><strong id="chatGptState">NOT SET</strong></div></div>
+    <div class="utility"><button id="refreshLists" class="link-button">Refresh Notion lists</button><button id="probeChatGPT" class="link-button">Probe exact ChatGPT URL</button><span id="probeResult" class="subtle"></span></div>
   </section>
 
-  <footer>Notion secret = UI memory only · ChatGPT URL = UI memory only · exact /c/&lt;id&gt; determines conversation · ENGINEERING: discovers → exact page ID locks</footer>
+  <footer>UI starts Chromium · human owns login · persistent profile owns account · exact /c/&lt;id&gt; owns conversation · ENGINEERING: discovers → exact page ID executes</footer>
 </main>
 <script>
 const byId=id=>document.getElementById(id);
-const fmt=value=>value?new Date(value).toLocaleTimeString():'Never';
 const projectRefreshMs=30000;
-let projects=[]; let instructions=[]; let notionConnected=false; let chatGptConnected=false; let watchdogActive=false;
+let projects=[];let instructions=[];let notionConnected=false;let chatGptConnected=false;let watchdogActive=false;
+let browserRunning=false;let browserCdpReady=false;let browserAuthorization='UNKNOWN';let browserProfileExists=false;
 function dot(el,kind){el.className='dot '+kind}
 function displayState(value){if(value==='WAITING_FOR_ENGINEERING_EVENT')return'WATCHING';if(value==='CONTINUING')return'CONTINUING';if(value==='DISPATCHING')return'DISPATCHING';return value||'IDLE'}
 function isActiveState(value){return value==='WAITING_FOR_ENGINEERING_EVENT'||value==='CONTINUING'||value==='DISPATCHING'}
+function browserAuthorized(){return browserCdpReady&&browserAuthorization==='AUTHORIZED'}
 function syncControls(){
   const selectorsLocked=watchdogActive||!notionConnected;
-  byId('project').disabled=selectorsLocked; byId('task').disabled=selectorsLocked; byId('instruction').disabled=selectorsLocked;
-  byId('notionSecret').disabled=watchdogActive||notionConnected; byId('connectNotion').disabled=watchdogActive||notionConnected; byId('disconnectNotion').disabled=watchdogActive||!notionConnected;
-  byId('chatGptUrl').disabled=watchdogActive||chatGptConnected; byId('connectChatGpt').disabled=watchdogActive||chatGptConnected; byId('disconnectChatGpt').disabled=watchdogActive||!chatGptConnected;
-  byId('refreshLists').disabled=!notionConnected; byId('probeChatGPT').disabled=!chatGptConnected;
-  byId('start').disabled=watchdogActive||!notionConnected||!chatGptConnected||!byId('project').value||!byId('task').value||!byId('instruction').value;
+  byId('project').disabled=selectorsLocked;byId('task').disabled=selectorsLocked;byId('instruction').disabled=selectorsLocked;
+  byId('notionSecret').disabled=watchdogActive||notionConnected;byId('connectNotion').disabled=watchdogActive||notionConnected;byId('disconnectNotion').disabled=watchdogActive||!notionConnected;
+  byId('chatGptUrl').disabled=watchdogActive||chatGptConnected;byId('connectChatGpt').disabled=watchdogActive||chatGptConnected;byId('disconnectChatGpt').disabled=watchdogActive||!chatGptConnected;
+  byId('startChatGpt').disabled=watchdogActive||browserCdpReady;
+  byId('loginChatGpt').disabled=watchdogActive||browserAuthorization!=='LOGIN_REQUIRED';
+  byId('verifyChatGptLogin').disabled=watchdogActive||browserAuthorization!=='LOGIN_IN_PROGRESS';
+  byId('clearChatGptAccount').disabled=watchdogActive||(!browserRunning&&!browserProfileExists);
+  byId('refreshLists').disabled=!notionConnected;byId('probeChatGPT').disabled=!chatGptConnected||!browserAuthorized();
+  byId('start').disabled=watchdogActive||!notionConnected||!chatGptConnected||!browserAuthorized()||!byId('project').value||!byId('task').value||!byId('instruction').value;
 }
 async function action(path,body){const options={method:'POST',headers:{}};if(body){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body)}const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw new Error(data.detail||data.message||('HTTP '+response.status));return data}
+function applyBrowser(status){if(!status)return;browserRunning=!!status.running;browserCdpReady=!!status.cdpReady;browserAuthorization=status.authorization||'UNKNOWN';browserProfileExists=!!status.profileExists;byId('browserState').textContent=browserCdpReady?'CDP READY':(browserRunning?'STARTING':'STOPPED');byId('authState').textContent=browserAuthorization;const text=browserAuthorization==='AUTHORIZED'?'Authorized ChatGPT session ready':browserAuthorization==='LOGIN_REQUIRED'?'Login required':browserAuthorization==='LOGIN_IN_PROGRESS'?'Browser open · finish login, then click I\'ve logged in':'Authorization unknown until ChatGPT is started';byId('chatGptBrowserText').textContent=text;syncControls()}
 function renderInstruction(){const selected=instructions.find(item=>item.key===byId('instruction').value);byId('instructionPreview').textContent=selected?.instruction||(notionConnected?'No durable instruction selected.':'Connect Notion to load durable instructions.')}
 function clearDisconnected(){byId('project').innerHTML='<option value="">Connect Notion first</option>';byId('task').innerHTML='<option value="">Connect Notion first</option>';byId('instruction').innerHTML='<option value="">Connect Notion first</option>';instructions=[];renderInstruction();syncControls()}
 function clearOptions(){byId('task').innerHTML='<option value="">No project selected</option>';byId('instruction').innerHTML='<option value="">No project selected</option>';instructions=[];renderInstruction();syncControls()}
 async function loadProjects(preserveProject=true,preserveOptions=true){if(!notionConnected){clearDisconnected();return}const select=byId('project');const previous=preserveProject?select.value:'';try{const response=await fetch('/control/projects',{cache:'no-store'});const data=await response.json();if(!response.ok)throw new Error(data.detail||('HTTP '+response.status));projects=Array.isArray(data)?data:[];select.innerHTML=projects.length?projects.map(p=>`<option value="${escapeHtml(p.pageId)}">${escapeHtml(p.title)}</option>`).join(''):'<option value="">No ENGINEERING: pages found</option>';if(previous&&projects.some(p=>p.pageId===previous))select.value=previous;await loadOptions(preserveOptions)}catch(error){select.innerHTML='<option value="">Engineering project discovery failed</option>';clearOptions();byId('message').textContent='Notion project discovery failed: '+error.message}syncControls()}
 async function loadOptions(preserve=true){if(!notionConnected){clearDisconnected();return}const projectId=byId('project').value;const task=byId('task');const instruction=byId('instruction');const previousTask=preserve?task.value:'';const previousInstruction=preserve?instruction.value:'';if(!projectId){clearOptions();return}try{const response=await fetch('/control/options?pageId='+encodeURIComponent(projectId),{cache:'no-store'});const data=await response.json();if(!response.ok)throw new Error(data.detail||('HTTP '+response.status));const tasks=data.tasks||[];instructions=data.instructions||[];task.innerHTML=tasks.length?tasks.map(t=>`<option value="${escapeHtml(t.blockId)}">${escapeHtml(t.text)}</option>`).join(''):'<option value="">No unchecked TODOs</option>';instruction.innerHTML=instructions.length?instructions.map(i=>`<option value="${escapeHtml(i.key)}">${escapeHtml(i.name)}</option>`).join(''):'<option value="">No instruction tables found</option>';if(previousTask&&tasks.some(t=>t.blockId===previousTask))task.value=previousTask;if(previousInstruction&&instructions.some(i=>i.key===previousInstruction))instruction.value=previousInstruction;renderInstruction()}catch(error){clearOptions();byId('message').textContent='Selected project refresh failed: '+error.message}syncControls()}
-async function loadSummary(){try{const response=await fetch('/control/summary',{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();const snapshot=data.snapshot||{};const task=data.currentTask;watchdogActive=isActiveState(snapshot.state);notionConnected=!!data.configuration?.notionConnected;chatGptConnected=!!data.configuration?.chatGptTargetConnected;byId('state').textContent=displayState(snapshot.state);byId('currentTask').textContent=task?.text||'No active task';byId('currentTaskId').textContent=snapshot.currentChecklistIdentifier||'';byId('notionState').textContent=notionConnected?(task?(task.checked?'CHECKED':'UNCHECKED'):'CONNECTED'):'DISCONNECTED';byId('chatGptState').textContent=chatGptConnected?'SET':'NOT SET';byId('notionConnectionText').textContent=notionConnected?'Connected · secret lives only in Worker memory':'Notion not connected · secret is memory-only';byId('chatGptConnectionText').textContent=chatGptConnected?'Deterministic conversation target set · URL lives only in Worker memory':'ChatGPT target not set · URL is memory-only';byId('lastDispatch').textContent=fmt(snapshot.lastDispatchAt);const failure=snapshot.failure;byId('failure').textContent=failure||'';byId('failure').classList.toggle('hidden',!failure);byId('readyText').textContent=data.ready?'Ready':(!notionConnected?'Connect Notion':(!chatGptConnected?'Set ChatGPT URL':'Host not ready'));dot(byId('readyDot'),data.ready?'good':'warn');byId('liveText').textContent='Connected';dot(byId('liveDot'),'good');if(!notionConnected&&!watchdogActive)clearDisconnected();syncControls()}catch(error){byId('liveText').textContent='Disconnected';dot(byId('liveDot'),'bad')}}
+async function loadSummary(){try{const response=await fetch('/control/summary',{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();const snapshot=data.snapshot||{};const task=data.currentTask;watchdogActive=isActiveState(snapshot.state);notionConnected=!!data.configuration?.notionConnected;chatGptConnected=!!data.configuration?.chatGptTargetConnected;applyBrowser(data.chatGptBrowser);byId('state').textContent=displayState(snapshot.state);byId('currentTask').textContent=task?.text||'No active task';byId('currentTaskId').textContent=snapshot.currentChecklistIdentifier||'';byId('notionState').textContent=notionConnected?(task?(task.checked?'CHECKED':'UNCHECKED'):'CONNECTED'):'DISCONNECTED';byId('chatGptState').textContent=chatGptConnected?'SET':'NOT SET';byId('notionConnectionText').textContent=notionConnected?'Connected · secret lives only in Worker memory':'Notion not connected · secret is memory-only';byId('chatGptConnectionText').textContent=chatGptConnected?'Deterministic conversation target set · URL lives only in Worker memory':'ChatGPT target not set · URL is memory-only';const failure=snapshot.failure;byId('failure').textContent=failure||'';byId('failure').classList.toggle('hidden',!failure);let readyReason='Ready';if(!data.ready){if(!browserCdpReady)readyReason='Start ChatGPT';else if(browserAuthorization!=='AUTHORIZED')readyReason='Login ChatGPT';else if(!chatGptConnected)readyReason='Set ChatGPT URL';else if(!notionConnected)readyReason='Connect Notion';else readyReason='Host not ready'}byId('readyText').textContent=readyReason;dot(byId('readyDot'),data.ready?'good':'warn');byId('liveText').textContent='Connected';dot(byId('liveDot'),'good');if(!notionConnected&&!watchdogActive)clearDisconnected();syncControls()}catch(error){byId('liveText').textContent='Disconnected';dot(byId('liveDot'),'bad')}}
+byId('startChatGpt').addEventListener('click',async()=>{byId('message').textContent='Starting ChatGPT with the dedicated persistent Chromium profile…';try{const status=await action('/control/chatgpt/browser/start');applyBrowser(status);byId('message').textContent=status.authorization==='AUTHORIZED'?'ChatGPT started. Existing authorization is valid.':'ChatGPT started, but login is required.';await loadSummary()}catch(error){byId('message').textContent='Start ChatGPT failed: '+error.message}});
+byId('loginChatGpt').addEventListener('click',async()=>{byId('message').textContent='Opening ChatGPT for human login…';try{const status=await action('/control/chatgpt/browser/login');applyBrowser(status);byId('message').textContent='Finish login in Chromium, then click “I\'ve logged in”.'}catch(error){byId('message').textContent='Login launch failed: '+error.message}});
+byId('verifyChatGptLogin').addEventListener('click',async()=>{byId('message').textContent='Verifying ChatGPT authorization…';try{const status=await action('/control/chatgpt/browser/verify-login');applyBrowser(status);byId('message').textContent=status.authorization==='AUTHORIZED'?'ChatGPT authorization verified.':'ChatGPT still requires login.';await loadSummary()}catch(error){byId('message').textContent='Login verification failed: '+error.message}});
+byId('clearChatGptAccount').addEventListener('click',async()=>{byId('message').textContent='Clearing dedicated ChatGPT browser profile…';try{const status=await action('/control/chatgpt/browser/clear');applyBrowser(status);chatGptConnected=false;byId('chatGptUrl').value='';byId('message').textContent='ChatGPT account cleared. Next account requires a fresh login and exact conversation URL.';await loadSummary()}catch(error){byId('message').textContent='Clear / Logout failed: '+error.message}});
 byId('connectNotion').addEventListener('click',async()=>{const secret=byId('notionSecret').value;if(!secret.trim()){byId('message').textContent='Enter a Notion integration secret.';return}try{await action('/control/notion/connect',{secret});byId('notionSecret').value='';notionConnected=true;byId('message').textContent='Notion connected in memory. Discovering ENGINEERING: pages…';await loadProjects(false,false);await loadSummary()}catch(error){byId('notionSecret').value='';byId('message').textContent='Notion connection failed: '+error.message}syncControls()});
 byId('disconnectNotion').addEventListener('click',async()=>{try{await action('/control/notion/disconnect');notionConnected=false;projects=[];clearDisconnected();byId('message').textContent='Notion disconnected. In-memory secret discarded.';await loadSummary()}catch(error){byId('message').textContent='Notion disconnect failed: '+error.message}});
 byId('connectChatGpt').addEventListener('click',async()=>{const url=byId('chatGptUrl').value;if(!url.trim()){byId('message').textContent='Paste the exact ChatGPT conversation URL.';return}try{await action('/control/chatgpt/connect',{url});byId('chatGptUrl').value='';chatGptConnected=true;byId('message').textContent='Deterministic ChatGPT conversation target stored in memory.';await loadSummary()}catch(error){byId('chatGptUrl').value='';byId('message').textContent='ChatGPT target rejected: '+error.message}syncControls()});
-byId('disconnectChatGpt').addEventListener('click',async()=>{try{await action('/control/chatgpt/disconnect');chatGptConnected=false;byId('message').textContent='ChatGPT target cleared from Worker memory.';await loadSummary()}catch(error){byId('message').textContent='ChatGPT clear failed: '+error.message}});
+byId('disconnectChatGpt').addEventListener('click',async()=>{try{await action('/control/chatgpt/disconnect');chatGptConnected=false;byId('message').textContent='ChatGPT target URL cleared from Worker memory.';await loadSummary()}catch(error){byId('message').textContent='ChatGPT URL clear failed: '+error.message}});
 byId('project').addEventListener('change',async()=>{await loadOptions(false);byId('message').textContent=byId('project').value?'Engineering page locked by exact ID when START is pressed.':'Select an ENGINEERING: page.'});
 byId('task').addEventListener('change',syncControls);byId('instruction').addEventListener('change',()=>{renderInstruction();syncControls()});
 byId('start').addEventListener('click',async()=>{byId('start').disabled=true;byId('message').textContent='Arming watchdog…';try{const result=await action('/control/start',{notionPageId:byId('project').value,taskBlockId:byId('task').value,instructionKey:byId('instruction').value});byId('message').textContent=result.promptSent?'Watchdog armed. Exact Notion IDs + deterministic ChatGPT URL dispatched.':'Watchdog armed; ChatGPT is busy.';await loadSummary()}catch(error){byId('message').textContent='Start failed: '+error.message}syncControls()});
 byId('stop').addEventListener('click',async()=>{try{await action('/control/stop');byId('message').textContent='Watchdog stopped.';await loadSummary();await loadProjects(true,true)}catch(error){byId('message').textContent='Stop failed: '+error.message}});
 byId('checkNow').addEventListener('click',async()=>{try{const result=await action('/control/check-now');byId('message').textContent=result.message||'Checked.';await loadSummary();if(notionConnected)await loadOptions(true)}catch(error){byId('message').textContent='Check failed: '+error.message}});
 byId('refreshLists').addEventListener('click',async()=>{if(!notionConnected)return;await loadProjects(true,true);byId('message').textContent='ENGINEERING: pages, TODOs, and instructions refreshed.'});
-byId('probeChatGPT').addEventListener('click',async()=>{byId('probeResult').textContent='Checking…';try{const result=await action('/control/chatgpt/probe');byId('probeResult').textContent=result.canSendNextTurn?'ChatGPT idle / send available':(result.turnBusy?'ChatGPT busy':'Composer unavailable')}catch(error){byId('probeResult').textContent='Probe failed: '+error.message}});
+byId('probeChatGPT').addEventListener('click',async()=>{byId('probeResult').textContent='Checking…';try{const result=await action('/control/chatgpt/probe');byId('probeResult').textContent=result.canSendNextTurn?'Exact chat ready / send available':(result.turnBusy?'Exact chat busy':'Composer unavailable')}catch(error){byId('probeResult').textContent='Probe failed: '+error.message}});
 function escapeHtml(value){return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
 loadSummary();setInterval(loadSummary,1500);setInterval(()=>{if(notionConnected&&!watchdogActive)loadOptions(true)},8000);setInterval(()=>{if(notionConnected&&!watchdogActive)loadProjects(true,true)},projectRefreshMs);
 </script>
