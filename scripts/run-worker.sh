@@ -19,10 +19,10 @@ set +a
 export BKE_WORKER_BROWSER_CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http://127.0.0.1:9222}"
 export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatgpt.com/}"
 export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-chatgpt-profile}"
-export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/worker.json}"
+export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/notion-watchdog.json}"
+export BKE_WORKER_WATCHDOG_SECONDS="${BKE_WORKER_WATCHDOG_SECONDS:-2}"
+export BKE_WORKER_IDLE_RETRY_SECONDS="${BKE_WORKER_IDLE_RETRY_SECONDS:-5}"
 export BKE_WORKER_HEADLESS=false
-# Keep Kestrel private. Cloudflare Tunnel is the only public ingress and forwards
-# only the exact GitHub webhook path to this loopback listener.
 export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5080}"
 
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
@@ -31,7 +31,7 @@ chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 required=(
   BKE_WORKER_NOTION_TOKEN
   BKE_WORKER_NOTION_PAGE
-  BKE_WORKER_GITHUB_WEBHOOK_SECRET
+  BKE_WORKER_CHATGPT_OVERRIDE_URL
 )
 
 for name in "${required[@]}"; do
@@ -41,16 +41,39 @@ for name in "${required[@]}"; do
   fi
 done
 
+python3 - "$BKE_WORKER_CHATGPT_OVERRIDE_URL" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+value = sys.argv[1]
+uri = urlparse(value)
+segments = [segment for segment in uri.path.split('/') if segment]
+valid = (
+    uri.scheme == 'https'
+    and uri.hostname in {'chatgpt.com', 'www.chatgpt.com'}
+    and any(segments[i].lower() == 'c' and i + 1 < len(segments) and segments[i + 1]
+            for i in range(len(segments)))
+)
+if not valid:
+    raise SystemExit('ERROR: BKE_WORKER_CHATGPT_OVERRIDE_URL must be an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>.')
+PY
+
 cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
-echo "Starting BKE Worker in live CDP-attach mode."
+echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "listen: $ASPNETCORE_URLS (loopback only)"
-echo "target authority: Notion execution page"
-echo "target block: [BKE WORKER TARGET]"
-echo "target rule: Project+Chat OR Override Link; no explicit target means New Chat. No cross-target fallback."
-echo "task truth: ordered Notion todo checkboxes"
-echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block before the first Notion read."
+echo "task authority: one Notion control page"
+echo "task identity: exact Notion to_do block ID"
+echo "instruction authority: same-page Notion tables with KEY | NAME | INSTRUCTION"
+echo "chat target: deterministic configured conversation URL"
+echo "watchdog: ${BKE_WORKER_WATCHDOG_SECONDS}s"
+echo "idle retry: ${BKE_WORKER_IDLE_RETRY_SECONDS}s"
+echo "guard: unchecked + ChatGPT busy = wait"
+echo "guard: unchecked + ChatGPT idle = continue current TODO"
+echo "guard: checked = next unchecked TODO"
+echo "guard: no unchecked TODO = COMPLETE"
+echo "GitHub webhook is NOT orchestration authority on this branch."
 
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
   if [[ ! -f "$BKE_WORKER_SERVER_DLL" ]]; then
