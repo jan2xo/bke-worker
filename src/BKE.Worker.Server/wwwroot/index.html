@@ -114,7 +114,7 @@ function syncControls(){
   byId('project').disabled=selectorsLocked;byId('task').disabled=selectorsLocked;byId('instruction').disabled=selectorsLocked;
   byId('notionSecret').disabled=watchdogActive||notionConnected;byId('connectNotion').disabled=watchdogActive||notionConnected;byId('disconnectNotion').disabled=watchdogActive||!notionConnected;
   byId('chatGptUrl').disabled=watchdogActive||chatGptConnected;byId('connectChatGpt').disabled=watchdogActive||chatGptConnected;byId('disconnectChatGpt').disabled=watchdogActive||!chatGptConnected;
-  byId('startChatGpt').disabled=watchdogActive||browserCdpReady;
+  byId('startChatGpt').disabled=watchdogActive||(browserCdpReady&&browserAuthorization!=='UNKNOWN');
   byId('loginChatGpt').disabled=watchdogActive||browserAuthorization!=='LOGIN_REQUIRED';
   byId('verifyChatGptLogin').disabled=watchdogActive||browserAuthorization!=='LOGIN_IN_PROGRESS';
   byId('clearChatGptAccount').disabled=watchdogActive||(!browserRunning&&!browserProfileExists);
