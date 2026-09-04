@@ -5,87 +5,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BKE Worker</title>
   <style>
-    :root {
-      color-scheme: dark;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #090b0f;
-      color: #f4f6fa;
-    }
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #090b0f; color: #f4f6fa; }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at 18% -10%, rgba(94, 116, 255, .15), transparent 34rem),
-        #090b0f;
-    }
-    button, select { font: inherit; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 18% -10%, rgba(94, 116, 255, .15), transparent 34rem), #090b0f; }
+    button, select, input { font: inherit; }
     .shell { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 54px; }
     header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
     .brand { display: flex; align-items: center; gap: 12px; }
-    .mark {
-      width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
-      background: #f4f6fa; color: #090b0f; font-weight: 900; font-size: 12px; letter-spacing: -.04em;
-    }
+    .mark { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: #f4f6fa; color: #090b0f; font-weight: 900; font-size: 12px; letter-spacing: -.04em; }
     h1 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
     .subtle { color: #858e9d; font-size: 12px; }
-    .pill {
-      display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px;
-      border: 1px solid #282e38; border-radius: 999px; color: #cbd1dc; font-size: 11px;
-      background: rgba(17, 20, 26, .72);
-    }
+    .pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid #282e38; border-radius: 999px; color: #cbd1dc; font-size: 11px; background: rgba(17, 20, 26, .72); }
     .dot { width: 7px; height: 7px; border-radius: 50%; background: #77808f; }
     .dot.good { background: #55d88b; }
     .dot.warn { background: #f0b85d; }
     .dot.bad { background: #f06e79; }
-    .card {
-      border: 1px solid #242a34;
-      background: rgba(16, 19, 25, .9);
-      border-radius: 18px;
-      box-shadow: 0 22px 58px rgba(0, 0, 0, .22);
-    }
+    .card { border: 1px solid #242a34; background: rgba(16, 19, 25, .9); border-radius: 18px; box-shadow: 0 22px 58px rgba(0, 0, 0, .22); }
     .control { padding: 20px; }
     .eyebrow { color: #788292; text-transform: uppercase; letter-spacing: .13em; font-size: 10px; font-weight: 800; }
     .field { margin-top: 17px; }
     label { display: block; margin-bottom: 8px; color: #adb5c2; font-size: 12px; font-weight: 650; }
-    select {
-      width: 100%; min-height: 46px; appearance: none;
-      border: 1px solid #2d3440; border-radius: 12px;
-      background: #0d1117;
-      color: #f4f6fa;
-      padding: 0 40px 0 13px;
-      outline: none;
-      background-image:
-        linear-gradient(45deg, transparent 50%, #7d8795 50%),
-        linear-gradient(135deg, #7d8795 50%, transparent 50%);
-      background-position: calc(100% - 18px) 19px, calc(100% - 13px) 19px;
-      background-size: 5px 5px, 5px 5px;
-      background-repeat: no-repeat;
-    }
-    select:focus { border-color: #59677b; }
-    .instruction-preview {
-      margin-top: 9px; padding: 11px 12px; border-radius: 10px;
-      background: #0c0f14; border: 1px solid #202631;
-      color: #8f99a8; font-size: 11px; line-height: 1.55;
-      max-height: 74px; overflow: hidden; white-space: pre-wrap;
-    }
+    select, input[type="password"] { width: 100%; min-height: 46px; border: 1px solid #2d3440; border-radius: 12px; background: #0d1117; color: #f4f6fa; padding: 0 13px; outline: none; }
+    select { appearance: none; padding-right: 40px; background-image: linear-gradient(45deg, transparent 50%, #7d8795 50%), linear-gradient(135deg, #7d8795 50%, transparent 50%); background-position: calc(100% - 18px) 19px, calc(100% - 13px) 19px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+    select:focus, input:focus { border-color: #59677b; }
+    .connection-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+    .instruction-preview { margin-top: 9px; padding: 11px 12px; border-radius: 10px; background: #0c0f14; border: 1px solid #202631; color: #8f99a8; font-size: 11px; line-height: 1.55; max-height: 74px; overflow: hidden; white-space: pre-wrap; }
     .actions { display: flex; gap: 9px; margin-top: 20px; flex-wrap: wrap; }
-    button {
-      border: 1px solid #303743; background: #151a22; color: #edf1f7;
-      border-radius: 11px; padding: 10px 13px; cursor: pointer;
-      transition: transform .12s ease, border-color .12s ease, background .12s ease;
-    }
+    button { border: 1px solid #303743; background: #151a22; color: #edf1f7; border-radius: 11px; padding: 10px 13px; cursor: pointer; transition: transform .12s ease, border-color .12s ease, background .12s ease; }
     button:hover:not(:disabled) { transform: translateY(-1px); border-color: #4a5667; background: #1a202a; }
     button.primary { flex: 1; min-width: 150px; background: #f4f6fa; color: #0a0c10; border-color: #f4f6fa; font-weight: 800; }
     button.danger { color: #f3b5ba; }
-    button:disabled, select:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+    button:disabled, select:disabled, input:disabled { opacity: .42; cursor: not-allowed; transform: none; }
     .message { margin-top: 13px; min-height: 17px; color: #858f9e; font-size: 11px; }
     .runtime { margin-top: 12px; padding: 18px 20px; }
     .state-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 11px 0 15px; }
     .state { font-size: 26px; font-weight: 850; letter-spacing: -.04em; }
-    .current {
-      padding: 13px 0; border-top: 1px solid #232934; border-bottom: 1px solid #232934;
-    }
+    .current { padding: 13px 0; border-top: 1px solid #232934; border-bottom: 1px solid #232934; }
     .current-title { font-size: 14px; font-weight: 700; line-height: 1.45; margin-top: 5px; }
     .current-id { margin-top: 5px; color: #626c7b; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 13px; }
@@ -97,25 +52,13 @@
     .failure { margin-top: 10px; color: #f08b94; font-size: 11px; line-height: 1.5; }
     .hidden { display: none; }
     footer { margin-top: 18px; color: #56606f; font-size: 10px; text-align: center; line-height: 1.6; }
-    @media (max-width: 580px) {
-      .shell { width: min(100% - 22px, 760px); padding-top: 20px; }
-      header { align-items: flex-start; }
-      .meta { grid-template-columns: 1fr; }
-      .state-line { align-items: flex-start; flex-direction: column; }
-      .actions button { flex: 1; }
-    }
+    @media (max-width: 580px) { .shell { width: min(100% - 22px, 760px); padding-top: 20px; } header { align-items: flex-start; } .meta { grid-template-columns: 1fr; } .state-line { align-items: flex-start; flex-direction: column; } .actions button { flex: 1; } .connection-row { grid-template-columns: 1fr 1fr; } .connection-row input { grid-column: 1 / -1; } }
   </style>
 </head>
 <body>
   <main class="shell">
     <header>
-      <div class="brand">
-        <div class="mark">BKE</div>
-        <div>
-          <h1>BKE Worker</h1>
-          <div class="subtle">Notion Checkbox Watchdog</div>
-        </div>
-      </div>
+      <div class="brand"><div class="mark">BKE</div><div><h1>BKE Worker</h1><div class="subtle">Notion Checkbox Watchdog</div></div></div>
       <span class="pill"><span id="liveDot" class="dot"></span><span id="liveText">Connecting…</span></span>
     </header>
 
@@ -123,59 +66,32 @@
       <div class="eyebrow">Run</div>
 
       <div class="field">
-        <label for="project">Engineering project</label>
-        <select id="project"><option value="">Discovering ENGINEERING: pages…</option></select>
+        <label for="notionSecret">Notion integration secret</label>
+        <div class="connection-row">
+          <input id="notionSecret" type="password" autocomplete="off" spellcheck="false" placeholder="Enter secret for this Worker session" />
+          <button id="connectNotion">Connect</button>
+          <button id="disconnectNotion" class="danger">Disconnect</button>
+        </div>
+        <div id="notionConnectionText" class="subtle" style="margin-top:8px">Notion not connected · secret is memory-only</div>
       </div>
 
-      <div class="field">
-        <label for="task">Notion task / TODO</label>
-        <select id="task"><option value="">Select an engineering project first</option></select>
-      </div>
+      <div class="field"><label for="project">Engineering project</label><select id="project" disabled><option value="">Connect Notion first</option></select></div>
+      <div class="field"><label for="task">Notion task / TODO</label><select id="task" disabled><option value="">Connect Notion first</option></select></div>
+      <div class="field"><label for="instruction">Durable instruction</label><select id="instruction" disabled><option value="">Connect Notion first</option></select><div id="instructionPreview" class="instruction-preview">Connect Notion to load durable instructions.</div></div>
 
-      <div class="field">
-        <label for="instruction">Durable instruction</label>
-        <select id="instruction"><option value="">Select an engineering project first</option></select>
-        <div id="instructionPreview" class="instruction-preview">Instruction template will appear here.</div>
-      </div>
-
-      <div class="actions">
-        <button id="start" class="primary">Start watchdog</button>
-        <button id="stop" class="danger">Stop</button>
-        <button id="checkNow">Check now</button>
-      </div>
-      <div id="message" class="message">Names discover. Exact Notion page IDs and TODO block IDs execute.</div>
+      <div class="actions"><button id="start" class="primary">Start watchdog</button><button id="stop" class="danger">Stop</button><button id="checkNow">Check now</button></div>
+      <div id="message" class="message">Notion secret is never persisted. Names discover. Exact page IDs and TODO block IDs execute.</div>
     </section>
 
     <section class="card runtime">
       <div class="eyebrow">Watchdog</div>
-      <div class="state-line">
-        <div id="state" class="state">—</div>
-        <span class="pill"><span id="readyDot" class="dot"></span><span id="readyText">Readiness unknown</span></span>
-      </div>
-
-      <div class="current">
-        <div class="subtle">Current TODO</div>
-        <div id="currentTask" class="current-title">No active task</div>
-        <div id="currentTaskId" class="current-id"></div>
-        <div id="failure" class="failure hidden"></div>
-      </div>
-
-      <div class="meta">
-        <div><span class="subtle">Notion</span><strong id="notionState">—</strong></div>
-        <div><span class="subtle">Last dispatch</span><strong id="lastDispatch">Never</strong></div>
-        <div><span class="subtle">Last check</span><strong id="lastCheck">Never</strong></div>
-      </div>
-
-      <div class="utility">
-        <button id="refreshLists" class="link-button">Refresh Notion lists</button>
-        <button id="probeChatGPT" class="link-button">Probe ChatGPT</button>
-        <span id="probeResult" class="subtle"></span>
-      </div>
+      <div class="state-line"><div id="state" class="state">—</div><span class="pill"><span id="readyDot" class="dot"></span><span id="readyText">Readiness unknown</span></span></div>
+      <div class="current"><div class="subtle">Current TODO</div><div id="currentTask" class="current-title">No active task</div><div id="currentTaskId" class="current-id"></div><div id="failure" class="failure hidden"></div></div>
+      <div class="meta"><div><span class="subtle">Notion</span><strong id="notionState">DISCONNECTED</strong></div><div><span class="subtle">Last dispatch</span><strong id="lastDispatch">Never</strong></div><div><span class="subtle">Last check</span><strong id="lastCheck">Never</strong></div></div>
+      <div class="utility"><button id="refreshLists" class="link-button">Refresh Notion lists</button><button id="probeChatGPT" class="link-button">Probe ChatGPT</button><span id="probeResult" class="subtle"></span></div>
     </section>
 
-    <footer>
-      ENGINEERING: discovers → exact page ID locks · Unchecked + ChatGPT busy → wait · Unchecked + idle → continue same TODO · Checked → next TODO · No unchecked TODOs → stop
-    </footer>
+    <footer>Notion secret = UI memory only · ENGINEERING: discovers → exact page ID locks · Unchecked + ChatGPT busy → wait · Checked → next TODO · No unchecked TODOs → stop</footer>
   </main>
 
   <script>
@@ -184,42 +100,52 @@
     const projectRefreshMs = 30000;
     let projects = [];
     let instructions = [];
+    let notionConnected = false;
+    let watchdogActive = false;
 
     function dot(el, kind) { el.className = 'dot ' + kind; }
-    function displayState(value) {
-      if (value === 'WAITING_FOR_ENGINEERING_EVENT') return 'WATCHING';
-      if (value === 'CONTINUING') return 'CONTINUING';
-      if (value === 'DISPATCHING') return 'DISPATCHING';
-      return value || 'IDLE';
-    }
-    function isActiveState(value) {
-      return value === 'WAITING_FOR_ENGINEERING_EVENT' || value === 'CONTINUING' || value === 'DISPATCHING';
+    function displayState(value) { if (value === 'WAITING_FOR_ENGINEERING_EVENT') return 'WATCHING'; if (value === 'CONTINUING') return 'CONTINUING'; if (value === 'DISPATCHING') return 'DISPATCHING'; return value || 'IDLE'; }
+    function isActiveState(value) { return value === 'WAITING_FOR_ENGINEERING_EVENT' || value === 'CONTINUING' || value === 'DISPATCHING'; }
+
+    function syncControls() {
+      const selectorsLocked = watchdogActive || !notionConnected;
+      byId('project').disabled = selectorsLocked;
+      byId('task').disabled = selectorsLocked;
+      byId('instruction').disabled = selectorsLocked;
+      byId('notionSecret').disabled = watchdogActive || notionConnected;
+      byId('connectNotion').disabled = watchdogActive || notionConnected;
+      byId('disconnectNotion').disabled = watchdogActive || !notionConnected;
+      byId('refreshLists').disabled = !notionConnected;
+      byId('start').disabled = watchdogActive || !notionConnected || !byId('project').value || !byId('task').value || !byId('instruction').value;
     }
 
     async function loadProjects(preserveProject = true, preserveOptions = true) {
+      if (!notionConnected) { clearDisconnected(); return; }
       const projectSelect = byId('project');
       const previousProject = preserveProject ? projectSelect.value : '';
-
       try {
         const response = await fetch('/control/projects', { cache: 'no-store' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
-
         projects = Array.isArray(data) ? data : [];
-        projectSelect.innerHTML = projects.length
-          ? projects.map(project => `<option value="${escapeHtml(project.pageId)}">${escapeHtml(project.title)}</option>`).join('')
-          : '<option value="">No ENGINEERING: pages found</option>';
-
-        if (previousProject && projects.some(project => project.pageId === previousProject)) {
-          projectSelect.value = previousProject;
-        }
-
+        projectSelect.innerHTML = projects.length ? projects.map(project => `<option value="${escapeHtml(project.pageId)}">${escapeHtml(project.title)}</option>`).join('') : '<option value="">No ENGINEERING: pages found</option>';
+        if (previousProject && projects.some(project => project.pageId === previousProject)) projectSelect.value = previousProject;
         await loadOptions(preserveOptions);
       } catch (error) {
         projectSelect.innerHTML = '<option value="">Engineering project discovery failed</option>';
         clearOptions();
         byId('message').textContent = 'Notion project discovery failed: ' + error.message;
       }
+      syncControls();
+    }
+
+    function clearDisconnected() {
+      byId('project').innerHTML = '<option value="">Connect Notion first</option>';
+      byId('task').innerHTML = '<option value="">Connect Notion first</option>';
+      byId('instruction').innerHTML = '<option value="">Connect Notion first</option>';
+      instructions = [];
+      renderInstruction();
+      syncControls();
     }
 
     function clearOptions() {
@@ -227,62 +153,36 @@
       byId('instruction').innerHTML = '<option value="">No project selected</option>';
       instructions = [];
       renderInstruction();
-      syncStartButton();
+      syncControls();
     }
 
     async function loadOptions(preserve = true) {
+      if (!notionConnected) { clearDisconnected(); return; }
       const projectId = byId('project').value;
       const taskSelect = byId('task');
       const instructionSelect = byId('instruction');
       const previousTask = preserve ? taskSelect.value : '';
       const previousInstruction = preserve ? instructionSelect.value : '';
-
-      if (!projectId) {
-        clearOptions();
-        return;
-      }
-
+      if (!projectId) { clearOptions(); return; }
       try {
         const response = await fetch('/control/options?pageId=' + encodeURIComponent(projectId), { cache: 'no-store' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
-
         const tasks = data.tasks || [];
         instructions = data.instructions || [];
-
-        taskSelect.innerHTML = tasks.length
-          ? tasks.map(task => `<option value="${escapeHtml(task.blockId)}">${escapeHtml(task.text)}</option>`).join('')
-          : '<option value="">No unchecked TODOs</option>';
-
-        instructionSelect.innerHTML = instructions.length
-          ? instructions.map(item => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.name)}</option>`).join('')
-          : '<option value="">No instruction tables found</option>';
-
+        taskSelect.innerHTML = tasks.length ? tasks.map(task => `<option value="${escapeHtml(task.blockId)}">${escapeHtml(task.text)}</option>`).join('') : '<option value="">No unchecked TODOs</option>';
+        instructionSelect.innerHTML = instructions.length ? instructions.map(item => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.name)}</option>`).join('') : '<option value="">No instruction tables found</option>';
         if (previousTask && tasks.some(task => task.blockId === previousTask)) taskSelect.value = previousTask;
         if (previousInstruction && instructions.some(item => item.key === previousInstruction)) instructionSelect.value = previousInstruction;
-
         renderInstruction();
-        syncStartButton();
       } catch (error) {
         clearOptions();
         byId('message').textContent = 'Selected project refresh failed: ' + error.message;
       }
+      syncControls();
     }
 
-    function renderInstruction() {
-      const selected = instructions.find(item => item.key === byId('instruction').value);
-      byId('instructionPreview').textContent = selected?.instruction || 'No durable instruction selected.';
-    }
-
-    function syncStartButton() {
-      byId('start').disabled = !byId('project').value || !byId('task').value || !byId('instruction').value;
-    }
-
-    function lockSelectors(locked) {
-      byId('project').disabled = locked;
-      byId('task').disabled = locked;
-      byId('instruction').disabled = locked;
-    }
+    function renderInstruction() { const selected = instructions.find(item => item.key === byId('instruction').value); byId('instructionPreview').textContent = selected?.instruction || (notionConnected ? 'No durable instruction selected.' : 'Connect Notion to load durable instructions.'); }
 
     async function loadSummary() {
       try {
@@ -291,26 +191,24 @@
         const data = await response.json();
         const snapshot = data.snapshot || {};
         const task = data.currentTask;
-        const active = isActiveState(snapshot.state);
-
+        watchdogActive = isActiveState(snapshot.state);
+        notionConnected = !!data.configuration?.notionConnected;
         byId('state').textContent = displayState(snapshot.state);
         byId('currentTask').textContent = task?.text || 'No active task';
         byId('currentTaskId').textContent = snapshot.currentChecklistIdentifier || '';
-        byId('notionState').textContent = task ? (task.checked ? 'CHECKED' : 'UNCHECKED') : '—';
+        byId('notionState').textContent = notionConnected ? (task ? (task.checked ? 'CHECKED' : 'UNCHECKED') : 'CONNECTED') : 'DISCONNECTED';
+        byId('notionConnectionText').textContent = notionConnected ? 'Connected · secret lives only in Worker memory' : 'Notion not connected · secret is memory-only';
         byId('lastDispatch').textContent = fmt(snapshot.lastDispatchAt);
         byId('lastCheck').textContent = fmt(snapshot.lastReconciliationAt);
-
         const failure = snapshot.failure;
         byId('failure').textContent = failure || '';
         byId('failure').classList.toggle('hidden', !failure);
-
-        lockSelectors(active);
-        byId('readyText').textContent = data.ready ? 'Ready' : 'Not ready';
+        byId('readyText').textContent = data.ready ? 'Ready' : (notionConnected ? 'Host not ready' : 'Connect Notion');
         dot(byId('readyDot'), data.ready ? 'good' : 'warn');
         byId('liveText').textContent = 'Connected';
         dot(byId('liveDot'), 'good');
-        syncStartButton();
-        if (active) byId('start').disabled = true;
+        if (!notionConnected && !watchdogActive) clearDisconnected();
+        syncControls();
       } catch (error) {
         byId('liveText').textContent = 'Disconnected';
         dot(byId('liveDot'), 'bad');
@@ -319,99 +217,82 @@
 
     async function action(path, body) {
       const options = { method: 'POST', headers: {} };
-      if (body) {
-        options.headers['Content-Type'] = 'application/json';
-        options.body = JSON.stringify(body);
-      }
+      if (body) { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
       const response = await fetch(path, options);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.message || ('HTTP ' + response.status));
       return data;
     }
 
-    byId('project').addEventListener('change', async () => {
-      await loadOptions(false);
-      byId('message').textContent = byId('project').value
-        ? 'Engineering page locked by exact ID when START is pressed.'
-        : 'Select an ENGINEERING: page.';
-    });
-    byId('task').addEventListener('change', syncStartButton);
-    byId('instruction').addEventListener('change', () => { renderInstruction(); syncStartButton(); });
-
-    byId('start').addEventListener('click', async () => {
-      const button = byId('start');
-      button.disabled = true;
-      byId('message').textContent = 'Arming watchdog…';
+    byId('connectNotion').addEventListener('click', async () => {
+      const secret = byId('notionSecret').value;
+      if (!secret.trim()) { byId('message').textContent = 'Enter a Notion integration secret.'; return; }
+      byId('connectNotion').disabled = true;
+      byId('message').textContent = 'Connecting Notion…';
       try {
-        const result = await action('/control/start', {
-          notionPageId: byId('project').value,
-          taskBlockId: byId('task').value,
-          instructionKey: byId('instruction').value
-        });
-        byId('message').textContent = result.promptSent
-          ? 'Watchdog armed. Engineering page + current TODO locked and dispatched.'
-          : 'Watchdog armed. Engineering page + current TODO locked; ChatGPT is busy.';
+        await action('/control/notion/connect', { secret });
+        byId('notionSecret').value = '';
+        notionConnected = true;
+        byId('message').textContent = 'Notion connected in memory. Discovering ENGINEERING: pages…';
+        await loadProjects(false, false);
         await loadSummary();
       } catch (error) {
-        byId('message').textContent = 'Start failed: ' + error.message;
-      } finally {
-        syncStartButton();
+        byId('notionSecret').value = '';
+        byId('message').textContent = 'Notion connection failed: ' + error.message;
       }
+      syncControls();
+    });
+
+    byId('disconnectNotion').addEventListener('click', async () => {
+      try {
+        await action('/control/notion/disconnect');
+        notionConnected = false;
+        projects = [];
+        clearDisconnected();
+        byId('message').textContent = 'Notion disconnected. In-memory secret discarded.';
+        await loadSummary();
+      } catch (error) { byId('message').textContent = 'Notion disconnect failed: ' + error.message; }
+    });
+
+    byId('project').addEventListener('change', async () => { await loadOptions(false); byId('message').textContent = byId('project').value ? 'Engineering page locked by exact ID when START is pressed.' : 'Select an ENGINEERING: page.'; });
+    byId('task').addEventListener('change', syncControls);
+    byId('instruction').addEventListener('change', () => { renderInstruction(); syncControls(); });
+
+    byId('start').addEventListener('click', async () => {
+      byId('start').disabled = true;
+      byId('message').textContent = 'Arming watchdog…';
+      try {
+        const result = await action('/control/start', { notionPageId: byId('project').value, taskBlockId: byId('task').value, instructionKey: byId('instruction').value });
+        byId('message').textContent = result.promptSent ? 'Watchdog armed. Engineering page + current TODO locked and dispatched.' : 'Watchdog armed. Engineering page + current TODO locked; ChatGPT is busy.';
+        await loadSummary();
+      } catch (error) { byId('message').textContent = 'Start failed: ' + error.message; }
+      syncControls();
     });
 
     byId('stop').addEventListener('click', async () => {
-      try {
-        await action('/control/stop');
-        byId('message').textContent = 'Watchdog stopped.';
-        await loadSummary();
-        await loadProjects(true, true);
-      } catch (error) {
-        byId('message').textContent = 'Stop failed: ' + error.message;
-      }
+      try { await action('/control/stop'); byId('message').textContent = 'Watchdog stopped.'; await loadSummary(); await loadProjects(true, true); }
+      catch (error) { byId('message').textContent = 'Stop failed: ' + error.message; }
     });
 
     byId('checkNow').addEventListener('click', async () => {
-      try {
-        const result = await action('/control/check-now');
-        byId('message').textContent = result.message || 'Checked.';
-        await loadSummary();
-        await loadOptions(true);
-      } catch (error) {
-        byId('message').textContent = 'Check failed: ' + error.message;
-      }
+      try { const result = await action('/control/check-now'); byId('message').textContent = result.message || 'Checked.'; await loadSummary(); if (notionConnected) await loadOptions(true); }
+      catch (error) { byId('message').textContent = 'Check failed: ' + error.message; }
     });
 
-    byId('refreshLists').addEventListener('click', async () => {
-      await loadProjects(true, true);
-      byId('message').textContent = 'ENGINEERING: pages, TODOs, and instructions refreshed.';
-    });
+    byId('refreshLists').addEventListener('click', async () => { if (!notionConnected) return; await loadProjects(true, true); byId('message').textContent = 'ENGINEERING: pages, TODOs, and instructions refreshed.'; });
 
     byId('probeChatGPT').addEventListener('click', async () => {
       byId('probeResult').textContent = 'Checking…';
-      try {
-        const result = await action('/control/chatgpt/probe');
-        byId('probeResult').textContent = result.canSendNextTurn ? 'ChatGPT idle / send available' : (result.turnBusy ? 'ChatGPT busy' : 'Composer unavailable');
-      } catch (error) {
-        byId('probeResult').textContent = 'Probe failed: ' + error.message;
-      }
+      try { const result = await action('/control/chatgpt/probe'); byId('probeResult').textContent = result.canSendNextTurn ? 'ChatGPT idle / send available' : (result.turnBusy ? 'ChatGPT busy' : 'Composer unavailable'); }
+      catch (error) { byId('probeResult').textContent = 'Probe failed: ' + error.message; }
     });
 
-    function escapeHtml(value) {
-      return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-    }
+    function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;'); }
 
-    loadProjects(false, false);
     loadSummary();
     setInterval(loadSummary, 1500);
-    setInterval(() => loadOptions(true), 8000);
-    setInterval(() => {
-      if (!byId('project').disabled) loadProjects(true, true);
-    }, projectRefreshMs);
+    setInterval(() => { if (notionConnected && !watchdogActive) loadOptions(true); }, 8000);
+    setInterval(() => { if (notionConnected && !watchdogActive) loadProjects(true, true); }, projectRefreshMs);
   </script>
 </body>
 </html>
