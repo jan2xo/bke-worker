@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
 
 public enum ChatGptAuthorizationState
@@ -107,7 +109,14 @@ public sealed class ChatGptBrowserRuntime(WorkerServerSettings settings) : IDisp
         await _mutex.WaitAsync(cancellationToken);
         try
         {
+            if (await IsCdpReady(cancellationToken))
+                await CloseBrowserOverCdp(cancellationToken);
+
             await StopOwnedProcess(cancellationToken);
+
+            for (var attempt = 0; attempt < 20 && await IsCdpReady(cancellationToken); attempt++)
+                await Task.Delay(100, cancellationToken);
+
             if (await IsCdpReady(cancellationToken))
                 throw new InvalidOperationException("CHATGPT_BROWSER_STILL_RUNNING");
 
@@ -121,6 +130,17 @@ public sealed class ChatGptBrowserRuntime(WorkerServerSettings settings) : IDisp
         {
             _mutex.Release();
         }
+    }
+
+    private async Task CloseBrowserOverCdp(CancellationToken cancellationToken)
+    {
+        var websocket = await GetDebuggerWebSocket(cancellationToken)
+            ?? throw new InvalidOperationException("CHATGPT_BROWSER_CDP_WEBSOCKET_UNAVAILABLE");
+
+        using var client = new ClientWebSocket();
+        await client.ConnectAsync(new Uri(websocket), cancellationToken);
+        var payload = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Browser.close\"}");
+        await client.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
     }
 
     private async Task StopOwnedProcess(CancellationToken cancellationToken)
@@ -157,21 +177,26 @@ public sealed class ChatGptBrowserRuntime(WorkerServerSettings settings) : IDisp
         throw new InvalidOperationException("CHATGPT_BROWSER_CDP_START_TIMEOUT");
     }
 
-    private async Task<bool> IsCdpReady(CancellationToken cancellationToken)
+    private async Task<bool> IsCdpReady(CancellationToken cancellationToken) =>
+        await GetDebuggerWebSocket(cancellationToken) is not null;
+
+    private async Task<string?> GetDebuggerWebSocket(CancellationToken cancellationToken)
     {
         try
         {
             using var response = await _http.GetAsync(new Uri(GetCdpUri(), "/json/version"), cancellationToken);
             if (!response.IsSuccessStatusCode)
-                return false;
+                return null;
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
             using var document = JsonDocument.Parse(payload);
-            return document.RootElement.TryGetProperty("webSocketDebuggerUrl", out var websocket) &&
-                IsLoopbackWebSocket(websocket.GetString());
+            if (!document.RootElement.TryGetProperty("webSocketDebuggerUrl", out var websocket))
+                return null;
+            var value = websocket.GetString();
+            return IsLoopbackWebSocket(value) ? value : null;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            return false;
+            return null;
         }
     }
 
