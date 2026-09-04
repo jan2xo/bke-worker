@@ -212,7 +212,6 @@ await app.RunAsync();
 
 public sealed record WorkerServerSettings(
     string NotionToken,
-    string NotionPageId,
     string NotionBaseUrl,
     string ChatGptOverrideUrl,
     string ChatGptBaseUrl,
@@ -243,10 +242,12 @@ public sealed record WorkerServerSettings(
         AutonomousOverrideConfigured &&
         (!LiveChatGptBaseUrl || BrowserCdpConfigured);
 
+    // The Notion page is selected at runtime. This target exists only to resolve
+    // the fixed ChatGPT conversation before an engineering page has been selected.
     public EngineeringTarget Target => new(
         string.Empty,
         string.Empty,
-        NotionPageId,
+        string.Empty,
         Instruction: string.Empty,
         Surface: ChatGptExecutionSurface.Chat,
         OverrideUrl: ChatGptOverrideUrl);
@@ -255,7 +256,6 @@ public sealed record WorkerServerSettings(
     {
         return new WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_TOKEN"] ?? string.Empty,
-            configuration["BKE_WORKER_NOTION_PAGE"] ?? string.Empty,
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_OVERRIDE_URL"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
