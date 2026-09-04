@@ -37,16 +37,12 @@ mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 
 cd "$ROOT_DIR"
-if bash scripts/verify-live-host.sh; then
-  echo "Live ChatGPT host prerequisites: READY"
-else
-  echo "WARNING: live ChatGPT host prerequisites are not ready yet." >&2
-  echo "WARNING: operator UI will still start; ChatGPT actions remain unavailable until fixed." >&2
-fi
 
 echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "operator UI: $ASPNETCORE_URLS"
+echo "ChatGPT browser: operator UI starts Chromium; no Chromium CLI step required"
 echo "CDP: $BKE_WORKER_BROWSER_CDP_ENDPOINT (loopback only)"
+echo "ChatGPT profile: $BKE_WORKER_CHATGPT_PROFILE (persistent dedicated account session)"
 echo "Notion secret: operator UI memory only"
 echo "ChatGPT target URL: operator UI memory only"
 echo "project discovery: Notion pages whose title starts with ENGINEERING:"
