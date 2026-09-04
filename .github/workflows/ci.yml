@@ -68,12 +68,25 @@ jobs:
           test "$ready_code" = "503"
           grep -q '"notionConnected":false' "$RUNNER_TEMP/ready.json"
           grep -q '"chatGptTargetConnected":false' "$RUNNER_TEMP/ready.json"
+          grep -q '"chatGptCdpReady":false' "$RUNNER_TEMP/ready.json"
+          grep -q '"chatGptAuthorization":"UNKNOWN"' "$RUNNER_TEMP/ready.json"
+          browser_code=$(curl --silent --output "$RUNNER_TEMP/browser.json" --write-out '%{http_code}' http://127.0.0.1:5080/control/chatgpt/browser/status)
+          test "$browser_code" = "200"
+          grep -q '"cdpReady":false' "$RUNNER_TEMP/browser.json"
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://127.0.0.1:5080/webhooks/github)" = "404"
 
       - name: Certify operator session controls
         run: |
           set -euo pipefail
           ui=src/BKE.Worker.Server/wwwroot/index.html
+          grep -q 'Login to ChatGPT' "$ui"
+          grep -q 'Start ChatGPT' "$ui"
+          grep -q "I've logged in" "$ui"
+          grep -q 'Clear / Logout' "$ui"
+          grep -q '/control/chatgpt/browser/start' "$ui"
+          grep -q '/control/chatgpt/browser/login' "$ui"
+          grep -q '/control/chatgpt/browser/verify-login' "$ui"
+          grep -q '/control/chatgpt/browser/clear' "$ui"
           grep -q 'Notion integration secret' "$ui"
           grep -q 'Exact ChatGPT conversation URL' "$ui"
           grep -q '/control/notion/connect' "$ui"
@@ -83,6 +96,9 @@ jobs:
           grep -q 'projectRefreshMs=30000' "$ui"
           grep -q 'Start watchdog' "$ui"
           grep -q 'ENGINEERING:' "$ui"
+          grep -q 'browserLaunchAuthority = "operator-ui"' src/BKE.Worker.Server/Program.cs
+          grep -q 'Browser.close' src/BKE.Worker.Server/ChatGptBrowserRuntime.cs
+          grep -q 'operator UI starts Chromium' scripts/run-worker.sh
 
       - name: Certify env account authority is retired
         run: |
