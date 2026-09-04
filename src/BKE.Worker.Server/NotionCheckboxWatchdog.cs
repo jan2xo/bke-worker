@@ -3,41 +3,17 @@ using System.Text.Json.Serialization;
 using BKE.Worker.Core;
 using BKE.Worker.Notion;
 
-public sealed record WatchdogProjectOption(
-    string PageId,
-    string Title,
-    string? Url);
-
-public sealed record WatchdogTaskOption(
-    string BlockId,
-    string Text,
-    bool Checked);
-
-public sealed record WatchdogInstructionOption(
-    string Key,
-    string Name,
-    string Instruction);
-
-public sealed record WatchdogOptions(
-    string PageId,
-    string PageTitle,
-    IReadOnlyList<WatchdogTaskOption> Tasks,
-    IReadOnlyList<WatchdogInstructionOption> Instructions);
-
-public sealed record WatchdogStartRequest(
-    string NotionPageId,
-    string TaskBlockId,
-    string InstructionKey);
-
-public sealed record WatchdogActionResult(
-    WorkerRuntimeState State,
-    bool PromptSent,
-    string Message,
-    string? CurrentTaskBlockId = null);
+public sealed record WatchdogProjectOption(string PageId, string Title, string? Url);
+public sealed record WatchdogTaskOption(string BlockId, string Text, bool Checked);
+public sealed record WatchdogInstructionOption(string Key, string Name, string Instruction);
+public sealed record WatchdogOptions(string PageId, string PageTitle, IReadOnlyList<WatchdogTaskOption> Tasks, IReadOnlyList<WatchdogInstructionOption> Instructions);
+public sealed record WatchdogStartRequest(string NotionPageId, string TaskBlockId, string InstructionKey);
+public sealed record WatchdogActionResult(WorkerRuntimeState State, bool PromptSent, string Message, string? CurrentTaskBlockId = null);
 
 public sealed class NotionCheckboxWatchdog(
     INotionChecklistClient notion,
     NotionRuntimeConnection notionConnection,
+    ChatGptRuntimeTarget chatGptTarget,
     IChatGPTDriver driver,
     IWorkerStateStore stateStore,
     WorkerServerSettings settings)
@@ -50,55 +26,40 @@ public sealed class NotionCheckboxWatchdog(
     {
         var pages = await notion.GetSharedPages(cancellationToken);
         return pages
-            .Where(page => page.Title.TrimStart().StartsWith(
-                EngineeringPagePrefix,
-                StringComparison.OrdinalIgnoreCase))
+            .Where(page => page.Title.TrimStart().StartsWith(EngineeringPagePrefix, StringComparison.OrdinalIgnoreCase))
             .OrderBy(page => page.Title, StringComparer.OrdinalIgnoreCase)
-            .Select(page => new WatchdogProjectOption(
-                NotionChecklistClient.NormalizeNotionId(page.PageId),
-                page.Title.Trim(),
-                page.Url))
+            .Select(page => new WatchdogProjectOption(NotionChecklistClient.NormalizeNotionId(page.PageId), page.Title.Trim(), page.Url))
             .ToArray();
     }
 
-    public async Task<WatchdogOptions> GetOptions(
-        string pageId,
-        CancellationToken cancellationToken)
+    public async Task<WatchdogOptions> GetOptions(string pageId, CancellationToken cancellationToken)
     {
         var page = await GetEngineeringPageIdentity(pageId, cancellationToken);
         var normalizedPageId = NotionChecklistClient.NormalizeNotionId(page.PageId);
         var tasks = await GetVerifiedUncheckedTasks(normalizedPageId, cancellationToken);
         var instructions = await notion.GetInstructionTemplates(normalizedPageId, cancellationToken);
-
         return new WatchdogOptions(
             normalizedPageId,
             page.Title,
             tasks.Select(task => new WatchdogTaskOption(task.BlockId, task.Text, task.Checked)).ToArray(),
-            instructions.Select(template => new WatchdogInstructionOption(
-                template.Key,
-                template.Name,
-                template.Instruction)).ToArray());
+            instructions.Select(template => new WatchdogInstructionOption(template.Key, template.Name, template.Instruction)).ToArray());
     }
 
-    public Task<WorkerSnapshot> GetState(CancellationToken cancellationToken) =>
-        stateStore.Load(cancellationToken);
+    public Task<WorkerSnapshot> GetState(CancellationToken cancellationToken) => stateStore.Load(cancellationToken);
 
     public async Task<NotionChecklistTask?> GetCurrentTask(CancellationToken cancellationToken)
     {
         var snapshot = await stateStore.Load(cancellationToken);
-        if (string.IsNullOrWhiteSpace(snapshot.CurrentChecklistIdentifier))
-            return null;
-
+        if (string.IsNullOrWhiteSpace(snapshot.CurrentChecklistIdentifier)) return null;
         return await notion.GetTask(snapshot.CurrentChecklistIdentifier, cancellationToken);
     }
 
-    public async Task<WatchdogActionResult> Start(
-        WatchdogStartRequest request,
-        CancellationToken cancellationToken)
+    public async Task<WatchdogActionResult> Start(WatchdogStartRequest request, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.NotionPageId);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.TaskBlockId);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.InstructionKey);
+        if (!chatGptTarget.IsConnected) throw new InvalidOperationException("CHATGPT_TARGET_NOT_CONNECTED");
 
         await _mutex.WaitAsync(cancellationToken);
         try
@@ -110,13 +71,9 @@ public sealed class NotionCheckboxWatchdog(
             var page = await GetEngineeringPageIdentity(request.NotionPageId, cancellationToken);
             var pageId = NotionChecklistClient.NormalizeNotionId(page.PageId);
             var requestedTaskId = NotionChecklistClient.NormalizeNotionId(request.TaskBlockId);
-
             var openTasks = await GetVerifiedUncheckedTasks(pageId, cancellationToken);
             var task = openTasks.SingleOrDefault(candidate =>
-                string.Equals(
-                    NotionChecklistClient.NormalizeNotionId(candidate.BlockId),
-                    requestedTaskId,
-                    StringComparison.OrdinalIgnoreCase))
+                string.Equals(NotionChecklistClient.NormalizeNotionId(candidate.BlockId), requestedTaskId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException("NOTION_TASK_NOT_OPEN_ON_SELECTED_ENGINEERING_PAGE");
 
             var templates = await notion.GetInstructionTemplates(pageId, cancellationToken);
@@ -124,13 +81,15 @@ public sealed class NotionCheckboxWatchdog(
                 string.Equals(template.Key, request.InstructionKey, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException("NOTION_INSTRUCTION_NOT_FOUND_ON_SELECTED_ENGINEERING_PAGE");
 
-            var target = settings.Target with
-            {
-                NotionPageId = pageId,
-                Instruction = instruction.Instruction,
-                Surface = ChatGptExecutionSurface.Chat
-            };
-            _ = target.ResolveContextTarget();
+            // Persist only engineering/Notion execution identity. The deterministic ChatGPT URL
+            // remains in process memory and is deliberately absent from Worker state JSON.
+            var target = new EngineeringTarget(
+                string.Empty,
+                string.Empty,
+                pageId,
+                Instruction: instruction.Instruction,
+                Surface: ChatGptExecutionSurface.Chat,
+                OverrideUrl: null);
 
             var waiting = new WorkerSnapshot(
                 WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT,
@@ -147,10 +106,7 @@ public sealed class NotionCheckboxWatchdog(
 
             return await Dispatch(waiting, task, isContinuation: false, cancellationToken);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
     public async Task<WatchdogActionResult> Stop(CancellationToken cancellationToken)
@@ -159,20 +115,11 @@ public sealed class NotionCheckboxWatchdog(
         try
         {
             var existing = await stateStore.Load(cancellationToken);
-            var stopped = existing with
-            {
-                State = WorkerRuntimeState.IDLE,
-                Target = null,
-                CurrentChecklistIdentifier = null,
-                Failure = null
-            };
+            var stopped = existing with { State = WorkerRuntimeState.IDLE, Target = null, CurrentChecklistIdentifier = null, Failure = null };
             await stateStore.Save(stopped, cancellationToken);
             return new(stopped.State, false, "WATCHDOG_STOPPED");
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
     public async Task<WatchdogActionResult> Tick(CancellationToken cancellationToken)
@@ -181,24 +128,18 @@ public sealed class NotionCheckboxWatchdog(
         try
         {
             var snapshot = await stateStore.Load(cancellationToken);
-
             if (snapshot.State is WorkerRuntimeState.DISPATCHING or WorkerRuntimeState.CONTINUING)
             {
-                var blocked = snapshot with
-                {
-                    State = WorkerRuntimeState.BLOCKED,
-                    Failure = DispatchOutcomeUnknown
-                };
+                var blocked = snapshot with { State = WorkerRuntimeState.BLOCKED, Failure = DispatchOutcomeUnknown };
                 await stateStore.Save(blocked, cancellationToken);
                 return new(blocked.State, false, DispatchOutcomeUnknown, blocked.CurrentChecklistIdentifier);
             }
 
-            if (!IsActive(snapshot.State) ||
-                snapshot.Target is null ||
-                string.IsNullOrWhiteSpace(snapshot.CurrentChecklistIdentifier))
-            {
+            if (!IsActive(snapshot.State) || snapshot.Target is null || string.IsNullOrWhiteSpace(snapshot.CurrentChecklistIdentifier))
                 return new(snapshot.State, false, "WATCHDOG_INACTIVE", snapshot.CurrentChecklistIdentifier);
-            }
+
+            if (!chatGptTarget.IsConnected)
+                return await Block(snapshot, "CHATGPT_TARGET_NOT_CONNECTED", cancellationToken);
 
             NotionChecklistTask current;
             try
@@ -212,29 +153,15 @@ public sealed class NotionCheckboxWatchdog(
             }
 
             var observed = snapshot with { LastReconciliationAt = DateTimeOffset.UtcNow };
-
             if (current.Checked)
             {
                 NotionChecklistTask? next;
-                try
-                {
-                    next = await GetFirstVerifiedUncheckedTask(
-                        snapshot.Target.NotionPageId,
-                        cancellationToken);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    return await Block(observed, ex.Message, cancellationToken);
-                }
+                try { next = await GetFirstVerifiedUncheckedTask(snapshot.Target.NotionPageId, cancellationToken); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { return await Block(observed, ex.Message, cancellationToken); }
 
                 if (next is null)
                 {
-                    var complete = observed with
-                    {
-                        State = WorkerRuntimeState.COMPLETE,
-                        CurrentChecklistIdentifier = null,
-                        Failure = null
-                    };
+                    var complete = observed with { State = WorkerRuntimeState.COMPLETE, CurrentChecklistIdentifier = null, Failure = null };
                     await stateStore.Save(complete, cancellationToken);
                     return new(complete.State, false, "NOTION_CHECKLIST_COMPLETE");
                 }
@@ -245,11 +172,7 @@ public sealed class NotionCheckboxWatchdog(
                     return new(observed.State, false, "NEXT_TASK_READY_CHATGPT_BUSY", next.BlockId);
                 }
 
-                var nextSnapshot = observed with
-                {
-                    CurrentChecklistIdentifier = next.BlockId,
-                    Failure = null
-                };
+                var nextSnapshot = observed with { CurrentChecklistIdentifier = next.BlockId, Failure = null };
                 await stateStore.Save(nextSnapshot, cancellationToken);
                 return await Dispatch(nextSnapshot, next, isContinuation: false, cancellationToken);
             }
@@ -260,8 +183,7 @@ public sealed class NotionCheckboxWatchdog(
                 return new(observed.State, false, "CURRENT_TASK_UNCHECKED_CHATGPT_BUSY", current.BlockId);
             }
 
-            if (observed.LastDispatchAt is { } lastDispatch &&
-                DateTimeOffset.UtcNow - lastDispatch < settings.IdleRetryInterval)
+            if (observed.LastDispatchAt is { } lastDispatch && DateTimeOffset.UtcNow - lastDispatch < settings.IdleRetryInterval)
             {
                 await stateStore.Save(observed, cancellationToken);
                 return new(observed.State, false, "CURRENT_TASK_UNCHECKED_RETRY_COOLDOWN", current.BlockId);
@@ -270,63 +192,40 @@ public sealed class NotionCheckboxWatchdog(
             await stateStore.Save(observed, cancellationToken);
             return await Dispatch(observed, current, isContinuation: true, cancellationToken);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    private async Task<IReadOnlyList<NotionChecklistTask>> GetVerifiedUncheckedTasks(
-        string pageId,
-        CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<NotionChecklistTask>> GetVerifiedUncheckedTasks(string pageId, CancellationToken cancellationToken)
     {
-        var candidates = await notion.GetTasks(
-            pageId,
-            includeChecked: true,
-            cancellationToken);
+        var candidates = await notion.GetTasks(pageId, includeChecked: true, cancellationToken);
         var verified = new List<NotionChecklistTask>(candidates.Count);
-
         foreach (var candidate in candidates)
         {
             var exact = await notion.GetTask(candidate.BlockId, cancellationToken);
-            if (exact is not null && !exact.Checked)
-                verified.Add(exact);
+            if (exact is not null && !exact.Checked) verified.Add(exact);
         }
-
         return verified;
     }
 
-    private async Task<NotionChecklistTask?> GetFirstVerifiedUncheckedTask(
-        string pageId,
-        CancellationToken cancellationToken)
+    private async Task<NotionChecklistTask?> GetFirstVerifiedUncheckedTask(string pageId, CancellationToken cancellationToken)
     {
-        var candidates = await notion.GetTasks(
-            pageId,
-            includeChecked: true,
-            cancellationToken);
-
+        var candidates = await notion.GetTasks(pageId, includeChecked: true, cancellationToken);
         foreach (var candidate in candidates)
         {
             var exact = await notion.GetTask(candidate.BlockId, cancellationToken);
-            if (exact is not null && !exact.Checked)
-                return exact;
+            if (exact is not null && !exact.Checked) return exact;
         }
-
         return null;
     }
 
     private async Task<bool> IsChatSafe(CancellationToken cancellationToken)
     {
         await driver.Launch(cancellationToken);
-        await driver.OpenContext(settings.Target.ResolveContextTarget(), cancellationToken);
+        await driver.OpenContext(chatGptTarget.ResolveContextTarget(), cancellationToken);
         return await driver.CanSendNextTurn(cancellationToken);
     }
 
-    private async Task<WatchdogActionResult> Dispatch(
-        WorkerSnapshot snapshot,
-        NotionChecklistTask task,
-        bool isContinuation,
-        CancellationToken cancellationToken)
+    private async Task<WatchdogActionResult> Dispatch(WorkerSnapshot snapshot, NotionChecklistTask task, bool isContinuation, CancellationToken cancellationToken)
     {
         var target = snapshot.Target ?? throw new InvalidOperationException("ENGINEERING_TARGET_REQUIRED");
         var dispatching = snapshot with
@@ -341,35 +240,17 @@ public sealed class NotionCheckboxWatchdog(
         {
             var page = await GetEngineeringPageIdentity(target.NotionPageId, cancellationToken);
             await driver.Launch(cancellationToken);
-            await driver.OpenContext(target.ResolveContextTarget(), cancellationToken);
+            await driver.OpenContext(chatGptTarget.ResolveContextTarget(), cancellationToken);
             await driver.Send(BuildPrompt(target.Instruction, page, task, isContinuation), cancellationToken);
-
-            var waiting = dispatching with
-            {
-                State = WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT,
-                LastDispatchAt = DateTimeOffset.UtcNow,
-                Failure = null
-            };
+            var waiting = dispatching with { State = WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT, LastDispatchAt = DateTimeOffset.UtcNow, Failure = null };
             await stateStore.Save(waiting, cancellationToken);
-            return new(
-                waiting.State,
-                true,
-                isContinuation ? "CURRENT_TASK_CONTINUED" : "TASK_DISPATCHED",
-                task.BlockId);
+            return new(waiting.State, true, isContinuation ? "CURRENT_TASK_CONTINUED" : "TASK_DISPATCHED", task.BlockId);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return await Block(dispatching, ex.Message, cancellationToken);
-        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) { return await Block(dispatching, ex.Message, cancellationToken); }
     }
 
-    private async Task<NotionPageSummary> GetEngineeringPageIdentity(
-        string pageIdOrUrl,
-        CancellationToken cancellationToken)
+    private async Task<NotionPageSummary> GetEngineeringPageIdentity(string pageIdOrUrl, CancellationToken cancellationToken)
     {
         var page = await GetNotionPageIdentity(pageIdOrUrl, cancellationToken);
         if (!page.Title.TrimStart().StartsWith(EngineeringPagePrefix, StringComparison.OrdinalIgnoreCase))
@@ -377,66 +258,43 @@ public sealed class NotionCheckboxWatchdog(
         return page;
     }
 
-    private async Task<NotionPageSummary> GetNotionPageIdentity(
-        string pageIdOrUrl,
-        CancellationToken cancellationToken)
+    private async Task<NotionPageSummary> GetNotionPageIdentity(string pageIdOrUrl, CancellationToken cancellationToken)
     {
         var pageId = NotionChecklistClient.NormalizeNotionId(pageIdOrUrl);
         using var response = await notionConnection.GetPage(pageId, cancellationToken);
         var payload = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"NOTION_PAGE_IDENTITY_FAILED:{(int)response.StatusCode}");
-
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"NOTION_PAGE_IDENTITY_FAILED:{(int)response.StatusCode}");
         using var document = JsonDocument.Parse(payload);
         var root = document.RootElement;
         var title = ReadPageTitle(root).Trim();
-        if (string.IsNullOrWhiteSpace(title))
-            throw new InvalidOperationException("NOTION_PAGE_TITLE_NOT_FOUND");
-
-        var returnedId = root.TryGetProperty("id", out var idProperty)
-            ? idProperty.GetString() ?? pageId
-            : pageId;
-        var url = root.TryGetProperty("url", out var urlProperty)
-            ? urlProperty.GetString()
-            : null;
-
+        if (string.IsNullOrWhiteSpace(title)) throw new InvalidOperationException("NOTION_PAGE_TITLE_NOT_FOUND");
+        var returnedId = root.TryGetProperty("id", out var idProperty) ? idProperty.GetString() ?? pageId : pageId;
+        var url = root.TryGetProperty("url", out var urlProperty) ? urlProperty.GetString() : null;
         return new NotionPageSummary(returnedId, title, url);
     }
 
     private static string ReadPageTitle(JsonElement page)
     {
-        if (!page.TryGetProperty("properties", out var properties))
-            return string.Empty;
-
+        if (!page.TryGetProperty("properties", out var properties)) return string.Empty;
         foreach (var property in properties.EnumerateObject())
         {
             var value = property.Value;
-            if (!value.TryGetProperty("type", out var type) || type.GetString() != "title")
-                continue;
-            if (!value.TryGetProperty("title", out var titleItems))
-                continue;
-
-            return string.Concat(
-                titleItems.EnumerateArray()
-                    .Select(item => item.TryGetProperty("plain_text", out var text) ? text.GetString() : null)
-                    .Where(text => !string.IsNullOrEmpty(text)));
+            if (!value.TryGetProperty("type", out var type) || type.GetString() != "title") continue;
+            if (!value.TryGetProperty("title", out var titleItems)) continue;
+            return string.Concat(titleItems.EnumerateArray()
+                .Select(item => item.TryGetProperty("plain_text", out var text) ? text.GetString() : null)
+                .Where(text => !string.IsNullOrEmpty(text)));
         }
-
         return string.Empty;
     }
 
-    private static string BuildPrompt(
-        string durableInstruction,
-        NotionPageSummary page,
-        NotionChecklistTask task,
-        bool isContinuation)
+    private static string BuildPrompt(string durableInstruction, NotionPageSummary page, NotionChecklistTask task, bool isContinuation)
     {
         var action = isContinuation
             ? "The current Notion TODO is still unchecked. Continue the SAME TODO. Do not move to another TODO."
             : "Execute the CURRENT TODO below. Do not move to another TODO.";
         var pageId = NotionChecklistClient.NormalizeNotionId(page.PageId);
         var pageUrl = string.IsNullOrWhiteSpace(page.Url) ? "(not available)" : page.Url.Trim();
-
         return $"""
 [NOTION AUTHORITY]
 Page name: {page.Title.Trim()}
@@ -461,34 +319,20 @@ Do not mark it complete merely because work was attempted.
 """;
     }
 
-    private async Task<WatchdogActionResult> Block(
-        WorkerSnapshot snapshot,
-        string failure,
-        CancellationToken cancellationToken)
+    private async Task<WatchdogActionResult> Block(WorkerSnapshot snapshot, string failure, CancellationToken cancellationToken)
     {
-        var blocked = snapshot with
-        {
-            State = WorkerRuntimeState.BLOCKED,
-            Failure = failure
-        };
+        var blocked = snapshot with { State = WorkerRuntimeState.BLOCKED, Failure = failure };
         await stateStore.Save(blocked, cancellationToken);
         return new(blocked.State, false, failure, blocked.CurrentChecklistIdentifier);
     }
 
     private static bool IsActive(WorkerRuntimeState state) => state is
-        WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT or
-        WorkerRuntimeState.DISPATCHING or
-        WorkerRuntimeState.CONTINUING;
+        WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT or WorkerRuntimeState.DISPATCHING or WorkerRuntimeState.CONTINUING;
 }
 
 public sealed class JsonWorkerStateStore(string path) : IWorkerStateStore
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
+    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
     public async Task<WorkerSnapshot> Load(CancellationToken cancellationToken)
@@ -496,16 +340,11 @@ public sealed class JsonWorkerStateStore(string path) : IWorkerStateStore
         await _mutex.WaitAsync(cancellationToken);
         try
         {
-            if (!File.Exists(path))
-                return WorkerSnapshot.Empty;
-
+            if (!File.Exists(path)) return WorkerSnapshot.Empty;
             var json = await File.ReadAllTextAsync(path, cancellationToken);
             return JsonSerializer.Deserialize<WorkerSnapshot>(json, SerializerOptions) ?? WorkerSnapshot.Empty;
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
     public async Task Save(WorkerSnapshot snapshot, CancellationToken cancellationToken)
@@ -514,24 +353,20 @@ public sealed class JsonWorkerStateStore(string path) : IWorkerStateStore
         try
         {
             var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
-
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             var temp = path + ".tmp";
             var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
             await File.WriteAllTextAsync(temp, json, cancellationToken);
             File.Move(temp, path, overwrite: true);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 }
 
 public sealed class NotionCheckboxWatchdogHostedService(
     NotionCheckboxWatchdog watchdog,
     NotionRuntimeConnection notionConnection,
+    ChatGptRuntimeTarget chatGptTarget,
     WorkerServerSettings settings,
     ILogger<NotionCheckboxWatchdogHostedService> logger) : BackgroundService
 {
@@ -540,33 +375,14 @@ public sealed class NotionCheckboxWatchdogHostedService(
         using var timer = new PeriodicTimer(settings.WatchdogInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            if (!settings.IsConfigured || !notionConnection.IsConnected)
-                continue;
-
+            if (!settings.HostConfigured || !notionConnection.IsConnected || !chatGptTarget.IsConnected) continue;
             WatchdogActionResult result;
-            try
-            {
-                result = await watchdog.Tick(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Notion checkbox watchdog tick failed.");
-                continue;
-            }
+            try { result = await watchdog.Tick(stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) { logger.LogError(ex, "Notion checkbox watchdog tick failed."); continue; }
 
             if (result.Message is not "WATCHDOG_INACTIVE" and not "CURRENT_TASK_UNCHECKED_RETRY_COOLDOWN")
-            {
-                logger.LogInformation(
-                    "Watchdog: {State} {Message} task={Task} promptSent={PromptSent}",
-                    result.State,
-                    result.Message,
-                    result.CurrentTaskBlockId,
-                    result.PromptSent);
-            }
+                logger.LogInformation("Watchdog: {State} {Message} task={Task} promptSent={PromptSent}", result.State, result.Message, result.CurrentTaskBlockId, result.PromptSent);
         }
     }
 }
