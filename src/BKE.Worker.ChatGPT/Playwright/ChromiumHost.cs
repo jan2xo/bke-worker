@@ -52,6 +52,51 @@ public sealed class ChromiumHost(ChromiumHostOptions options) : IAsyncDisposable
         }
     }
 
+    public async Task ShutdownBrowser(CancellationToken cancellationToken)
+    {
+        await _mutex.WaitAsync(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_browser is null && _context is null)
+                await LaunchUnsafe(cancellationToken);
+
+            if (_attachedOverCdp && _browser is not null)
+            {
+                try
+                {
+                    await _browser.CloseAsync();
+                }
+                catch (PlaywrightException)
+                {
+                    // Browser may already be gone; cleanup below still resets the adapter.
+                }
+            }
+            else if (_context is not null)
+            {
+                try
+                {
+                    await _context.CloseAsync();
+                }
+                catch (PlaywrightException)
+                {
+                    // Browser may already be gone.
+                }
+            }
+
+            _page = null;
+            _browser = null;
+            _context = null;
+            _attachedOverCdp = false;
+            _playwright?.Dispose();
+            _playwright = null;
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
     private async Task LaunchUnsafe(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -104,7 +149,8 @@ public sealed class ChromiumHost(ChromiumHostOptions options) : IAsyncDisposable
             }
         }
 
-        // A CDP-attached browser is operator-owned. BKE Worker disconnects from it but never closes it.
+        // Normal adapter disposal only disconnects from CDP. Explicit operator Clear / Logout
+        // uses ShutdownBrowser when the dedicated BKE Worker browser must actually be closed.
         _browser = null;
         _context = null;
         _attachedOverCdp = false;
