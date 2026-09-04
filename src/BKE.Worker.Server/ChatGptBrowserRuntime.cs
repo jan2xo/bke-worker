@@ -194,7 +194,7 @@ public sealed class ChatGptBrowserRuntime(WorkerServerSettings settings) : IDisp
             var value = websocket.GetString();
             return IsLoopbackWebSocket(value) ? value : null;
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException or UriFormatException)
         {
             return null;
         }
