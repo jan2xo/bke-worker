@@ -107,9 +107,6 @@ public sealed class ChatGptBrowserRuntime(WorkerServerSettings settings) : IDisp
         await _mutex.WaitAsync(cancellationToken);
         try
         {
-            if (await IsCdpReady(cancellationToken) && _process is not { HasExited: false })
-                throw new InvalidOperationException("CHATGPT_BROWSER_EXTERNALLY_OWNED");
-
             await StopOwnedProcess(cancellationToken);
             if (await IsCdpReady(cancellationToken))
                 throw new InvalidOperationException("CHATGPT_BROWSER_STILL_RUNNING");
