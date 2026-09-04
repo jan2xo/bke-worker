@@ -3,6 +3,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${BKE_WORKER_ENV_FILE:-$HOME/.config/bke-worker/bke-worker.env}"
+TUNNEL_PID=""
+
+cleanup() {
+  if [[ -n "$TUNNEL_PID" ]] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    wait "$TUNNEL_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 if [[ -f "$ENV_FILE" ]]; then
   chmod 600 "$ENV_FILE"
@@ -58,13 +67,34 @@ echo "guard: checked = next unchecked TODO on the locked page"
 echo "guard: no unchecked TODO = COMPLETE"
 echo "GitHub webhook is NOT orchestration authority on this branch."
 
+if [[ -n "${BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    echo "ERROR: BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN is set but cloudflared is not installed." >&2
+    exit 1
+  fi
+
+  echo "Cloudflare Tunnel: starting named tunnel from host .env authentication"
+  cloudflared tunnel --no-autoupdate run --token "$BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN" &
+  TUNNEL_PID=$!
+  sleep 1
+  if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    wait "$TUNNEL_PID" || true
+    echo "ERROR: cloudflared exited during startup." >&2
+    exit 1
+  fi
+  echo "Cloudflare Tunnel: RUNNING"
+else
+  echo "Cloudflare Tunnel: DISABLED (populate BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN to enable remote access)"
+fi
+
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
   if [[ ! -f "$BKE_WORKER_SERVER_DLL" ]]; then
     echo "ERROR: BKE_WORKER_SERVER_DLL does not exist: $BKE_WORKER_SERVER_DLL" >&2
     exit 1
   fi
-  exec dotnet "$BKE_WORKER_SERVER_DLL"
+  dotnet "$BKE_WORKER_SERVER_DLL"
+  exit $?
 fi
 
 dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release >/dev/null
-exec dotnet run --project src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release --no-build
+dotnet run --project src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release --no-build
