@@ -23,7 +23,9 @@ export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-wo
 export BKE_WORKER_WATCHDOG_SECONDS="${BKE_WORKER_WATCHDOG_SECONDS:-2}"
 export BKE_WORKER_IDLE_RETRY_SECONDS="${BKE_WORKER_IDLE_RETRY_SECONDS:-5}"
 export BKE_WORKER_HEADLESS=false
-export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5080}"
+# UTM/dev operator surface: listen on the VM network so the host can open the UI.
+# Keep Chromium CDP on loopback; do not expose 9222.
+export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://0.0.0.0:5080}"
 
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
@@ -62,7 +64,8 @@ cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
 echo "Starting BKE Worker — Notion checkbox watchdog."
-echo "listen: $ASPNETCORE_URLS (loopback only)"
+echo "operator UI: $ASPNETCORE_URLS"
+echo "CDP: $BKE_WORKER_BROWSER_CDP_ENDPOINT (loopback only)"
 echo "task authority: one Notion control page"
 echo "task identity: exact Notion to_do block ID"
 echo "instruction authority: same-page Notion tables with KEY | NAME | INSTRUCTION"
