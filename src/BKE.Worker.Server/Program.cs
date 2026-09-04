@@ -65,24 +65,54 @@ app.MapGet("/health/ready", () =>
         : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
-app.MapGet("/control/options", async (
+app.MapGet("/control/projects", async (
     NotionCheckboxWatchdog watchdog,
     CancellationToken cancellationToken) =>
 {
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Configure the single Notion control page, deterministic ChatGPT conversation URL, and loopback Chromium CDP.",
+            detail: "Configure the Notion token, deterministic ChatGPT conversation URL, and loopback Chromium CDP.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
     {
-        return Results.Ok(await watchdog.GetOptions(cancellationToken));
+        return Results.Ok(await watchdog.GetProjects(cancellationToken));
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
         return Results.Problem(
-            title: "Unable to read Notion control page",
+            title: "Unable to discover ENGINEERING Notion pages",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapGet("/control/options", async (
+    string? pageId,
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    if (!settings.IsConfigured)
+        return Results.Problem(
+            title: "BKE Worker is not configured",
+            detail: "Configure the Notion token, deterministic ChatGPT conversation URL, and loopback Chromium CDP.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    if (string.IsNullOrWhiteSpace(pageId))
+        return Results.Problem(
+            title: "Engineering page is required",
+            detail: "Select one discovered ENGINEERING: Notion page before loading tasks and instructions.",
+            statusCode: StatusCodes.Status400BadRequest);
+
+    try
+    {
+        return Results.Ok(await watchdog.GetOptions(pageId, cancellationToken));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Unable to read selected ENGINEERING Notion page",
             detail: ex.Message,
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
@@ -112,7 +142,8 @@ app.MapGet("/control/summary", async (
         configuration = new
         {
             notionConfigured = settings.NotionConfigured,
-            singleNotionPage = true,
+            notionProjectDiscovery = $"title-prefix:{NotionCheckboxWatchdog.EngineeringPagePrefix}",
+            namesDiscoverIdsExecute = true,
             workerTargetSource = "configuration",
             autonomousOverrideConfigured = settings.AutonomousOverrideConfigured,
             githubWakeAuthority = false,
@@ -120,12 +151,7 @@ app.MapGet("/control/summary", async (
             watchdogSeconds = settings.WatchdogInterval.TotalSeconds,
             idleRetrySeconds = settings.IdleRetryInterval.TotalSeconds
         },
-        browser = new
-        {
-            mode = "cdp-attach",
-            liveChatGptRequiresCdp = settings.LiveChatGptBaseUrl
-        },
-        notionPageId = settings.NotionPageId,
+        activeNotionPageId = snapshot.Target?.NotionPageId,
         browserProfileDirectory = settings.ChatGptProfileDirectory,
         chatGptOverrideUrl = settings.ChatGptOverrideUrl,
         chatGptBaseUrl = settings.ChatGptBaseUrl
@@ -140,7 +166,7 @@ app.MapPost("/control/start", async (
     if (!settings.IsConfigured)
         return Results.Problem(
             title: "BKE Worker is not configured",
-            detail: "Notion, deterministic ChatGPT override URL, and loopback CDP are required.",
+            detail: "Notion token, deterministic ChatGPT override URL, and loopback CDP are required.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
@@ -198,8 +224,7 @@ public sealed record WorkerServerSettings(
     TimeSpan IdleRetryInterval)
 {
     public bool NotionConfigured =>
-        !string.IsNullOrWhiteSpace(NotionToken) &&
-        !string.IsNullOrWhiteSpace(NotionPageId);
+        !string.IsNullOrWhiteSpace(NotionToken);
 
     public bool AutonomousOverrideConfigured =>
         IsValidChatGptConversationOverride(ChatGptOverrideUrl);
