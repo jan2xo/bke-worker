@@ -3,6 +3,5 @@
     <ProjectReference Include="../BKE.Worker.Core/BKE.Worker.Core.csproj" />
     <ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
     <ProjectReference Include="../BKE.Worker.Notion/BKE.Worker.Notion.csproj" />
-    <ProjectReference Include="../BKE.Worker.GitHub/BKE.Worker.GitHub.csproj" />
   </ItemGroup>
 </Project>
