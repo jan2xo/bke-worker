@@ -1,10 +1,18 @@
 # BKE Worker
 
-BKE Worker is a deterministic Notion-checkbox watchdog that executes one exact ChatGPT conversation through persistent Chromium.
+BKE Worker is a deterministic Notion-checkbox watchdog that executes one exact ChatGPT conversation through a dedicated persistent Chromium profile.
 
 ```text
-Notion integration secret
-entered in operator UI
+BKE Worker UI
+        ↓
+Start ChatGPT / Login / Clear account
+        ↓
+persistent Chromium profile
+        ↓
+exact ChatGPT conversation URL
+memory only
+        ↓
+Notion secret
 memory only
         ↓
 ENGINEERING: page discovery
@@ -13,26 +21,61 @@ exact selected Notion page ID
         ↓
 exact selected TODO block ID
         ↓
-exact ChatGPT conversation URL
-entered in operator UI
-memory only
-        ↓
-Playwright + persistent Chromium
+watchdog execution
 ```
 
 Core rule:
 
 ```text
+CHROMIUM PROFILE = CHATGPT ACCOUNT.
+URL = EXACT CHATGPT CONVERSATION.
 NAMES DISCOVER.
 IDS EXECUTE.
-URLS TARGET EXACTLY.
 ```
 
 The Worker has no ChatGPT conversation API. Determinism comes from the exact browser URL supplied by the operator, including project conversation forms such as `https://chatgpt.com/g/.../c/<conversation-id>` and normal `https://chatgpt.com/c/<conversation-id>` URLs. A valid target must be HTTPS on `chatgpt.com` and contain `/c/<conversation-id>`.
 
+## ChatGPT account lifecycle
+
+Normal operation does not require a separate Chromium CLI command. Start only the Worker, then use the operator UI.
+
+```text
+Browser stopped / auth unknown
+        ↓
+Start ChatGPT
+        ↓
+existing session valid? ── YES → AUTHORIZED
+        │
+        NO
+        ↓
+LOGIN REQUIRED
+        ↓
+Login to ChatGPT
+        ↓
+human completes login/MFA/CAPTCHA in visible Chromium
+        ↓
+I've logged in
+        ↓
+Worker verifies authorization
+        ↓
+AUTHORIZED
+```
+
+`Clear / Logout` closes the dedicated Chromium browser through loopback CDP, deletes the dedicated Worker browser profile, clears the exact ChatGPT URL, and returns the Worker to a fresh-account state. It is the deterministic account-switch operation; Worker does not automate ChatGPT credentials or manipulate the account logout UI.
+
+When Chromium is stopped, Worker does not claim that a saved profile is authorized. Authorization is proven only after Chromium starts and ChatGPT is checked.
+
+Account-changing actions are rejected while the watchdog is active.
+
 ## Runtime authority
 
 ```text
+Chromium persistent profile
+= which ChatGPT account/session
+
+exact ChatGPT /c/<id> URL
+= exact browser execution target
+
 Notion secret
 = which Notion universe Worker can see
 
@@ -44,14 +87,11 @@ selected Notion page ID
 
 selected TODO block ID
 = exact task authority
-
-exact ChatGPT /c/<id> URL
-= exact browser execution target
 ```
 
-Both the Notion secret and ChatGPT conversation URL are UI/session-owned. They are kept only in process memory and discarded on disconnect/clear or Worker restart. They are not loaded from `.env` and are not written to Worker state JSON, browser storage, logs, GitHub, Notion, or build artifacts.
+The Notion secret and exact ChatGPT conversation URL are UI/session-owned. They are kept only in process memory and discarded on disconnect/clear or Worker restart. They are not loaded from `.env` and are not written to Worker state JSON, logs, GitHub, Notion, or build artifacts.
 
-While the watchdog is active, replacing/disconnecting either runtime identity is rejected.
+The Chromium profile is intentionally persistent because it is the ChatGPT account/session store. Treat it as credential material.
 
 ## Watchdog rule
 
@@ -75,11 +115,14 @@ GitHub push is not orchestration authority on the active branch.
 ## Operator UI
 
 ```text
-Notion integration secret
-[ ••••••••••••••••• ] [ Connect ] [ Disconnect ]
+ChatGPT account / browser
+[ Start ChatGPT ] [ Login to ChatGPT ] [ I've logged in ] [ Clear / Logout ]
 
 Exact ChatGPT conversation URL
-[ https://chatgpt.com/.../c/<conversation-id> ] [ Use URL ] [ Clear ]
+[ https://chatgpt.com/.../c/<conversation-id> ] [ Use URL ] [ Clear URL ]
+
+Notion integration secret
+[ ••••••••••••••••• ] [ Connect ] [ Disconnect ]
 
 Engineering project
 [ ENGINEERING: ... ▼ ]
@@ -132,7 +175,7 @@ BKE_WORKER_IDLE_RETRY_SECONDS=5
 BKE_WORKER_HEADLESS=false
 ```
 
-The Chromium profile is a credential store. Keep CDP loopback-only and never commit or upload the profile.
+CDP must remain loopback-only. Never commit, upload, or expose the Chromium profile. The UI may be reachable on the trusted host network; CDP must not be.
 
 ## Server endpoints
 
@@ -140,11 +183,19 @@ The Chromium profile is a credential store. Keep CDP loopback-only and never com
 GET  /health
 GET  /health/live
 GET  /health/ready
-POST /control/notion/connect
-POST /control/notion/disconnect
+
+GET  /control/chatgpt/browser/status
+POST /control/chatgpt/browser/start
+POST /control/chatgpt/browser/login
+POST /control/chatgpt/browser/verify-login
+POST /control/chatgpt/browser/clear
+
 POST /control/chatgpt/connect
 POST /control/chatgpt/disconnect
 POST /control/chatgpt/probe
+
+POST /control/notion/connect
+POST /control/notion/disconnect
 GET  /control/projects
 GET  /control/options?pageId=<exact-notion-page-id>
 GET  /control/summary
@@ -152,6 +203,20 @@ POST /control/start
 POST /control/stop
 POST /control/check-now
 ```
+
+## Deployment progression
+
+The intended host progression is:
+
+```text
+UTM Linux VM
+-> Raspberry Pi when available
+-> persistent VPS
+```
+
+The Worker runtime model stays the same on each host: persistent filesystem, dedicated Chromium profile, loopback CDP, long-running ASP.NET Worker, and an operator UI.
+
+Do not expose the raw operator UI publicly without HTTPS and authentication. Remote-control deployment should put the UI behind an authenticated HTTPS boundary while keeping Chromium CDP loopback-only.
 
 ## Legacy preservation
 
