@@ -1,15 +1,38 @@
-# BKE Worker — Single-Page Notion Control Contract
+# BKE Worker — ENGINEERING Page Contract
 
-BKE Worker uses exactly one configured Notion page for operator-controlled work.
+BKE Worker discovers operator-controlled engineering pages from the Notion workspace visible to the configured integration.
 
-## Page content allowed
+A page becomes discoverable only when its title starts with:
 
-The same page contains both:
+```text
+ENGINEERING:
+```
+
+Examples:
+
+```text
+ENGINEERING: BKE Worker
+ENGINEERING: Air Stack
+ENGINEERING: Digital Solutions V2
+```
+
+The title is discovery/display metadata only. At START, Worker locks the exact selected Notion page ID and exact selected TODO block ID.
+
+Core rule:
+
+```text
+NAMES DISCOVER.
+IDS EXECUTE.
+```
+
+## Selected-page content
+
+Each `ENGINEERING:` page contains both:
 
 1. normal Notion `to_do` blocks — executable tasks;
 2. one or more normal Notion tables — durable instruction templates.
 
-BKE Worker does not cross into child pages or child databases while discovering tasks or instruction templates.
+BKE Worker does not cross into child pages or child databases while discovering tasks or instruction templates for the selected page.
 
 ## TODO contract
 
@@ -37,7 +60,7 @@ Worker never infers completion from GitHub pushes, elapsed time, or a finished C
 
 ## Durable instruction table contract
 
-Any normal Notion table on the same page is treated as an instruction table only when its header row is exactly:
+Any normal Notion table on the same selected page is treated as an instruction table only when its header row is exactly:
 
 | KEY | NAME | INSTRUCTION |
 | --- | --- | --- |
@@ -54,17 +77,35 @@ Tables with other headers are ignored.
 The normal operator flow is:
 
 ```text
-Task dropdown        <- unchecked Notion to_do blocks
+Notion integration token
+        ↓
+shared page discovery
+        ↓
+filter title starts with ENGINEERING:
+        ↓
+Engineering project dropdown
+        ↓
+exact selected page ID
+        ↓
+Task dropdown        <- verified unchecked to_do blocks
 Instruction dropdown <- same-page KEY | NAME | INSTRUCTION rows
-                         |
-                         v
-                      START
-                         |
-                         v
-                  fixed ChatGPT URL
-                         |
-                         v
-              watch exact current block ID
+        ↓
+START
+        ↓
+lock page ID + TODO block ID
+        ↓
+fixed ChatGPT URL
+        ↓
+watch exact current block ID
+```
+
+At START, Worker revalidates that:
+
+```text
+selected page still starts with ENGINEERING:
+selected TODO is currently unchecked
+selected TODO belongs to that exact page
+selected instruction key exists on that exact page
 ```
 
 Watchdog behavior:
@@ -77,14 +118,30 @@ current TODO unchecked + ChatGPT idle
 -> continue SAME TODO after retry guard
 
 current TODO checked
--> read checklist
--> choose first unchecked TODO
+-> read only the locked page
+-> choose first verified unchecked TODO
 -> dispatch it when ChatGPT is safe
 
-no unchecked TODOs remain
+no unchecked TODOs remain on the locked page
 -> COMPLETE
 -> no more prompts
 ```
+
+## Operator refresh behavior
+
+Normal operation does not require manual refresh.
+
+The operator UI refreshes:
+
+```text
+watchdog summary        -> every 1.5 seconds
+selected page options   -> every 8 seconds
+ENGINEERING page list   -> every 30 seconds while the project selector is unlocked
+```
+
+The `Refresh Notion lists` button remains as an explicit manual/debug refresh.
+
+Project discovery does not alter an active run. Once START is pressed, the exact page ID stored in Worker state remains runtime authority until STOP or COMPLETE.
 
 ## Task-writing contract
 
@@ -112,8 +169,9 @@ On the checkbox-watchdog architecture:
 
 - GitHub push is not a wake authority;
 - repository selection is not an operator UI field;
+- a fixed Notion page environment variable is not project authority;
 - Notion does not choose the ChatGPT conversation;
 - Project/Conversation semantic browser routing is not autonomous orchestration truth;
-- child Notion pages/databases are not traversed for control data.
+- child Notion pages/databases are not traversed for selected-page control data.
 
 The fixed ChatGPT conversation URL remains Worker configuration.
