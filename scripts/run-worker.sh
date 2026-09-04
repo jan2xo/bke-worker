@@ -31,7 +31,6 @@ chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 
 required=(
   BKE_WORKER_NOTION_TOKEN
-  BKE_WORKER_NOTION_PAGE
   BKE_WORKER_CHATGPT_OVERRIDE_URL
 )
 
@@ -73,15 +72,17 @@ fi
 echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "operator UI: $ASPNETCORE_URLS"
 echo "CDP: $BKE_WORKER_BROWSER_CDP_ENDPOINT (loopback only)"
-echo "task authority: one Notion control page"
+echo "project discovery: Notion pages whose title starts with ENGINEERING:"
+echo "project identity: exact selected Notion page ID"
 echo "task identity: exact Notion to_do block ID"
-echo "instruction authority: same-page Notion tables with KEY | NAME | INSTRUCTION"
+echo "instruction authority: same selected-page Notion tables with KEY | NAME | INSTRUCTION"
 echo "chat target: deterministic configured conversation URL"
 echo "watchdog: ${BKE_WORKER_WATCHDOG_SECONDS}s"
 echo "idle retry: ${BKE_WORKER_IDLE_RETRY_SECONDS}s"
+echo "guard: names discover; IDs execute"
 echo "guard: unchecked + ChatGPT busy = wait"
 echo "guard: unchecked + ChatGPT idle = continue current TODO"
-echo "guard: checked = next unchecked TODO"
+echo "guard: checked = next unchecked TODO on the locked page"
 echo "guard: no unchecked TODO = COMPLETE"
 echo "GitHub webhook is NOT orchestration authority on this branch."
 
