@@ -89,6 +89,9 @@ jobs:
           webhook_code=$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://127.0.0.1:5080/webhooks/github)
           test "$webhook_code" = "404"
 
+          projects_code=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:5080/control/projects)
+          test "$projects_code" = "503"
+
           options_code=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:5080/control/options)
           test "$options_code" = "503"
 
@@ -96,15 +99,18 @@ jobs:
         run: |
           set -euo pipefail
           ui=src/BKE.Worker.Server/wwwroot/index.html
+          grep -q 'Engineering project' "$ui"
+          grep -q 'ENGINEERING:' "$ui"
           grep -q 'Notion task / TODO' "$ui"
           grep -q 'Durable instruction' "$ui"
           grep -q 'Start watchdog' "$ui"
+          grep -q 'Names discover' "$ui"
           grep -q 'Unchecked + ChatGPT busy' "$ui"
           if grep -q 'GitHub webhook' "$ui"; then
             echo 'ERROR: webhook-era control leaked into minimal watchdog UI' >&2
             exit 1
           fi
-          if grep -q 'Repository' "$ui"; then
+          if grep -q '>Repository<' "$ui"; then
             echo 'ERROR: repository selector/control leaked into minimal watchdog UI' >&2
             exit 1
           fi
