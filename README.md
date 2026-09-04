@@ -1,251 +1,311 @@
 # BKE Worker
 
-BKE Worker is an event-driven engineering orchestrator. Notion is the canonical checklist, ChatGPT Projects hold engineering context, Playwright is the browser automation layer, and GitHub push webhooks wake the worker so it can reconcile Notion.
+BKE Worker is a deterministic Notion-checkbox watchdog for one fixed ChatGPT engineering conversation.
 
-## Runtime contract
+The active architecture is intentionally small:
 
 ```text
-NOTION TASK
-    ↓
-BKE WORKER SERVER
-    ↓
-PLAYWRIGHT + PERSISTENT CHROMIUM
-    ↓
-CHATGPT PROJECT / CONVERSATION
-    ↓
-ENGINEERING + GITHUB PUSH
-    ↓
-SIGNED GITHUB WEBHOOK
-    ↓
-BKE WORKER WAKE
-    ↓
-NOTION RECONCILIATION
-
-[ ] → CONTINUE SAME ENGINEERING LOOP
-[x] → NEXT UNCHECKED GATE
-all checked → COMPLETE
+ONE NOTION CONTROL PAGE
+    ├── normal to_do blocks
+    │      = executable tasks / completion truth
+    │
+    └── normal tables
+           KEY | NAME | INSTRUCTION
+           = reusable durable instructions
+                    ↓
+               BKE WORKER
+                    ↓
+        FIXED CHATGPT CONVERSATION URL
+                    ↓
+            PLAYWRIGHT + CHROMIUM
+                    ↓
+              WATCH EXACT TODO
 ```
 
-A GitHub event **never means a task is complete**. It means only: wake up and reconcile the canonical Notion checkbox state.
+Runtime rule:
 
-## Android V0 is frozen
+```text
+unchecked + ChatGPT busy
+-> wait
 
-Android Accessibility was the original autonomous runtime prototype. Its exact baseline is preserved at:
+unchecked + ChatGPT idle
+-> continue the SAME TODO
+
+checked
+-> select first unchecked TODO
+-> dispatch next
+
+no unchecked TODOs
+-> COMPLETE
+-> stop
+```
+
+GitHub push is **not orchestration authority** on the active branch.
+
+## Legacy preservation
+
+The previous GitHub-webhook-driven Phase 6 loop is frozen at:
+
+```text
+branch: legacy/phase6-webhook-loop-certification
+sha:    df3a586f397487429ded3853e220de3a98e8f22c
+```
+
+That branch preserves the signed GitHub webhook wake queue, debounce/reconciliation loop, Phase 3–6 certification workflows, and the exact implementation that was live-tested before this pivot.
+
+Android Accessibility was the original autonomous runtime prototype and remains frozen separately at:
 
 ```text
 branch: legacy/android-runtime-v0
 sha:    a748435caecc41fb4a65f543efcb5a2b409fca61
 ```
 
-`src/BKE.Worker.Platform.Android` remains in history as prototype evidence. It is no longer the primary execution backend and is not part of the canonical VPS runtime CI gate.
+## Why the active design changed
 
-Future Android work belongs in a remote-control client that talks to the server.
+The worker does not need an indirect engineering event to guess when to continue.
 
-## Projects
-
-```text
-src/
-  BKE.Worker.Core/       orchestration contracts, event-driven WorkerLoop, worker state
-  BKE.Worker.Server/     ASP.NET Core host, wake queue, recovery timer, durable local state
-  BKE.Worker.ChatGPT/    Playwright persistent Chromium and deterministic ChatGPT navigation
-  BKE.Worker.Notion/     Notion checklist client and canonical reconciliation
-  BKE.Worker.GitHub/     signed push webhook verification and wake endpoint
-  BKE.Worker.Platform.Android/  frozen legacy prototype
-
-tests/
-  BKE.Worker.Core.Tests/
-  BKE.Worker.Notion.Tests/
-  BKE.Worker.GitHub.Tests/
-  BKE.Worker.ChatGPT.Tests/  real Chromium runtime + controlled semantic UI certification
-```
-
-## Worker states
+The canonical state transition already exists in Notion:
 
 ```text
-IDLE
-DISPATCHING
-WAITING_FOR_ENGINEERING_EVENT
-RECONCILING
-CONTINUING
-COMPLETE
-BLOCKED
-FAILED
+CURRENT TODO
+checked=false
+      ↓
+checked=true
 ```
 
-The worker persists only orchestration state: target project/conversation, Notion page, current checklist block, timestamps, last GitHub delivery ID, and failure state. It does **not** copy the full Notion checklist into another task database.
+A GitHub push, elapsed timer, or completed ChatGPT response cannot declare a task complete. Only the exact selected Notion `to_do` block can do that.
 
-## Event behavior
+Therefore:
 
-Initial start:
+```text
+Notion = task queue + completion truth
+Worker = watchdog + deterministic browser executor
+ChatGPT = engineering executor
+GitHub = engineering/code reality, not orchestration control
+```
 
-1. Fetch the Notion checklist.
-2. Find the first unchecked gate.
-3. Ensure persistent Chromium exists and ChatGPT is authenticated.
-4. Open **Projects**.
-5. Select the exact project.
-6. Select the exact conversation.
-7. Send `CONTINUE FROM THE NOTION CHECKLIST.`
-8. Enter `WAITING_FOR_ENGINEERING_EVENT`.
+## Notion control page
 
-GitHub push:
+BKE Worker reads exactly one configured Notion page.
 
-1. Verify `X-Hub-Signature-256`.
-2. Require and persist `X-GitHub-Delivery` for idempotency.
-3. Acknowledge the webhook and enqueue a wake.
-4. Debounce before reconciliation.
-5. Fetch Notion.
-6. If all gates are checked, complete.
-7. Otherwise wait until the ChatGPT turn is idle, then send `CONTINUE FROM THE NOTION CHECKLIST.` to the same exact project/conversation.
+### Tasks
 
-A recovery reconciliation runs every 5 minutes only while an engineering loop is active. It exists for missed deliveries, worker restarts, network interruption, and Notion updates that land after the last webhook.
+Normal Notion TODO blocks are executable tasks:
 
-## Race guard
+```text
+☐ Add exact current-TODO watching
+☐ Certify unchecked + busy waits
+☐ Certify checked advances exactly once
+☐ Certify all checked stops the worker
+```
 
-The webhook endpoint never sends a prompt directly. It queues a wake and returns `202`.
+The Notion block ID is the task identity. The text is the human-readable objective.
 
-The hosted worker then applies:
+Worker initially discovers tasks from the page, then watches only the exact active block through the Notion block API.
 
-- webhook debounce (default 10 seconds),
-- Notion reconciliation,
-- minimum dispatch spacing (default 30 seconds),
-- composer idle check.
+### Durable instructions
 
-A visible ChatGPT Stop control means the current turn is still active. A usable composer means a next turn can be sent.
+Reusable instructions live in one or more normal Notion tables on the same page.
+
+A table becomes an instruction source only when its header row is:
+
+| KEY | NAME | INSTRUCTION |
+| --- | --- | --- |
+| engineering | Engineering Canonical | Establish canonical project/repository reality first. Work only on the selected TODO. Preserve architecture unless the TODO explicitly changes it. Do not merge without owner authorization. Run relevant tests. Mark the exact selected TODO checked only when complete and verified. If blocked, leave it unchecked and report why. |
+| audit | Audit / Read Only | Inspect canonical reality only. Do not mutate systems unless explicitly authorized by the selected TODO. |
+| surgical | Surgical Fix | Make the smallest correct change required by the selected TODO. Do not perform unrelated redesign. |
+
+Multiple matching tables may exist on that same page. Instruction keys must be unique.
+
+BKE Worker deliberately does **not** traverse child pages or child databases for control data.
+
+Full contract: `docs/notion-control-page-template.md`.
+
+## Operator UI
+
+The normal control surface is intentionally minimal:
+
+```text
+Task
+[ Notion TODO ▼ ]
+
+Durable instruction
+[ Engineering Canonical ▼ ]
+
+[ Start watchdog ] [ Stop ] [ Check now ]
+```
+
+There is no normal repository selector, GitHub webhook panel, Project selector, or Conversation selector.
+
+The repository can be resolved by the engineering executor under the selected durable instruction. The ChatGPT execution conversation is Worker configuration, not operator task data.
+
+## Watchdog behavior
+
+When the operator starts a task, Worker stores the exact Notion TODO block ID and selected durable instruction.
+
+The dispatch contains:
+
+```text
+[DURABLE INSTRUCTION]
+<selected reusable instruction>
+
+[CURRENT TODO]
+<selected Notion TODO text>
+
+[WORKER CONTRACT]
+Execute/continue only this TODO.
+Mark this exact Notion TODO checked only when actually complete and verified.
+If blocked or incomplete, leave it unchecked and report why.
+```
+
+While active, Worker polls the exact current block frequently.
+
+If the TODO remains unchecked:
+
+- ChatGPT busy -> no action;
+- ChatGPT idle -> send one continuation after the configured retry guard.
+
+If the TODO becomes checked:
+
+- fetch the same page's checklist;
+- choose the first unchecked TODO;
+- wait for ChatGPT to become safe;
+- dispatch that next TODO.
+
+If no unchecked TODO remains, Worker enters `COMPLETE` and sends no additional prompts.
 
 ## Persistent Chromium
 
-Default profile:
+Live ChatGPT execution attaches to a persistent Chromium profile through loopback-only CDP.
+
+Typical host values:
 
 ```text
-/var/lib/bke-worker/chatgpt-profile
+BKE_WORKER_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
+BKE_WORKER_CHATGPT_PROFILE=$HOME/snap/chromium/common/bke-worker-chatgpt-profile
 ```
 
-This directory is a **credential**. Never commit it, upload it, log cookies from it, put it in Notion, or return its contents from an API.
+The browser profile is a credential. Never commit it, upload it, put its contents in Notion, or expose browser storage through APIs.
 
-One worker process owns one persistent Chromium profile. Tasks reuse it; they do not launch a new browser per gate.
-
-Navigation is deterministic:
+The autonomous target is one deterministic conversation URL:
 
 ```text
-ChatGPT
-  → Projects
-  → exact Project text
-  → exact Conversation text
-  → composer
+BKE_WORKER_CHATGPT_OVERRIDE_URL=https://chatgpt.com/.../c/<conversation-id>
 ```
 
-No Recent-chat routing, coordinates, visual guessing, or new-chat engineering route is used.
-
-A Project/Conversation lookup failure gets one ChatGPT UI reset and one retry. Navigation failure does not restart Chromium. The persistent profile survives browser restart.
+No New Chat fallback is used by the configured watchdog runtime.
 
 ## Configuration
-
-Environment variables:
 
 ```text
 BKE_WORKER_NOTION_TOKEN=...
 BKE_WORKER_NOTION_PAGE=...
-BKE_WORKER_CHATGPT_PROJECT=...
-BKE_WORKER_CHATGPT_CONVERSATION=...
-BKE_WORKER_GITHUB_WEBHOOK_SECRET=...
+BKE_WORKER_CHATGPT_OVERRIDE_URL=https://chatgpt.com/.../c/<conversation-id>
 
-# optional
-BKE_WORKER_CHATGPT_PROFILE=/var/lib/bke-worker/chatgpt-profile
-BKE_WORKER_STATE_FILE=/var/lib/bke-worker/state/worker.json
-BKE_WORKER_HEADLESS=true
-BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS=10
-BKE_WORKER_RECOVERY_SECONDS=300
-BKE_WORKER_MIN_DISPATCH_SECONDS=30
+# optional/runtime
+BKE_WORKER_NOTION_BASE_URL=https://api.notion.com/
+BKE_WORKER_CHATGPT_BASE_URL=https://chatgpt.com/
+BKE_WORKER_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
+BKE_WORKER_CHATGPT_PROFILE=$HOME/snap/chromium/common/bke-worker-chatgpt-profile
+BKE_WORKER_STATE_FILE=$HOME/.local/share/bke-worker/state/notion-watchdog.json
+BKE_WORKER_WATCHDOG_SECONDS=2
+BKE_WORKER_IDLE_RETRY_SECONDS=5
+BKE_WORKER_HEADLESS=false
 ```
 
-The GitHub webhook target is:
+GitHub webhook configuration is not required by the active watchdog server.
+
+## Server endpoints
 
 ```text
-POST /webhooks/github
+GET  /health
+GET  /health/live
+GET  /health/ready
+
+GET  /control/options
+GET  /control/summary
+POST /control/start
+POST /control/stop
+POST /control/check-now
+POST /control/chatgpt/probe
 ```
 
-Subscribe to `push` only for V1 and configure the same webhook secret on GitHub and the worker.
+`/control/options` returns unchecked Notion TODOs and same-page durable instruction templates for the dropdown UI.
 
-Health/state endpoints:
+The legacy `/webhooks/github` route is intentionally absent on the active watchdog branch.
+
+## Active projects
 
 ```text
-GET /health
-GET /control/state
+src/
+  BKE.Worker.Core/       shared execution/state contracts
+  BKE.Worker.ChatGPT/    Playwright + persistent Chromium automation
+  BKE.Worker.Notion/     TODO discovery, exact block reads, instruction-table reads
+  BKE.Worker.Server/     checkbox watchdog runtime + minimal operator UI
+
+  BKE.Worker.GitHub/     retained source history; not an active server dependency
+  BKE.Worker.Platform.Android/  frozen prototype source history
 ```
 
-No browser credentials are exposed through these endpoints.
+## CI contract
 
-## Canonical certification — GitHub Actions
-
-GitHub Actions is the canonical Linux certification environment for V1. No separate Lima certification gate is required.
-
-The Ubuntu workflow certifies:
+Active CI certifies:
 
 ```text
 .NET 10 restore/build
         ↓
-Core event-loop tests
+Core tests
         ↓
-Notion reconciliation tests
+Notion tests
+  - recursive same-page TODO discovery
+  - exact TODO block retrieval
+  - same-page instruction table parsing
+  - no child-page instruction traversal
         ↓
-GitHub webhook/signature tests
+ChatGPT Playwright adapter tests
         ↓
-install real Playwright Chromium
+publish watchdog server
         ↓
-launch persistent Chromium
+fail-closed unconfigured runtime
         ↓
-restart Chromium and prove profile storage survives
+prove /webhooks/github is retired (404)
         ↓
-controlled semantic ChatGPT surface
-Projects → exact Project → exact Conversation → composer
-        ↓
-prove SEND and busy/idle guard
-        ↓
-publish BKE.Worker.Server
-        ↓
-boot published server on Ubuntu
-        ↓
-GET /health
-        ↓
-GREEN
+minimal operator UI contract
 ```
 
-The controlled browser surface intentionally tests the automation contract without storing a real ChatGPT account session in GitHub Actions.
+Live authenticated ChatGPT + real Notion certification remains an operational host smoke/certification step because CI does not store a real ChatGPT account session.
 
-GitHub Actions therefore certifies the **engine and Linux browser/runtime contract**. A live authenticated ChatGPT check on the deployed host is an adapter smoke test, not a prerequisite for proving the orchestration architecture.
+## Task-writing rule
 
-## Production target
+The transport is now intentionally boring. Autonomous quality depends mainly on the task and durable instruction being precise.
 
-Recommended initial host:
+Durable instruction answers:
 
 ```text
-Ubuntu/Debian Linux VPS
-2 CPU
-4 GB RAM recommended
-20–40 GB storage
-.NET 10
-Playwright Chromium
-systemd
+how to behave
+canonical project rules
+what may / may not be changed
+testing requirements
+merge authorization
+stop conditions
 ```
 
-Raspberry Pi remains a supported self-hosted backend candidate.
+TODO answers:
 
-V1 requires no PostgreSQL, Redis, Kubernetes, OpenAI API, or external ChatGPT-context reconstruction.
+```text
+what bounded outcome must become true
+```
 
-## Certification boundary
+Weak:
 
-Canonical CI proves:
+```text
+☐ Fix BKE Worker
+```
 
-- event-driven worker behavior,
-- checkbox-driven progression,
-- webhook integrity and delivery dedupe,
-- Linux build/runtime compatibility,
-- actual Chromium launch,
-- persistent profile survival across browser restart,
-- deterministic semantic Project/Conversation navigation against a controlled UI contract,
-- composer send and busy/idle gating,
-- published server startup and health.
+Strong:
 
-CI does **not** store or certify a real ChatGPT account login. After deployment, the dedicated persistent profile is authenticated on the target host and a live smoke check can validate current ChatGPT-web compatibility.
+```text
+☐ Make BKE Worker retrieve the exact active Notion TODO by block ID and advance only after that block reports checked=true.
+```
 
-That smoke check is operational evidence, not a separate development environment gate.
+That separation is the core of deterministic autonomous execution.
