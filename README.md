@@ -1,21 +1,21 @@
 # BKE Worker
 
-BKE Worker is a deterministic Notion-checkbox watchdog for one fixed ChatGPT engineering conversation.
+BKE Worker is a deterministic Notion-checkbox watchdog that executes one exact ChatGPT conversation through persistent Chromium.
 
 ```text
-NOTION SECRET
+Notion integration secret
 entered in operator UI
-held in process memory only
-        ↓
-NOTION WORKSPACE
+memory only
         ↓
 ENGINEERING: page discovery
         ↓
-exact selected page ID
+exact selected Notion page ID
         ↓
 exact selected TODO block ID
         ↓
-fixed ChatGPT conversation
+exact ChatGPT conversation URL
+entered in operator UI
+memory only
         ↓
 Playwright + persistent Chromium
 ```
@@ -25,11 +25,35 @@ Core rule:
 ```text
 NAMES DISCOVER.
 IDS EXECUTE.
+URLS TARGET EXACTLY.
 ```
 
-A title beginning with `ENGINEERING:` makes a page discoverable. At START, Worker locks the exact selected Notion page ID and exact selected TODO block ID. Runtime never redirects an active run by title.
+The Worker has no ChatGPT conversation API. Determinism comes from the exact browser URL supplied by the operator, including project conversation forms such as `https://chatgpt.com/g/.../c/<conversation-id>` and normal `https://chatgpt.com/c/<conversation-id>` URLs. A valid target must be HTTPS on `chatgpt.com` and contain `/c/<conversation-id>`.
 
-## Runtime rule
+## Runtime authority
+
+```text
+Notion secret
+= which Notion universe Worker can see
+
+ENGINEERING: prefix
+= project discovery only
+
+selected Notion page ID
+= exact project authority
+
+selected TODO block ID
+= exact task authority
+
+exact ChatGPT /c/<id> URL
+= exact browser execution target
+```
+
+Both the Notion secret and ChatGPT conversation URL are UI/session-owned. They are kept only in process memory and discarded on disconnect/clear or Worker restart. They are not loaded from `.env` and are not written to Worker state JSON, browser storage, logs, GitHub, Notion, or build artifacts.
+
+While the watchdog is active, replacing/disconnecting either runtime identity is rejected.
+
+## Watchdog rule
 
 ```text
 unchecked + ChatGPT busy
@@ -44,58 +68,21 @@ checked
 
 no unchecked TODOs on the locked page
 -> COMPLETE
--> stop
 ```
 
 GitHub push is not orchestration authority on the active branch.
-
-## Notion authentication
-
-The Notion integration secret is deliberately **not** host configuration.
-
-The operator enters it in the UI after Worker starts. Worker validates it, keeps it only in process memory, and discards it on explicit disconnect or process restart.
-
-Do not place the Notion secret in `.env`, Worker state JSON, GitHub, Notion pages, browser storage, logs, or build artifacts.
-
-The Notion secret controls which Notion workspace content the Worker can see. It does not select a project. Project discovery is based on the `ENGINEERING:` title prefix, and runtime authority is the exact page ID selected at START.
-
-## Engineering page contract
-
-Each engineering page may contain normal Notion TODO blocks:
-
-```text
-☐ Add exact current-TODO watching
-☐ Certify unchecked + busy waits
-☐ Certify checked advances exactly once
-```
-
-and normal Notion tables with this exact header:
-
-| KEY | NAME | INSTRUCTION |
-| --- | --- | --- |
-| engineering | Engineering Canonical | Establish canonical project/repository reality first. Work only on the selected TODO. Preserve architecture unless the TODO explicitly changes it. Do not merge without owner authorization. Run relevant tests. Mark the exact selected TODO checked only when complete and verified. If blocked, leave it unchecked and report why. |
-| audit | Audit / Read Only | Inspect canonical reality only. Do not mutate systems unless explicitly authorized by the selected TODO. |
-| surgical | Surgical Fix | Make the smallest correct change required by the selected TODO. Do not perform unrelated redesign. |
-
-Worker deliberately does not traverse child pages or child databases for selected-page task or instruction control data.
-
-At START, Worker revalidates:
-
-```text
-selected page title starts with ENGINEERING:
-selected TODO is currently unchecked
-selected TODO belongs to that exact page
-selected instruction key exists on that exact page
-```
 
 ## Operator UI
 
 ```text
 Notion integration secret
-[ ••••••••••••••••••• ] [ Connect ] [ Disconnect ]
+[ ••••••••••••••••• ] [ Connect ] [ Disconnect ]
+
+Exact ChatGPT conversation URL
+[ https://chatgpt.com/.../c/<conversation-id> ] [ Use URL ] [ Clear ]
 
 Engineering project
-[ ENGINEERING: BKE Worker ▼ ]
+[ ENGINEERING: ... ▼ ]
 
 Notion task / TODO
 [ ... ▼ ]
@@ -108,7 +95,7 @@ Durable instruction
 Refresh Notion lists
 ```
 
-Normal operation needs no manual refresh:
+Normal refresh behavior:
 
 ```text
 watchdog summary        -> every 1.5 seconds
@@ -116,47 +103,36 @@ selected page options   -> every 8 seconds while idle
 ENGINEERING page list   -> every 30 seconds while idle
 ```
 
-The manual `Refresh Notion lists` button remains as an explicit/debug refresh.
+The manual `Refresh Notion lists` button remains available.
 
-Changing or disconnecting the Notion session is rejected while the watchdog is active.
+## Engineering page contract
 
-## Dispatch identity
+Each `ENGINEERING:` page may contain normal Notion `to_do` blocks and same-page tables with the exact header:
 
-Every prompt carries the exact locked Notion authority:
+| KEY | NAME | INSTRUCTION |
+| --- | --- | --- |
+| engineering | Engineering Canonical | Establish canonical reality first. Work only on the selected TODO. Run relevant tests. Mark the exact TODO checked only when complete and verified. |
+| audit | Audit / Read Only | Inspect only. Do not mutate systems unless explicitly authorized. |
+| surgical | Surgical Fix | Make the smallest correct change required by the selected TODO. |
 
-```text
-[NOTION AUTHORITY]
-Page name: <display title>
-Page ID: <exact page id>
-Page URL: <exact page url>
-Current TODO block ID: <exact block id>
-Use ONLY this exact Notion page.
+At START, Worker revalidates that the selected page still starts with `ENGINEERING:`, the selected TODO is unchecked and belongs to that exact page, and the selected durable instruction exists on that exact page.
 
-[DURABLE INSTRUCTION]
-<selected reusable instruction>
+## Host configuration
 
-[CURRENT TODO]
-<selected Notion TODO text>
-```
-
-## Persistent Chromium
-
-Live ChatGPT execution attaches to a persistent Chromium profile through loopback-only CDP.
-
-Typical host configuration:
+Only machine/runtime configuration belongs in `.env`:
 
 ```text
-BKE_WORKER_CHATGPT_OVERRIDE_URL=https://chatgpt.com/.../c/<conversation-id>
+BKE_WORKER_NOTION_BASE_URL=https://api.notion.com/
+BKE_WORKER_CHATGPT_BASE_URL=https://chatgpt.com/
 BKE_WORKER_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
 BKE_WORKER_CHATGPT_PROFILE=$HOME/snap/chromium/common/bke-worker-chatgpt-profile
-BKE_WORKER_NOTION_BASE_URL=https://api.notion.com/
 BKE_WORKER_STATE_FILE=$HOME/.local/share/bke-worker/state/notion-watchdog.json
 BKE_WORKER_WATCHDOG_SECONDS=2
 BKE_WORKER_IDLE_RETRY_SECONDS=5
 BKE_WORKER_HEADLESS=false
 ```
 
-The Chromium profile is itself a credential store. Never commit it, upload it, put its contents in Notion, or expose CDP outside loopback.
+The Chromium profile is a credential store. Keep CDP loopback-only and never commit or upload the profile.
 
 ## Server endpoints
 
@@ -164,52 +140,25 @@ The Chromium profile is itself a credential store. Never commit it, upload it, p
 GET  /health
 GET  /health/live
 GET  /health/ready
-
 POST /control/notion/connect
 POST /control/notion/disconnect
+POST /control/chatgpt/connect
+POST /control/chatgpt/disconnect
+POST /control/chatgpt/probe
 GET  /control/projects
 GET  /control/options?pageId=<exact-notion-page-id>
 GET  /control/summary
 POST /control/start
 POST /control/stop
 POST /control/check-now
-POST /control/chatgpt/probe
 ```
-
-`/control/notion/connect` accepts the operator-provided secret and validates it before replacing the current in-memory Notion session. The secret is never returned by the API.
-
-`/control/projects` returns discoverable `ENGINEERING:` pages. `/control/options` returns verified unchecked TODOs and same-page durable instruction templates for one exact selected page.
 
 ## Legacy preservation
 
-The prior GitHub-webhook-driven Phase 6 loop remains frozen at:
-
 ```text
-branch: legacy/phase6-webhook-loop-certification
-sha:    df3a586f397487429ded3853e220de3a98e8f22c
+legacy/phase6-webhook-loop-certification
+sha df3a586f397487429ded3853e220de3a98e8f22c
+
+legacy/android-runtime-v0
+sha a748435caecc41fb4a65f543efcb5a2b409fca61
 ```
-
-Android Accessibility remains frozen at:
-
-```text
-branch: legacy/android-runtime-v0
-sha:    a748435caecc41fb4a65f543efcb5a2b409fca61
-```
-
-## Task-writing rule
-
-Durable instructions define behavior, boundaries, canonical project rules, testing requirements, merge authority, and stop conditions. TODOs define one bounded outcome.
-
-Weak:
-
-```text
-☐ Fix BKE Worker
-```
-
-Strong:
-
-```text
-☐ Make BKE Worker retrieve the exact active Notion TODO by block ID and advance only after that block reports checked=true.
-```
-
-That separation is the core of deterministic autonomous execution.
