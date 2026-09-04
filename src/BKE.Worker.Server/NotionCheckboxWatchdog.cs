@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BKE.Worker.Core;
@@ -35,12 +36,12 @@ public sealed class NotionCheckboxWatchdog(
 {
     private const string DispatchOutcomeUnknown = "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
     private readonly SemaphoreSlim _mutex = new(1, 1);
+    private readonly HttpClient _notionPageHttp = CreateNotionPageHttp(settings);
 
     public async Task<WatchdogOptions> GetOptions(CancellationToken cancellationToken)
     {
-        var tasks = await notion.GetTasks(
+        var tasks = await GetVerifiedUncheckedTasks(
             settings.NotionPageId,
-            includeChecked: false,
             cancellationToken);
         var instructions = await notion.GetInstructionTemplates(
             settings.NotionPageId,
@@ -181,12 +182,11 @@ public sealed class NotionCheckboxWatchdog(
 
             if (current.Checked)
             {
-                IReadOnlyList<NotionChecklistTask> remaining;
+                NotionChecklistTask? next;
                 try
                 {
-                    remaining = await notion.GetTasks(
+                    next = await GetFirstVerifiedUncheckedTask(
                         snapshot.Target.NotionPageId,
-                        includeChecked: false,
                         cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -194,7 +194,6 @@ public sealed class NotionCheckboxWatchdog(
                     return await Block(observed, ex.Message, cancellationToken);
                 }
 
-                var next = remaining.FirstOrDefault();
                 if (next is null)
                 {
                     var complete = observed with
@@ -209,8 +208,13 @@ public sealed class NotionCheckboxWatchdog(
 
                 if (!await IsChatSafe(cancellationToken))
                 {
-                    await stateStore.Save(observed, cancellationToken);
-                    return new(observed.State, false, "NEXT_TASK_READY_CHATGPT_BUSY", next.BlockId);
+                    var pendingNext = observed with
+                    {
+                        CurrentChecklistIdentifier = next.BlockId,
+                        Failure = null
+                    };
+                    await stateStore.Save(pendingNext, cancellationToken);
+                    return new(pendingNext.State, false, "NEXT_TASK_READY_CHATGPT_BUSY", next.BlockId);
                 }
 
                 var nextSnapshot = observed with
@@ -244,6 +248,45 @@ public sealed class NotionCheckboxWatchdog(
         }
     }
 
+    private async Task<IReadOnlyList<NotionChecklistTask>> GetVerifiedUncheckedTasks(
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await notion.GetTasks(
+            pageId,
+            includeChecked: true,
+            cancellationToken);
+        var verified = new List<NotionChecklistTask>(candidates.Count);
+
+        foreach (var candidate in candidates)
+        {
+            var exact = await notion.GetTask(candidate.BlockId, cancellationToken);
+            if (exact is not null && !exact.Checked)
+                verified.Add(exact);
+        }
+
+        return verified;
+    }
+
+    private async Task<NotionChecklistTask?> GetFirstVerifiedUncheckedTask(
+        string pageId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await notion.GetTasks(
+            pageId,
+            includeChecked: true,
+            cancellationToken);
+
+        foreach (var candidate in candidates)
+        {
+            var exact = await notion.GetTask(candidate.BlockId, cancellationToken);
+            if (exact is not null && !exact.Checked)
+                return exact;
+        }
+
+        return null;
+    }
+
     private async Task<bool> IsChatSafe(CancellationToken cancellationToken)
     {
         await driver.Launch(cancellationToken);
@@ -268,9 +311,10 @@ public sealed class NotionCheckboxWatchdog(
 
         try
         {
+            var page = await GetNotionPageIdentity(target.NotionPageId, cancellationToken);
             await driver.Launch(cancellationToken);
             await driver.OpenContext(target.ResolveContextTarget(), cancellationToken);
-            await driver.Send(BuildPrompt(target.Instruction, task.Text, isContinuation), cancellationToken);
+            await driver.Send(BuildPrompt(target.Instruction, page, task, isContinuation), cancellationToken);
 
             var waiting = dispatching with
             {
@@ -295,23 +339,100 @@ public sealed class NotionCheckboxWatchdog(
         }
     }
 
-    private static string BuildPrompt(string durableInstruction, string taskText, bool isContinuation)
+    private async Task<NotionPageSummary> GetNotionPageIdentity(
+        string pageIdOrUrl,
+        CancellationToken cancellationToken)
+    {
+        var pageId = NotionChecklistClient.NormalizeNotionId(pageIdOrUrl);
+        using var response = await _notionPageHttp.GetAsync(
+            $"v1/pages/{Uri.EscapeDataString(pageId)}",
+            cancellationToken);
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"NOTION_PAGE_IDENTITY_FAILED:{(int)response.StatusCode}");
+
+        using var document = JsonDocument.Parse(payload);
+        var root = document.RootElement;
+        var title = ReadPageTitle(root).Trim();
+        if (string.IsNullOrWhiteSpace(title))
+            throw new InvalidOperationException("NOTION_PAGE_TITLE_NOT_FOUND");
+
+        var returnedId = root.TryGetProperty("id", out var idProperty)
+            ? idProperty.GetString() ?? pageId
+            : pageId;
+        var url = root.TryGetProperty("url", out var urlProperty)
+            ? urlProperty.GetString()
+            : null;
+
+        return new NotionPageSummary(returnedId, title, url);
+    }
+
+    private static HttpClient CreateNotionPageHttp(WorkerServerSettings settings)
+    {
+        var http = new HttpClient
+        {
+            BaseAddress = new Uri(settings.NotionBaseUrl, UriKind.Absolute)
+        };
+        if (!string.IsNullOrWhiteSpace(settings.NotionToken))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.NotionToken.Trim());
+        http.DefaultRequestHeaders.Remove("Notion-Version");
+        http.DefaultRequestHeaders.Add("Notion-Version", NotionChecklistClient.ApiVersion);
+        return http;
+    }
+
+    private static string ReadPageTitle(JsonElement page)
+    {
+        if (!page.TryGetProperty("properties", out var properties))
+            return string.Empty;
+
+        foreach (var property in properties.EnumerateObject())
+        {
+            var value = property.Value;
+            if (!value.TryGetProperty("type", out var type) || type.GetString() != "title")
+                continue;
+            if (!value.TryGetProperty("title", out var titleItems))
+                continue;
+
+            return string.Concat(
+                titleItems.EnumerateArray()
+                    .Select(item => item.TryGetProperty("plain_text", out var text) ? text.GetString() : null)
+                    .Where(text => !string.IsNullOrEmpty(text)));
+        }
+
+        return string.Empty;
+    }
+
+    private static string BuildPrompt(
+        string durableInstruction,
+        NotionPageSummary page,
+        NotionChecklistTask task,
+        bool isContinuation)
     {
         var action = isContinuation
             ? "The current Notion TODO is still unchecked. Continue the SAME TODO. Do not move to another TODO."
             : "Execute the CURRENT TODO below. Do not move to another TODO.";
+        var pageId = NotionChecklistClient.NormalizeNotionId(page.PageId);
+        var pageUrl = string.IsNullOrWhiteSpace(page.Url) ? "(not available)" : page.Url.Trim();
 
         return $"""
+[NOTION AUTHORITY]
+Page name: {page.Title.Trim()}
+Page ID: {pageId}
+Page URL: {pageUrl}
+Current TODO block ID: {task.BlockId}
+Use ONLY this exact Notion page for task reconciliation and completion.
+Do NOT search for, use, or modify another Notion page merely because it contains the same or similar TODO text.
+
 [DURABLE INSTRUCTION]
 {durableInstruction.Trim()}
 
 [CURRENT TODO]
-{taskText.Trim()}
+{task.Text.Trim()}
 
 [WORKER CONTRACT]
 {action}
-The selected Notion TODO block is canonical completion truth.
-Mark that exact TODO checked only when the task is actually complete and verified.
+The exact Notion page and TODO block identified above are canonical completion truth.
+Mark that TODO checked only when the task is actually complete and verified.
 If blocked or incomplete, leave it unchecked and report the blocker.
 Do not mark it complete merely because work was attempted.
 """;
