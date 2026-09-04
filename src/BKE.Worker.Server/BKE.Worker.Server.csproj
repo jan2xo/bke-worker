@@ -4,4 +4,11 @@
     <ProjectReference Include="../BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
     <ProjectReference Include="../BKE.Worker.Notion/BKE.Worker.Notion.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Program.cs serves static files from AppContext.BaseDirectory/wwwroot.
+         Keep the operator UI beside the built/published server so `GET /`
+         works identically under `dotnet run`, direct DLL execution, and publish. -->
+    <Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
