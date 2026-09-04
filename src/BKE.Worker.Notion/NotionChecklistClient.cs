@@ -12,6 +12,13 @@ public sealed record NotionChecklistTask(
     bool Checked,
     bool HasChildren);
 
+public sealed record NotionInstructionTemplate(
+    string Key,
+    string Name,
+    string Instruction,
+    string TableBlockId,
+    string RowBlockId);
+
 public sealed record NotionExecutionTarget(
     string Project,
     string Chat,
@@ -24,6 +31,14 @@ public interface INotionChecklistClient
     Task<IReadOnlyList<NotionChecklistTask>> GetTasks(
         string pageIdOrUrl,
         bool includeChecked,
+        CancellationToken cancellationToken);
+
+    Task<NotionChecklistTask?> GetTask(
+        string blockId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<NotionInstructionTemplate>> GetInstructionTemplates(
+        string pageIdOrUrl,
         CancellationToken cancellationToken);
 
     Task<NotionExecutionTarget> GetExecutionTarget(
@@ -100,10 +115,7 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                 }
             }
 
-            cursor = root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
-                && root.TryGetProperty("next_cursor", out var nextCursor)
-                ? nextCursor.GetString()
-                : null;
+            cursor = ReadNextCursor(root);
         }
         while (!string.IsNullOrWhiteSpace(cursor));
 
@@ -121,6 +133,54 @@ public sealed class NotionChecklistClient : INotionChecklistClient
         return tasks;
     }
 
+    public async Task<NotionChecklistTask?> GetTask(
+        string blockId,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeNotionId(blockId);
+        using var response = await _http.GetAsync(
+            $"v1/blocks/{Uri.EscapeDataString(normalized)}",
+            cancellationToken);
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
+
+        using var document = JsonDocument.Parse(payload);
+        var block = document.RootElement;
+        if (!block.TryGetProperty("type", out var typeProperty) ||
+            !string.Equals(typeProperty.GetString(), "to_do", StringComparison.Ordinal) ||
+            !block.TryGetProperty("to_do", out var todo))
+        {
+            return null;
+        }
+
+        var isChecked = todo.TryGetProperty("checked", out var checkedProperty) && checkedProperty.GetBoolean();
+        var hasChildren = block.TryGetProperty("has_children", out var childFlag) && childFlag.GetBoolean();
+        var text = ReadPlainText(todo);
+        var id = block.TryGetProperty("id", out var idProperty)
+            ? idProperty.GetString() ?? normalized
+            : normalized;
+
+        return new NotionChecklistTask(id, text, isChecked, hasChildren);
+    }
+
+    public async Task<IReadOnlyList<NotionInstructionTemplate>> GetInstructionTemplates(
+        string pageIdOrUrl,
+        CancellationToken cancellationToken)
+    {
+        var pageId = NormalizeNotionId(pageIdOrUrl);
+        var templates = new List<NotionInstructionTemplate>();
+        await ReadInstructionTables(pageId, templates, cancellationToken);
+
+        var duplicate = templates
+            .GroupBy(template => template.Key, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+            throw new InvalidOperationException($"NOTION_INSTRUCTION_KEY_DUPLICATE:{duplicate.Key}");
+
+        return templates;
+    }
+
     public async Task<NotionExecutionTarget> GetExecutionTarget(
         string pageIdOrUrl,
         CancellationToken cancellationToken)
@@ -131,10 +191,7 @@ public sealed class NotionChecklistClient : INotionChecklistClient
 
         do
         {
-            var path = $"v1/blocks/{Uri.EscapeDataString(pageId)}/children?page_size=100";
-            if (!string.IsNullOrWhiteSpace(cursor))
-                path += $"&start_cursor={Uri.EscapeDataString(cursor)}";
-
+            var path = BuildChildrenPath(pageId, cursor);
             using var response = await _http.GetAsync(path, cancellationToken);
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
@@ -158,10 +215,7 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                     targetBlocks.Add(text);
             }
 
-            cursor = root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
-                && root.TryGetProperty("next_cursor", out var nextCursor)
-                ? nextCursor.GetString()
-                : null;
+            cursor = ReadNextCursor(root);
         }
         while (!string.IsNullOrWhiteSpace(cursor));
 
@@ -183,11 +237,7 @@ public sealed class NotionChecklistClient : INotionChecklistClient
 
         do
         {
-            var path = $"v1/blocks/{Uri.EscapeDataString(blockId)}/children?page_size=100";
-            if (!string.IsNullOrWhiteSpace(cursor))
-                path += $"&start_cursor={Uri.EscapeDataString(cursor)}";
-
-            using var response = await _http.GetAsync(path, cancellationToken);
+            using var response = await _http.GetAsync(BuildChildrenPath(blockId, cursor), cancellationToken);
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
@@ -212,18 +262,137 @@ public sealed class NotionChecklistClient : INotionChecklistClient
                     }
                 }
 
-                var isNestedPageOrDatabase = type is "child_page" or "child_database";
-                if (hasChildren && !isNestedPageOrDatabase && !string.IsNullOrWhiteSpace(id))
+                if (hasChildren && IsSamePageDescendant(type) && !string.IsNullOrWhiteSpace(id))
                     await ReadChildren(id, includeChecked, tasks, cancellationToken);
             }
 
-            cursor = root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
-                && root.TryGetProperty("next_cursor", out var nextCursor)
-                ? nextCursor.GetString()
-                : null;
+            cursor = ReadNextCursor(root);
         }
         while (!string.IsNullOrWhiteSpace(cursor));
     }
+
+    private async Task ReadInstructionTables(
+        string blockId,
+        ICollection<NotionInstructionTemplate> templates,
+        CancellationToken cancellationToken)
+    {
+        string? cursor = null;
+
+        do
+        {
+            using var response = await _http.GetAsync(BuildChildrenPath(blockId, cursor), cancellationToken);
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
+
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            foreach (var block in root.GetProperty("results").EnumerateArray())
+            {
+                var id = block.TryGetProperty("id", out var idProperty)
+                    ? idProperty.GetString() ?? string.Empty
+                    : string.Empty;
+                var type = block.TryGetProperty("type", out var typeProperty)
+                    ? typeProperty.GetString()
+                    : null;
+                var hasChildren = block.TryGetProperty("has_children", out var childFlag) && childFlag.GetBoolean();
+
+                if (string.Equals(type, "table", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(id))
+                {
+                    await ReadInstructionTable(id, templates, cancellationToken);
+                    continue;
+                }
+
+                if (hasChildren && IsSamePageDescendant(type) && !string.IsNullOrWhiteSpace(id))
+                    await ReadInstructionTables(id, templates, cancellationToken);
+            }
+
+            cursor = ReadNextCursor(root);
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+    }
+
+    private async Task ReadInstructionTable(
+        string tableBlockId,
+        ICollection<NotionInstructionTemplate> templates,
+        CancellationToken cancellationToken)
+    {
+        string? cursor = null;
+        var headerSeen = false;
+
+        do
+        {
+            using var response = await _http.GetAsync(BuildChildrenPath(tableBlockId, cursor), cancellationToken);
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"NOTION_REQUEST_FAILED:{(int)response.StatusCode}");
+
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            foreach (var block in root.GetProperty("results").EnumerateArray())
+            {
+                if (!block.TryGetProperty("type", out var typeProperty) ||
+                    !string.Equals(typeProperty.GetString(), "table_row", StringComparison.Ordinal) ||
+                    !block.TryGetProperty("table_row", out var row) ||
+                    !row.TryGetProperty("cells", out var cells))
+                {
+                    continue;
+                }
+
+                var values = cells.EnumerateArray().Select(ReadRichTextArray).ToArray();
+                if (!headerSeen)
+                {
+                    if (values.Length >= 3 &&
+                        string.Equals(values[0].Trim(), "KEY", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(values[1].Trim(), "NAME", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(values[2].Trim(), "INSTRUCTION", StringComparison.OrdinalIgnoreCase))
+                    {
+                        headerSeen = true;
+                    }
+                    continue;
+                }
+
+                if (values.Length < 3)
+                    continue;
+
+                var key = values[0].Trim();
+                var name = values[1].Trim();
+                var instruction = values[2].Trim();
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(instruction))
+                    continue;
+
+                var rowBlockId = block.TryGetProperty("id", out var rowId)
+                    ? rowId.GetString() ?? string.Empty
+                    : string.Empty;
+                templates.Add(new NotionInstructionTemplate(
+                    key,
+                    name,
+                    instruction,
+                    tableBlockId,
+                    rowBlockId));
+            }
+
+            cursor = ReadNextCursor(root);
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+    }
+
+    private static bool IsSamePageDescendant(string? type) =>
+        type is not ("child_page" or "child_database");
+
+    private static string BuildChildrenPath(string blockId, string? cursor)
+    {
+        var path = $"v1/blocks/{Uri.EscapeDataString(blockId)}/children?page_size=100";
+        if (!string.IsNullOrWhiteSpace(cursor))
+            path += $"&start_cursor={Uri.EscapeDataString(cursor)}";
+        return path;
+    }
+
+    private static string? ReadNextCursor(JsonElement root) =>
+        root.TryGetProperty("has_more", out var hasMore) && hasMore.GetBoolean()
+        && root.TryGetProperty("next_cursor", out var nextCursor)
+            ? nextCursor.GetString()
+            : null;
 
     private static NotionExecutionTarget ParseExecutionTarget(string text)
     {
@@ -288,11 +457,14 @@ public sealed class NotionChecklistClient : INotionChecklistClient
         if (!blockType.TryGetProperty("rich_text", out var richText))
             return string.Empty;
 
-        return string.Concat(
+        return ReadRichTextArray(richText);
+    }
+
+    private static string ReadRichTextArray(JsonElement richText) =>
+        string.Concat(
             richText.EnumerateArray()
                 .Select(item => item.TryGetProperty("plain_text", out var text) ? text.GetString() : null)
                 .Where(value => !string.IsNullOrEmpty(value)));
-    }
 
     public static string NormalizeNotionId(string pageIdOrUrl)
     {
