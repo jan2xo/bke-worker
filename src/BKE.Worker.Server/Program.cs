@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 var settings = WorkerServerSettings.FromConfiguration(builder.Configuration);
 var notionConnection = new NotionRuntimeConnection(settings.NotionBaseUrl);
 var chatGptTarget = new ChatGptRuntimeTarget();
+var chatGptBrowser = new ChatGptBrowserRuntime(settings);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -18,6 +19,7 @@ builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(notionConnection);
 builder.Services.AddSingleton<INotionChecklistClient>(notionConnection);
 builder.Services.AddSingleton(chatGptTarget);
+builder.Services.AddSingleton(chatGptBrowser);
 builder.Services.AddSingleton<ProjectNavigator>();
 builder.Services.AddSingleton<ConversationNavigator>();
 builder.Services.AddSingleton<ComposerDriver>();
@@ -38,16 +40,31 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-bool IsReady() => settings.HostConfigured && notionConnection.IsConnected && chatGptTarget.IsConnected;
-
-app.MapGet("/health", () => Results.Ok(new
+async Task<bool> IsReady(CancellationToken cancellationToken)
 {
-    status = "ok",
-    hostConfigured = settings.HostConfigured,
-    notionConnected = notionConnection.IsConnected,
-    chatGptTargetConnected = chatGptTarget.IsConnected,
-    runtime = "notion-checkbox-watchdog"
-}));
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
+    return settings.HostConfigured &&
+        notionConnection.IsConnected &&
+        chatGptTarget.IsConnected &&
+        browser.CdpReady &&
+        browser.Authorization == ChatGptAuthorizationState.AUTHORIZED;
+}
+
+app.MapGet("/health", async (CancellationToken cancellationToken) =>
+{
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
+    return Results.Ok(new
+    {
+        status = "ok",
+        hostConfigured = settings.HostConfigured,
+        notionConnected = notionConnection.IsConnected,
+        chatGptTargetConnected = chatGptTarget.IsConnected,
+        chatGptBrowserRunning = browser.Running,
+        chatGptCdpReady = browser.CdpReady,
+        chatGptAuthorization = browser.Authorization,
+        runtime = "notion-checkbox-watchdog"
+    });
+});
 
 app.MapGet("/health/live", () => Results.Ok(new
 {
@@ -55,15 +72,23 @@ app.MapGet("/health/live", () => Results.Ok(new
     runtime = "notion-checkbox-watchdog"
 }));
 
-app.MapGet("/health/ready", () =>
+app.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
 {
-    var ready = IsReady();
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
+    var ready = settings.HostConfigured &&
+        notionConnection.IsConnected &&
+        chatGptTarget.IsConnected &&
+        browser.CdpReady &&
+        browser.Authorization == ChatGptAuthorizationState.AUTHORIZED;
     var payload = new
     {
         status = ready ? "ready" : "not_ready",
         hostConfigured = settings.HostConfigured,
         notionConnected = notionConnection.IsConnected,
         chatGptTargetConnected = chatGptTarget.IsConnected,
+        chatGptBrowserRunning = browser.Running,
+        chatGptCdpReady = browser.CdpReady,
+        chatGptAuthorization = browser.Authorization,
         runtime = "notion-checkbox-watchdog"
     };
 
@@ -111,6 +136,111 @@ app.MapPost("/control/notion/disconnect", async (
 
     notionConnection.Disconnect();
     return Results.Ok(new { connected = false });
+});
+
+app.MapGet("/control/chatgpt/browser/status", async (CancellationToken cancellationToken) =>
+    Results.Ok(await chatGptBrowser.GetStatus(cancellationToken)));
+
+app.MapPost("/control/chatgpt/browser/start", async (
+    ChatGPTWebDriver driver,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await chatGptBrowser.Start(cancellationToken);
+        try
+        {
+            await driver.Launch(cancellationToken);
+            chatGptBrowser.MarkAuthorized();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal))
+        {
+            chatGptBrowser.MarkLoginRequired();
+        }
+
+        return Results.Ok(await chatGptBrowser.GetStatus(cancellationToken));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Unable to start ChatGPT browser",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapPost("/control/chatgpt/browser/login", async (
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot change ChatGPT account while watchdog is active",
+            detail: "Stop the watchdog before entering login mode.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    try
+    {
+        return Results.Ok(await chatGptBrowser.BeginLogin(cancellationToken));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Unable to open ChatGPT login",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapPost("/control/chatgpt/browser/verify-login", async (
+    ChatGPTWebDriver driver,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await driver.Launch(cancellationToken);
+        chatGptBrowser.MarkAuthorized();
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("CHATGPT_AUTH_REQUIRED", StringComparison.Ordinal))
+    {
+        chatGptBrowser.MarkLoginRequired();
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Unable to verify ChatGPT login",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    return Results.Ok(await chatGptBrowser.GetStatus(cancellationToken));
+});
+
+app.MapPost("/control/chatgpt/browser/clear", async (
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot clear ChatGPT account while watchdog is active",
+            detail: "Stop the watchdog before clearing the dedicated browser profile.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    try
+    {
+        var status = await chatGptBrowser.ClearProfile(cancellationToken);
+        chatGptTarget.Disconnect();
+        return Results.Ok(status);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Unable to clear ChatGPT account",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status409Conflict);
+    }
 });
 
 app.MapPost("/control/chatgpt/connect", async (
@@ -212,6 +342,7 @@ app.MapGet("/control/summary", async (
     CancellationToken cancellationToken) =>
 {
     var snapshot = await watchdog.GetState(cancellationToken);
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
     NotionChecklistTask? currentTask = null;
     if (notionConnection.IsConnected)
     {
@@ -225,12 +356,19 @@ app.MapGet("/control/summary", async (
         }
     }
 
+    var ready = settings.HostConfigured &&
+        notionConnection.IsConnected &&
+        chatGptTarget.IsConnected &&
+        browser.CdpReady &&
+        browser.Authorization == ChatGptAuthorizationState.AUTHORIZED;
+
     return Results.Ok(new
     {
         runtime = "notion-checkbox-watchdog",
-        ready = IsReady(),
+        ready,
         snapshot,
         currentTask,
+        chatGptBrowser = browser,
         configuration = new
         {
             notionConnected = notionConnection.IsConnected,
@@ -241,6 +379,7 @@ app.MapGet("/control/summary", async (
             namesDiscoverIdsExecute = true,
             githubWakeAuthority = false,
             browserCdpConfigured = settings.BrowserCdpConfigured,
+            browserLaunchAuthority = "operator-ui",
             watchdogSeconds = settings.WatchdogInterval.TotalSeconds,
             idleRetrySeconds = settings.IdleRetryInterval.TotalSeconds
         },
@@ -271,6 +410,13 @@ app.MapPost("/control/start", async (
         return Results.Problem(
             title: "ChatGPT target is not connected",
             detail: "Enter the exact ChatGPT conversation URL in the operator UI before starting.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
+    if (!browser.CdpReady || browser.Authorization != ChatGptAuthorizationState.AUTHORIZED)
+        return Results.Problem(
+            title: "ChatGPT browser is not authorized",
+            detail: "Start ChatGPT and complete/verify login before starting the watchdog.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
@@ -306,7 +452,19 @@ app.MapPost("/control/chatgpt/probe", async (
             detail: "Enter the exact ChatGPT conversation URL in the operator UI first.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
+    var browser = await chatGptBrowser.GetStatus(cancellationToken);
+    if (!browser.CdpReady || browser.Authorization != ChatGptAuthorizationState.AUTHORIZED)
+        return Results.Problem(
+            title: "ChatGPT browser is not authorized",
+            detail: "Start ChatGPT and verify login first.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
     var result = await driver.ProbeOverrideLink(chatGptTarget.GetUrl(), cancellationToken);
+    if (result.Authenticated)
+        chatGptBrowser.MarkAuthorized();
+    else
+        chatGptBrowser.MarkLoginRequired();
+
     return result.Compatible
         ? Results.Ok(result)
         : Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable);
