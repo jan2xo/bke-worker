@@ -15,13 +15,14 @@ else
   echo "WARNING: starting the operator UI in NOT READY state." >&2
 fi
 
-# Notion authentication is UI/session-owned. Keep only non-secret Notion transport
-# configuration if legacy host files still export retired Notion authority values.
+# Notion authentication is UI/session-owned. Preserve only transport configuration.
 while IFS= read -r name; do
-  if [[ "$name" != "BKE_WORKER_NOTION_BASE_URL" ]]; then
-    unset "$name"
-  fi
+  if [[ "$name" != "BKE_WORKER_NOTION_BASE_URL" ]]; then unset "$name"; fi
 done < <(compgen -A variable BKE_WORKER_NOTION_ || true)
+
+# Deterministic ChatGPT conversation selection is UI/session-owned too.
+# Ignore/purge any legacy override URL inherited from old host env files.
+unset BKE_WORKER_CHATGPT_OVERRIDE_URL || true
 
 export BKE_WORKER_BROWSER_CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http://127.0.0.1:9222}"
 export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatgpt.com/}"
@@ -30,37 +31,10 @@ export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-wo
 export BKE_WORKER_WATCHDOG_SECONDS="${BKE_WORKER_WATCHDOG_SECONDS:-2}"
 export BKE_WORKER_IDLE_RETRY_SECONDS="${BKE_WORKER_IDLE_RETRY_SECONDS:-5}"
 export BKE_WORKER_HEADLESS=false
-# UTM/dev operator surface: listen on the VM network so the host can open the UI.
-# Keep Chromium CDP on loopback; do not expose 9222.
 export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://0.0.0.0:5080}"
 
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
-
-if [[ -z "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" || "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" == "REPLACE_ME" ]]; then
-  echo "WARNING: runtime setting missing: BKE_WORKER_CHATGPT_OVERRIDE_URL (UI will still start; watchdog remains NOT READY)" >&2
-fi
-
-if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" != "REPLACE_ME" ]]; then
-  if ! python3 - "$BKE_WORKER_CHATGPT_OVERRIDE_URL" <<'PY'
-import sys
-from urllib.parse import urlparse
-
-value = sys.argv[1]
-uri = urlparse(value)
-segments = [segment for segment in uri.path.split('/') if segment]
-valid = (
-    uri.scheme == 'https'
-    and uri.hostname in {'chatgpt.com', 'www.chatgpt.com'}
-    and any(segments[i].lower() == 'c' and i + 1 < len(segments) and segments[i + 1]
-            for i in range(len(segments)))
-)
-raise SystemExit(0 if valid else 1)
-PY
-  then
-    echo "WARNING: BKE_WORKER_CHATGPT_OVERRIDE_URL is invalid (UI will still start; watchdog remains NOT READY)." >&2
-  fi
-fi
 
 cd "$ROOT_DIR"
 if bash scripts/verify-live-host.sh; then
@@ -73,12 +47,12 @@ fi
 echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "operator UI: $ASPNETCORE_URLS"
 echo "CDP: $BKE_WORKER_BROWSER_CDP_ENDPOINT (loopback only)"
-echo "Notion secret: operator UI memory only (never loaded from .env)"
+echo "Notion secret: operator UI memory only"
+echo "ChatGPT target URL: operator UI memory only"
 echo "project discovery: Notion pages whose title starts with ENGINEERING:"
 echo "project identity: exact selected Notion page ID"
 echo "task identity: exact Notion to_do block ID"
 echo "instruction authority: same selected-page Notion tables with KEY | NAME | INSTRUCTION"
-echo "chat target: deterministic configured conversation URL"
 echo "watchdog: ${BKE_WORKER_WATCHDOG_SECONDS}s"
 echo "idle retry: ${BKE_WORKER_IDLE_RETRY_SECONDS}s"
 echo "guard: names discover; IDs execute"
@@ -97,7 +71,4 @@ if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
 fi
 
 dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release >/dev/null
-exec dotnet run \
-  --project src/BKE.Worker.Server/BKE.Worker.Server.csproj \
-  -c Release \
-  --no-build
+exec dotnet run --project src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release --no-build
