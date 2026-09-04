@@ -78,7 +78,7 @@
     button:hover:not(:disabled) { transform: translateY(-1px); border-color: #4a5667; background: #1a202a; }
     button.primary { flex: 1; min-width: 150px; background: #f4f6fa; color: #0a0c10; border-color: #f4f6fa; font-weight: 800; }
     button.danger { color: #f3b5ba; }
-    button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+    button:disabled, select:disabled { opacity: .42; cursor: not-allowed; transform: none; }
     .message { margin-top: 13px; min-height: 17px; color: #858f9e; font-size: 11px; }
     .runtime { margin-top: 12px; padding: 18px 20px; }
     .state-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 11px 0 15px; }
@@ -123,13 +123,18 @@
       <div class="eyebrow">Run</div>
 
       <div class="field">
+        <label for="project">Engineering project</label>
+        <select id="project"><option value="">Discovering ENGINEERING: pages…</option></select>
+      </div>
+
+      <div class="field">
         <label for="task">Notion task / TODO</label>
-        <select id="task"><option value="">Loading TODOs…</option></select>
+        <select id="task"><option value="">Select an engineering project first</option></select>
       </div>
 
       <div class="field">
         <label for="instruction">Durable instruction</label>
-        <select id="instruction"><option value="">Loading instructions…</option></select>
+        <select id="instruction"><option value="">Select an engineering project first</option></select>
         <div id="instructionPreview" class="instruction-preview">Instruction template will appear here.</div>
       </div>
 
@@ -138,7 +143,7 @@
         <button id="stop" class="danger">Stop</button>
         <button id="checkNow">Check now</button>
       </div>
-      <div id="message" class="message">Task and instruction lists come from one Notion page.</div>
+      <div id="message" class="message">Names discover. Exact Notion page IDs and TODO block IDs execute.</div>
     </section>
 
     <section class="card runtime">
@@ -169,13 +174,14 @@
     </section>
 
     <footer>
-      Unchecked + ChatGPT busy → wait · Unchecked + idle → continue same TODO · Checked → next TODO · No unchecked TODOs → stop
+      ENGINEERING: discovers → exact page ID locks · Unchecked + ChatGPT busy → wait · Unchecked + idle → continue same TODO · Checked → next TODO · No unchecked TODOs → stop
     </footer>
   </main>
 
   <script>
     const byId = id => document.getElementById(id);
     const fmt = value => value ? new Date(value).toLocaleTimeString() : 'Never';
+    let projects = [];
     let instructions = [];
 
     function dot(el, kind) { el.className = 'dot ' + kind; }
@@ -185,15 +191,58 @@
       if (value === 'DISPATCHING') return 'DISPATCHING';
       return value || 'IDLE';
     }
+    function isActiveState(value) {
+      return value === 'WAITING_FOR_ENGINEERING_EVENT' || value === 'CONTINUING' || value === 'DISPATCHING';
+    }
+
+    async function loadProjects(preserve = true) {
+      const projectSelect = byId('project');
+      const previousProject = preserve ? projectSelect.value : '';
+
+      try {
+        const response = await fetch('/control/projects', { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+
+        projects = Array.isArray(data) ? data : [];
+        projectSelect.innerHTML = projects.length
+          ? projects.map(project => `<option value="${escapeHtml(project.pageId)}">${escapeHtml(project.title)}</option>`).join('')
+          : '<option value="">No ENGINEERING: pages found</option>';
+
+        if (previousProject && projects.some(project => project.pageId === previousProject)) {
+          projectSelect.value = previousProject;
+        }
+
+        await loadOptions(false);
+      } catch (error) {
+        projectSelect.innerHTML = '<option value="">Engineering project discovery failed</option>';
+        clearOptions();
+        byId('message').textContent = 'Notion project discovery failed: ' + error.message;
+      }
+    }
+
+    function clearOptions() {
+      byId('task').innerHTML = '<option value="">No project selected</option>';
+      byId('instruction').innerHTML = '<option value="">No project selected</option>';
+      instructions = [];
+      renderInstruction();
+      syncStartButton();
+    }
 
     async function loadOptions(preserve = true) {
+      const projectId = byId('project').value;
       const taskSelect = byId('task');
       const instructionSelect = byId('instruction');
       const previousTask = preserve ? taskSelect.value : '';
       const previousInstruction = preserve ? instructionSelect.value : '';
 
+      if (!projectId) {
+        clearOptions();
+        return;
+      }
+
       try {
-        const response = await fetch('/control/options', { cache: 'no-store' });
+        const response = await fetch('/control/options?pageId=' + encodeURIComponent(projectId), { cache: 'no-store' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
 
@@ -214,7 +263,8 @@
         renderInstruction();
         syncStartButton();
       } catch (error) {
-        byId('message').textContent = 'Notion list refresh failed: ' + error.message;
+        clearOptions();
+        byId('message').textContent = 'Selected project refresh failed: ' + error.message;
       }
     }
 
@@ -224,7 +274,13 @@
     }
 
     function syncStartButton() {
-      byId('start').disabled = !byId('task').value || !byId('instruction').value;
+      byId('start').disabled = !byId('project').value || !byId('task').value || !byId('instruction').value;
+    }
+
+    function lockSelectors(locked) {
+      byId('project').disabled = locked;
+      byId('task').disabled = locked;
+      byId('instruction').disabled = locked;
     }
 
     async function loadSummary() {
@@ -234,6 +290,7 @@
         const data = await response.json();
         const snapshot = data.snapshot || {};
         const task = data.currentTask;
+        const active = isActiveState(snapshot.state);
 
         byId('state').textContent = displayState(snapshot.state);
         byId('currentTask').textContent = task?.text || 'No active task';
@@ -246,10 +303,13 @@
         byId('failure').textContent = failure || '';
         byId('failure').classList.toggle('hidden', !failure);
 
+        lockSelectors(active);
         byId('readyText').textContent = data.ready ? 'Ready' : 'Not ready';
         dot(byId('readyDot'), data.ready ? 'good' : 'warn');
         byId('liveText').textContent = 'Connected';
         dot(byId('liveDot'), 'good');
+        syncStartButton();
+        if (active) byId('start').disabled = true;
       } catch (error) {
         byId('liveText').textContent = 'Disconnected';
         dot(byId('liveDot'), 'bad');
@@ -268,6 +328,12 @@
       return data;
     }
 
+    byId('project').addEventListener('change', async () => {
+      await loadOptions(false);
+      byId('message').textContent = byId('project').value
+        ? 'Engineering page locked by exact ID when START is pressed.'
+        : 'Select an ENGINEERING: page.';
+    });
     byId('task').addEventListener('change', syncStartButton);
     byId('instruction').addEventListener('change', () => { renderInstruction(); syncStartButton(); });
 
@@ -277,12 +343,13 @@
       byId('message').textContent = 'Arming watchdog…';
       try {
         const result = await action('/control/start', {
+          notionPageId: byId('project').value,
           taskBlockId: byId('task').value,
           instructionKey: byId('instruction').value
         });
         byId('message').textContent = result.promptSent
-          ? 'Watchdog armed. Current TODO dispatched.'
-          : 'Watchdog armed. ChatGPT is busy; Worker will wait.';
+          ? 'Watchdog armed. Engineering page + current TODO locked and dispatched.'
+          : 'Watchdog armed. Engineering page + current TODO locked; ChatGPT is busy.';
         await loadSummary();
       } catch (error) {
         byId('message').textContent = 'Start failed: ' + error.message;
@@ -296,6 +363,7 @@
         await action('/control/stop');
         byId('message').textContent = 'Watchdog stopped.';
         await loadSummary();
+        await loadProjects(true);
       } catch (error) {
         byId('message').textContent = 'Stop failed: ' + error.message;
       }
@@ -313,8 +381,8 @@
     });
 
     byId('refreshLists').addEventListener('click', async () => {
-      await loadOptions(true);
-      byId('message').textContent = 'Notion task and instruction lists refreshed.';
+      await loadProjects(true);
+      byId('message').textContent = 'ENGINEERING: pages, TODOs, and instructions refreshed.';
     });
 
     byId('probeChatGPT').addEventListener('click', async () => {
@@ -336,7 +404,7 @@
         .replaceAll("'", '&#039;');
     }
 
-    loadOptions(false);
+    loadProjects(false);
     loadSummary();
     setInterval(loadSummary, 1500);
     setInterval(() => loadOptions(true), 8000);
