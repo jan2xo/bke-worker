@@ -10,12 +10,14 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 var settings = WorkerServerSettings.FromConfiguration(builder.Configuration);
 var notionConnection = new NotionRuntimeConnection(settings.NotionBaseUrl);
+var chatGptTarget = new ChatGptRuntimeTarget();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(notionConnection);
 builder.Services.AddSingleton<INotionChecklistClient>(notionConnection);
+builder.Services.AddSingleton(chatGptTarget);
 builder.Services.AddSingleton<ProjectNavigator>();
 builder.Services.AddSingleton<ConversationNavigator>();
 builder.Services.AddSingleton<ComposerDriver>();
@@ -36,13 +38,14 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-bool IsReady() => settings.IsConfigured && notionConnection.IsConnected;
+bool IsReady() => settings.HostConfigured && notionConnection.IsConnected && chatGptTarget.IsConnected;
 
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
-    configured = settings.IsConfigured,
+    hostConfigured = settings.HostConfigured,
     notionConnected = notionConnection.IsConnected,
+    chatGptTargetConnected = chatGptTarget.IsConnected,
     runtime = "notion-checkbox-watchdog"
 }));
 
@@ -58,8 +61,9 @@ app.MapGet("/health/ready", () =>
     var payload = new
     {
         status = ready ? "ready" : "not_ready",
-        configured = settings.IsConfigured,
+        hostConfigured = settings.HostConfigured,
         notionConnected = notionConnection.IsConnected,
+        chatGptTargetConnected = chatGptTarget.IsConnected,
         runtime = "notion-checkbox-watchdog"
     };
 
@@ -106,6 +110,47 @@ app.MapPost("/control/notion/disconnect", async (
             statusCode: StatusCodes.Status409Conflict);
 
     notionConnection.Disconnect();
+    return Results.Ok(new { connected = false });
+});
+
+app.MapPost("/control/chatgpt/connect", async (
+    ChatGptTargetRequest request,
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot replace ChatGPT target while watchdog is active",
+            detail: "Stop the watchdog before changing the deterministic conversation URL.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    try
+    {
+        chatGptTarget.Connect(request.Url);
+        return Results.Ok(new { connected = true });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            title: "ChatGPT target rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+});
+
+app.MapPost("/control/chatgpt/disconnect", async (
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot disconnect ChatGPT target while watchdog is active",
+            detail: "Stop the watchdog first.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    chatGptTarget.Disconnect();
     return Results.Ok(new { connected = false });
 });
 
@@ -190,10 +235,10 @@ app.MapGet("/control/summary", async (
         {
             notionConnected = notionConnection.IsConnected,
             notionSecretSource = "operator-ui-memory-only",
+            chatGptTargetConnected = chatGptTarget.IsConnected,
+            chatGptTargetSource = "operator-ui-memory-only",
             notionProjectDiscovery = $"title-prefix:{NotionCheckboxWatchdog.EngineeringPagePrefix}",
             namesDiscoverIdsExecute = true,
-            workerTargetSource = "configuration",
-            autonomousOverrideConfigured = settings.AutonomousOverrideConfigured,
             githubWakeAuthority = false,
             browserCdpConfigured = settings.BrowserCdpConfigured,
             watchdogSeconds = settings.WatchdogInterval.TotalSeconds,
@@ -201,7 +246,6 @@ app.MapGet("/control/summary", async (
         },
         activeNotionPageId = snapshot.Target?.NotionPageId,
         browserProfileDirectory = settings.ChatGptProfileDirectory,
-        chatGptOverrideUrl = settings.ChatGptOverrideUrl,
         chatGptBaseUrl = settings.ChatGptBaseUrl
     });
 });
@@ -211,16 +255,22 @@ app.MapPost("/control/start", async (
     NotionCheckboxWatchdog watchdog,
     CancellationToken cancellationToken) =>
 {
-    if (!settings.IsConfigured)
+    if (!settings.HostConfigured)
         return Results.Problem(
             title: "BKE Worker host is not configured",
-            detail: "Deterministic ChatGPT override URL and loopback CDP are required.",
+            detail: "Loopback Chromium CDP is required for live chatgpt.com execution.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     if (!notionConnection.IsConnected)
         return Results.Problem(
             title: "Notion is not connected",
             detail: "Connect a Notion integration secret in the operator UI before starting.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    if (!chatGptTarget.IsConnected)
+        return Results.Problem(
+            title: "ChatGPT target is not connected",
+            detail: "Enter the exact ChatGPT conversation URL in the operator UI before starting.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
@@ -250,13 +300,13 @@ app.MapPost("/control/chatgpt/probe", async (
     ChatGPTWebDriver driver,
     CancellationToken cancellationToken) =>
 {
-    if (!settings.AutonomousOverrideConfigured)
+    if (!chatGptTarget.IsConnected)
         return Results.Problem(
-            title: "ChatGPT target is invalid",
-            detail: "Configure one HTTPS chatgpt.com conversation URL containing /c/<conversation-id>.",
+            title: "ChatGPT target is not connected",
+            detail: "Enter the exact ChatGPT conversation URL in the operator UI first.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
-    var result = await driver.ProbeOverrideLink(settings.ChatGptOverrideUrl, cancellationToken);
+    var result = await driver.ProbeOverrideLink(chatGptTarget.GetUrl(), cancellationToken);
     return result.Compatible
         ? Results.Ok(result)
         : Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -271,7 +321,6 @@ static bool IsActive(WorkerRuntimeState state) => state is
 
 public sealed record WorkerServerSettings(
     string NotionBaseUrl,
-    string ChatGptOverrideUrl,
     string ChatGptBaseUrl,
     string ChatGptProfileDirectory,
     string StateFile,
@@ -280,9 +329,6 @@ public sealed record WorkerServerSettings(
     TimeSpan WatchdogInterval,
     TimeSpan IdleRetryInterval)
 {
-    public bool AutonomousOverrideConfigured =>
-        IsValidChatGptConversationOverride(ChatGptOverrideUrl);
-
     public bool LiveChatGptBaseUrl =>
         Uri.TryCreate(ChatGptBaseUrl, UriKind.Absolute, out var uri) &&
         string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase);
@@ -292,25 +338,13 @@ public sealed record WorkerServerSettings(
         Uri.TryCreate(BrowserCdpEndpoint, UriKind.Absolute, out var uri) &&
         uri.IsLoopback;
 
-    public bool IsConfigured =>
-        AutonomousOverrideConfigured &&
-        (!LiveChatGptBaseUrl || BrowserCdpConfigured);
-
-    // The Notion page is selected at runtime. This target exists only to resolve
-    // the fixed ChatGPT conversation before an engineering page has been selected.
-    public EngineeringTarget Target => new(
-        string.Empty,
-        string.Empty,
-        string.Empty,
-        Instruction: string.Empty,
-        Surface: ChatGptExecutionSurface.Chat,
-        OverrideUrl: ChatGptOverrideUrl);
+    public bool HostConfigured =>
+        !LiveChatGptBaseUrl || BrowserCdpConfigured;
 
     public static WorkerServerSettings FromConfiguration(IConfiguration configuration)
     {
         return new WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
-            configuration["BKE_WORKER_CHATGPT_OVERRIDE_URL"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
             configuration["BKE_WORKER_STATE_FILE"] ?? "/var/lib/bke-worker/state/notion-watchdog.json",
@@ -318,30 +352,6 @@ public sealed record WorkerServerSettings(
             ParseBool(configuration["BKE_WORKER_HEADLESS"], defaultValue: true),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_WATCHDOG_SECONDS"], 2)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_IDLE_RETRY_SECONDS"], 5)));
-    }
-
-    private static bool IsValidChatGptConversationOverride(string value)
-    {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-            !(string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase) ||
-              string.Equals(uri.Host, "www.chatgpt.com", StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        var segments = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var index = 0; index < segments.Length - 1; index++)
-        {
-            if (string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(segments[index + 1]))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool ParseBool(string? value, bool defaultValue) =>
