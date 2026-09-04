@@ -68,11 +68,17 @@ echo "guard: no unchecked TODO = COMPLETE"
 echo "GitHub webhook is NOT orchestration authority on this branch."
 
 if [[ -n "${BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
+  if [[ -z "${BKE_WORKER_REMOTE_USERNAME:-}" || -z "${BKE_WORKER_REMOTE_PASSWORD:-}" ]]; then
+    echo "ERROR: Cloudflare Tunnel remote access requires BKE_WORKER_REMOTE_USERNAME and BKE_WORKER_REMOTE_PASSWORD." >&2
+    exit 1
+  fi
+
   if ! command -v cloudflared >/dev/null 2>&1; then
     echo "ERROR: BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN is set but cloudflared is not installed." >&2
     exit 1
   fi
 
+  echo "Remote operator authentication: ENABLED from host .env"
   echo "Cloudflare Tunnel: starting named tunnel from host .env authentication"
   cloudflared tunnel --no-autoupdate run --token "$BKE_WORKER_CLOUDFLARE_TUNNEL_TOKEN" &
   TUNNEL_PID=$!
