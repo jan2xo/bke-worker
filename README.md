@@ -125,6 +125,8 @@ The title is never runtime identity. Duplicate titles and page renames cannot re
 
 Pages without the prefix are not offered by the project dropdown.
 
+Project discovery auto-refreshes in the operator UI every 30 seconds while the project selector is unlocked. The currently selected page is preserved when it still exists. The manual `Refresh Notion lists` control remains available as an explicit/debug refresh.
+
 ## Selected-page contract
 
 Each engineering page may contain normal Notion TODO blocks:
@@ -171,6 +173,16 @@ Durable instruction
 [ Engineering Canonical ▼ ]
 
 [ Start watchdog ] [ Stop ] [ Check now ]
+
+Refresh Notion lists
+```
+
+Normal operation requires no manual refresh:
+
+```text
+watchdog summary        -> every 1.5 seconds
+selected page options   -> every 8 seconds
+ENGINEERING page list   -> every 30 seconds while idle/unlocked
 ```
 
 There is no repository selector, GitHub webhook panel, ChatGPT Project selector, or ChatGPT Conversation selector.
@@ -256,7 +268,7 @@ BKE_WORKER_IDLE_RETRY_SECONDS=5
 BKE_WORKER_HEADLESS=false
 ```
 
-`BKE_WORKER_NOTION_PAGE` is no longer required for active project selection. Existing values may remain in old host env files, but the UI-selected exact page ID is the runtime authority.
+There is no fixed Notion-page environment setting in the active runtime. The integration token defines the visible Notion universe; `ENGINEERING:` titles define discoverable candidates; the exact UI-selected page ID becomes runtime authority at START.
 
 GitHub webhook configuration is not required by the active watchdog server.
 
