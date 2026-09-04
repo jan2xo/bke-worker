@@ -181,6 +181,7 @@
   <script>
     const byId = id => document.getElementById(id);
     const fmt = value => value ? new Date(value).toLocaleTimeString() : 'Never';
+    const projectRefreshMs = 30000;
     let projects = [];
     let instructions = [];
 
@@ -195,9 +196,9 @@
       return value === 'WAITING_FOR_ENGINEERING_EVENT' || value === 'CONTINUING' || value === 'DISPATCHING';
     }
 
-    async function loadProjects(preserve = true) {
+    async function loadProjects(preserveProject = true, preserveOptions = true) {
       const projectSelect = byId('project');
-      const previousProject = preserve ? projectSelect.value : '';
+      const previousProject = preserveProject ? projectSelect.value : '';
 
       try {
         const response = await fetch('/control/projects', { cache: 'no-store' });
@@ -213,7 +214,7 @@
           projectSelect.value = previousProject;
         }
 
-        await loadOptions(false);
+        await loadOptions(preserveOptions);
       } catch (error) {
         projectSelect.innerHTML = '<option value="">Engineering project discovery failed</option>';
         clearOptions();
@@ -363,7 +364,7 @@
         await action('/control/stop');
         byId('message').textContent = 'Watchdog stopped.';
         await loadSummary();
-        await loadProjects(true);
+        await loadProjects(true, true);
       } catch (error) {
         byId('message').textContent = 'Stop failed: ' + error.message;
       }
@@ -381,7 +382,7 @@
     });
 
     byId('refreshLists').addEventListener('click', async () => {
-      await loadProjects(true);
+      await loadProjects(true, true);
       byId('message').textContent = 'ENGINEERING: pages, TODOs, and instructions refreshed.';
     });
 
@@ -404,10 +405,13 @@
         .replaceAll("'", '&#039;');
     }
 
-    loadProjects(false);
+    loadProjects(false, false);
     loadSummary();
     setInterval(loadSummary, 1500);
     setInterval(() => loadOptions(true), 8000);
+    setInterval(() => {
+      if (!byId('project').disabled) loadProjects(true, true);
+    }, projectRefreshMs);
   </script>
 </body>
 </html>
