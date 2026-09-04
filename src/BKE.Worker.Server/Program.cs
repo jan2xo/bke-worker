@@ -9,10 +9,13 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot")
 });
 var settings = WorkerServerSettings.FromConfiguration(builder.Configuration);
+var notionConnection = new NotionRuntimeConnection(settings.NotionBaseUrl);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton(notionConnection);
+builder.Services.AddSingleton<INotionChecklistClient>(notionConnection);
 builder.Services.AddSingleton<ProjectNavigator>();
 builder.Services.AddSingleton<ConversationNavigator>();
 builder.Services.AddSingleton<ComposerDriver>();
@@ -24,11 +27,6 @@ builder.Services.AddSingleton(new ChromiumHostOptions(
 builder.Services.AddSingleton<ChromiumHost>();
 builder.Services.AddSingleton<ChatGPTWebDriver>();
 builder.Services.AddSingleton<IChatGPTDriver>(services => services.GetRequiredService<ChatGPTWebDriver>());
-builder.Services.AddSingleton<INotionChecklistClient>(_ =>
-    new NotionChecklistClient(
-        new HttpClient(),
-        string.IsNullOrWhiteSpace(settings.NotionToken) ? "UNCONFIGURED" : settings.NotionToken,
-        new Uri(settings.NotionBaseUrl, UriKind.Absolute)));
 builder.Services.AddSingleton<IWorkerStateStore>(_ => new JsonWorkerStateStore(settings.StateFile));
 builder.Services.AddSingleton<NotionCheckboxWatchdog>();
 builder.Services.AddHostedService<NotionCheckboxWatchdogHostedService>();
@@ -38,10 +36,13 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+bool IsReady() => settings.IsConfigured && notionConnection.IsConnected;
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
     configured = settings.IsConfigured,
+    notionConnected = notionConnection.IsConnected,
     runtime = "notion-checkbox-watchdog"
 }));
 
@@ -53,26 +54,69 @@ app.MapGet("/health/live", () => Results.Ok(new
 
 app.MapGet("/health/ready", () =>
 {
+    var ready = IsReady();
     var payload = new
     {
-        status = settings.IsConfigured ? "ready" : "not_ready",
+        status = ready ? "ready" : "not_ready",
         configured = settings.IsConfigured,
+        notionConnected = notionConnection.IsConnected,
         runtime = "notion-checkbox-watchdog"
     };
 
-    return settings.IsConfigured
+    return ready
         ? Results.Ok(payload)
         : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
+app.MapPost("/control/notion/connect", async (
+    NotionConnectRequest request,
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot replace Notion connection while watchdog is active",
+            detail: "Stop the watchdog before changing the in-memory Notion secret.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    try
+    {
+        await notionConnection.Connect(request.Secret, cancellationToken);
+        return Results.Ok(new { connected = true });
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Problem(
+            title: "Notion connection failed",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+});
+
+app.MapPost("/control/notion/disconnect", async (
+    NotionCheckboxWatchdog watchdog,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = await watchdog.GetState(cancellationToken);
+    if (IsActive(snapshot.State))
+        return Results.Problem(
+            title: "Cannot disconnect Notion while watchdog is active",
+            detail: "Stop the watchdog first.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    notionConnection.Disconnect();
+    return Results.Ok(new { connected = false });
 });
 
 app.MapGet("/control/projects", async (
     NotionCheckboxWatchdog watchdog,
     CancellationToken cancellationToken) =>
 {
-    if (!settings.IsConfigured)
+    if (!notionConnection.IsConnected)
         return Results.Problem(
-            title: "BKE Worker is not configured",
-            detail: "Configure the Notion token, deterministic ChatGPT conversation URL, and loopback Chromium CDP.",
+            title: "Notion is not connected",
+            detail: "Enter a Notion integration secret in the operator UI.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
@@ -93,10 +137,10 @@ app.MapGet("/control/options", async (
     NotionCheckboxWatchdog watchdog,
     CancellationToken cancellationToken) =>
 {
-    if (!settings.IsConfigured)
+    if (!notionConnection.IsConnected)
         return Results.Problem(
-            title: "BKE Worker is not configured",
-            detail: "Configure the Notion token, deterministic ChatGPT conversation URL, and loopback Chromium CDP.",
+            title: "Notion is not connected",
+            detail: "Enter a Notion integration secret in the operator UI.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     if (string.IsNullOrWhiteSpace(pageId))
@@ -124,24 +168,28 @@ app.MapGet("/control/summary", async (
 {
     var snapshot = await watchdog.GetState(cancellationToken);
     NotionChecklistTask? currentTask = null;
-    try
+    if (notionConnection.IsConnected)
     {
-        currentTask = await watchdog.GetCurrentTask(cancellationToken);
-    }
-    catch
-    {
-        // Summary must remain readable while a Notion failure is surfaced in runtime state/logs.
+        try
+        {
+            currentTask = await watchdog.GetCurrentTask(cancellationToken);
+        }
+        catch
+        {
+            // Summary must remain readable while a Notion failure is surfaced in runtime state/logs.
+        }
     }
 
     return Results.Ok(new
     {
         runtime = "notion-checkbox-watchdog",
-        ready = settings.IsConfigured,
+        ready = IsReady(),
         snapshot,
         currentTask,
         configuration = new
         {
-            notionConfigured = settings.NotionConfigured,
+            notionConnected = notionConnection.IsConnected,
+            notionSecretSource = "operator-ui-memory-only",
             notionProjectDiscovery = $"title-prefix:{NotionCheckboxWatchdog.EngineeringPagePrefix}",
             namesDiscoverIdsExecute = true,
             workerTargetSource = "configuration",
@@ -165,8 +213,14 @@ app.MapPost("/control/start", async (
 {
     if (!settings.IsConfigured)
         return Results.Problem(
-            title: "BKE Worker is not configured",
-            detail: "Notion token, deterministic ChatGPT override URL, and loopback CDP are required.",
+            title: "BKE Worker host is not configured",
+            detail: "Deterministic ChatGPT override URL and loopback CDP are required.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    if (!notionConnection.IsConnected)
+        return Results.Problem(
+            title: "Notion is not connected",
+            detail: "Connect a Notion integration secret in the operator UI before starting.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
     try
@@ -210,8 +264,12 @@ app.MapPost("/control/chatgpt/probe", async (
 
 await app.RunAsync();
 
+static bool IsActive(WorkerRuntimeState state) => state is
+    WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT or
+    WorkerRuntimeState.DISPATCHING or
+    WorkerRuntimeState.CONTINUING;
+
 public sealed record WorkerServerSettings(
-    string NotionToken,
     string NotionBaseUrl,
     string ChatGptOverrideUrl,
     string ChatGptBaseUrl,
@@ -222,9 +280,6 @@ public sealed record WorkerServerSettings(
     TimeSpan WatchdogInterval,
     TimeSpan IdleRetryInterval)
 {
-    public bool NotionConfigured =>
-        !string.IsNullOrWhiteSpace(NotionToken);
-
     public bool AutonomousOverrideConfigured =>
         IsValidChatGptConversationOverride(ChatGptOverrideUrl);
 
@@ -238,7 +293,6 @@ public sealed record WorkerServerSettings(
         uri.IsLoopback;
 
     public bool IsConfigured =>
-        NotionConfigured &&
         AutonomousOverrideConfigured &&
         (!LiveChatGptBaseUrl || BrowserCdpConfigured);
 
@@ -255,7 +309,6 @@ public sealed record WorkerServerSettings(
     public static WorkerServerSettings FromConfiguration(IConfiguration configuration)
     {
         return new WorkerServerSettings(
-            configuration["BKE_WORKER_NOTION_TOKEN"] ?? string.Empty,
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_OVERRIDE_URL"] ?? string.Empty,
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
