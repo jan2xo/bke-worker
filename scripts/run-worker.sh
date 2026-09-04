@@ -29,16 +29,9 @@ export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://0.0.0.0:5080}"
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 
-required=(
-  BKE_WORKER_NOTION_TOKEN
-  BKE_WORKER_CHATGPT_OVERRIDE_URL
-)
-
-for name in "${required[@]}"; do
-  if [[ -z "${!name:-}" || "${!name:-}" == "REPLACE_ME" ]]; then
-    echo "WARNING: runtime setting missing: $name (UI will still start; watchdog remains NOT READY)" >&2
-  fi
-done
+if [[ -z "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" || "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" == "REPLACE_ME" ]]; then
+  echo "WARNING: runtime setting missing: BKE_WORKER_CHATGPT_OVERRIDE_URL (UI will still start; watchdog remains NOT READY)" >&2
+fi
 
 if [[ -n "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" && "${BKE_WORKER_CHATGPT_OVERRIDE_URL:-}" != "REPLACE_ME" ]]; then
   if ! python3 - "$BKE_WORKER_CHATGPT_OVERRIDE_URL" <<'PY'
@@ -72,6 +65,7 @@ fi
 echo "Starting BKE Worker — Notion checkbox watchdog."
 echo "operator UI: $ASPNETCORE_URLS"
 echo "CDP: $BKE_WORKER_BROWSER_CDP_ENDPOINT (loopback only)"
+echo "Notion secret: operator UI memory only (never loaded from .env)"
 echo "project discovery: Notion pages whose title starts with ENGINEERING:"
 echo "project identity: exact selected Notion page ID"
 echo "task identity: exact Notion to_do block ID"
