@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
 using BKE.Worker.ChatGPT.Playwright;
 using BKE.Worker.Core;
@@ -37,6 +39,25 @@ builder.Services.AddHostedService<NotionCheckboxWatchdogHostedService>();
 
 var app = builder.Build();
 
+if (settings.RemoteAuthenticationConfigured)
+{
+    app.Use(async (context, next) =>
+    {
+        if (!TryAuthorizeRemoteRequest(
+                context.Request.Headers.Authorization.ToString(),
+                settings.RemoteUsername,
+                settings.RemotePassword))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.Headers.WWWAuthenticate = "Basic realm=\"BKE Worker\", charset=\"UTF-8\"";
+            await context.Response.WriteAsync("Authentication required.");
+            return;
+        }
+
+        await next();
+    });
+}
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
@@ -52,6 +73,7 @@ app.MapGet("/health", async (CancellationToken cancellationToken) =>
         chatGptBrowserRunning = browser.Running,
         chatGptCdpReady = browser.CdpReady,
         chatGptAuthorization = browser.Authorization,
+        remoteAuthenticationConfigured = settings.RemoteAuthenticationConfigured,
         runtime = "notion-checkbox-watchdog"
     });
 });
@@ -79,6 +101,7 @@ app.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
         chatGptBrowserRunning = browser.Running,
         chatGptCdpReady = browser.CdpReady,
         chatGptAuthorization = browser.Authorization,
+        remoteAuthenticationConfigured = settings.RemoteAuthenticationConfigured,
         runtime = "notion-checkbox-watchdog"
     };
 
@@ -370,6 +393,7 @@ app.MapGet("/control/summary", async (
             githubWakeAuthority = false,
             browserCdpConfigured = settings.BrowserCdpConfigured,
             browserLaunchAuthority = "operator-ui",
+            remoteAuthenticationConfigured = settings.RemoteAuthenticationConfigured,
             watchdogSeconds = settings.WatchdogInterval.TotalSeconds,
             idleRetrySeconds = settings.IdleRetryInterval.TotalSeconds
         },
@@ -462,6 +486,36 @@ app.MapPost("/control/chatgpt/probe", async (
 
 await app.RunAsync();
 
+static bool TryAuthorizeRemoteRequest(string authorizationHeader, string username, string password)
+{
+    if (string.IsNullOrWhiteSpace(authorizationHeader) ||
+        !authorizationHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    try
+    {
+        var encoded = authorizationHeader["Basic ".Length..].Trim();
+        var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+        var separator = decoded.IndexOf(':');
+        if (separator < 0)
+            return false;
+
+        return FixedEquals(decoded[..separator], username) &&
+            FixedEquals(decoded[(separator + 1)..], password);
+    }
+    catch (FormatException)
+    {
+        return false;
+    }
+}
+
+static bool FixedEquals(string candidate, string expected)
+{
+    var candidateHash = SHA256.HashData(Encoding.UTF8.GetBytes(candidate));
+    var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
+    return CryptographicOperations.FixedTimeEquals(candidateHash, expectedHash);
+}
+
 static bool IsActive(WorkerRuntimeState state) => state is
     WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT or
     WorkerRuntimeState.DISPATCHING or
@@ -473,6 +527,8 @@ public sealed record WorkerServerSettings(
     string ChatGptProfileDirectory,
     string StateFile,
     string BrowserCdpEndpoint,
+    string RemoteUsername,
+    string RemotePassword,
     bool Headless,
     TimeSpan WatchdogInterval,
     TimeSpan IdleRetryInterval)
@@ -486,17 +542,27 @@ public sealed record WorkerServerSettings(
         Uri.TryCreate(BrowserCdpEndpoint, UriKind.Absolute, out var uri) &&
         uri.IsLoopback;
 
+    public bool RemoteAuthenticationConfigured =>
+        !string.IsNullOrWhiteSpace(RemoteUsername) && !string.IsNullOrWhiteSpace(RemotePassword);
+
     public bool HostConfigured =>
         !LiveChatGptBaseUrl || BrowserCdpConfigured;
 
     public static WorkerServerSettings FromConfiguration(IConfiguration configuration)
     {
+        var remoteUsername = configuration["BKE_WORKER_REMOTE_USERNAME"] ?? string.Empty;
+        var remotePassword = configuration["BKE_WORKER_REMOTE_PASSWORD"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(remoteUsername) != string.IsNullOrWhiteSpace(remotePassword))
+            throw new InvalidOperationException("BKE_WORKER_REMOTE_AUTH_INCOMPLETE");
+
         return new WorkerServerSettings(
             configuration["BKE_WORKER_NOTION_BASE_URL"] ?? "https://api.notion.com/",
             configuration["BKE_WORKER_CHATGPT_BASE_URL"] ?? "https://chatgpt.com/",
             configuration["BKE_WORKER_CHATGPT_PROFILE"] ?? "/var/lib/bke-worker/chatgpt-profile",
             configuration["BKE_WORKER_STATE_FILE"] ?? "/var/lib/bke-worker/state/notion-watchdog.json",
             configuration["BKE_WORKER_BROWSER_CDP_ENDPOINT"] ?? string.Empty,
+            remoteUsername,
+            remotePassword,
             ParseBool(configuration["BKE_WORKER_HEADLESS"], defaultValue: true),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_WATCHDOG_SECONDS"], 2)),
             TimeSpan.FromSeconds(ParsePositiveInt(configuration["BKE_WORKER_IDLE_RETRY_SECONDS"], 5)));
