@@ -1,251 +1,175 @@
 # BKE Worker
 
-BKE Worker is an event-driven engineering orchestrator. Notion is the canonical checklist, ChatGPT Projects hold engineering context, Playwright is the browser automation layer, and GitHub push webhooks wake the worker so it can reconcile Notion.
+BKE Worker is a persistent autonomous-engineering wake/orchestration service.
 
-## Runtime contract
+GitHub is durable engineering truth. ChatGPT performs the engineering. Worker keeps the exact authenticated ChatGPT engineering conversation moving after signed GitHub activity or a recovery heartbeat.
 
-```text
-NOTION TASK
-    ↓
-BKE WORKER SERVER
-    ↓
-PLAYWRIGHT + PERSISTENT CHROMIUM
-    ↓
-CHATGPT PROJECT / CONVERSATION
-    ↓
-ENGINEERING + GITHUB PUSH
-    ↓
-SIGNED GITHUB WEBHOOK
-    ↓
-BKE WORKER WAKE
-    ↓
-NOTION RECONCILIATION
-
-[ ] → CONTINUE SAME ENGINEERING LOOP
-[x] → NEXT UNCHECKED GATE
-all checked → COMPLETE
-```
-
-A GitHub event **never means a task is complete**. It means only: wake up and reconcile the canonical Notion checkbox state.
-
-## Android V0 is frozen
-
-Android Accessibility was the original autonomous runtime prototype. Its exact baseline is preserved at:
+## Canonical loop
 
 ```text
-branch: legacy/android-runtime-v0
-sha:    a748435caecc41fb4a65f543efcb5a2b409fca61
+SIGNED GITHUB PUSH
+        │
+        ├────────────── immediate wake
+        │
+30-MINUTE HEARTBEAT ── recovery wake
+        │
+        v
+BKE WORKER
+        │
+        ├─ verify exact ChatGPT target
+        ├─ require human-owned authenticated browser
+        ├─ require safe-to-interrupt composer state
+        └─ send locked continuation instruction
+        │
+        v
+CHATGPT ENGINEERING CONVERSATION
+        │
+        ├─ read canonical Project Source
+        ├─ recover live GitHub checkpoint
+        ├─ finish current PR / exact-head certification / merge
+        └─ if another queued intent exists:
+             current main
+               -> fresh branch
+               -> NEW PR using .github/pull_request_template.md
+               -> minimum complete certification graph
+               -> exact-head proof
+               -> SHA-locked merge
 ```
 
-`src/BKE.Worker.Platform.Android` remains in history as prototype evidence. It is no longer the primary execution backend and is not part of the canonical VPS runtime CI gate.
+Worker does **not** maintain another engineering task database and does not require Notion.
 
-Future Android work belongs in a remote-control client that talks to the server.
+## Authority model
 
-## Projects
+- **GitHub**: source, issues/queued intents, PRs, CI proof, merge state, release/provenance truth.
+- **ChatGPT**: engineering executor operating from the canonical Project Source + live GitHub state.
+- **BKE Worker**: liveness, wake delivery, webhook dedupe, browser safety, and recovery heartbeat.
+- **Human operator**: ChatGPT login/OAuth/MFA/CAPTCHA and production/security authorization.
 
-```text
-src/
-  BKE.Worker.Core/       orchestration contracts, event-driven WorkerLoop, worker state
-  BKE.Worker.Server/     ASP.NET Core host, wake queue, recovery timer, durable local state
-  BKE.Worker.ChatGPT/    Playwright persistent Chromium and deterministic ChatGPT navigation
-  BKE.Worker.Notion/     Notion checklist client and canonical reconciliation
-  BKE.Worker.GitHub/     signed push webhook verification and wake endpoint
-  BKE.Worker.Platform.Android/  frozen legacy prototype
+Worker stores no GitHub API token. ChatGPT uses its own connected GitHub capability to recover repository truth.
 
-tests/
-  BKE.Worker.Core.Tests/
-  BKE.Worker.Notion.Tests/
-  BKE.Worker.GitHub.Tests/
-  BKE.Worker.ChatGPT.Tests/  real Chromium runtime + controlled semantic UI certification
-```
+## Autonomous continuation contract
 
-## Worker states
+The locked Worker instruction requires ChatGPT to:
+
+1. read the canonical Project Source;
+2. inspect live GitHub state;
+3. continue the current active engineering PR if one exists;
+4. complete the declared minimum certification graph;
+5. exact-head verify and SHA-lock merge when good;
+6. write a durable checkpoint;
+7. only when that intent is complete, take the next explicitly queued intent;
+8. create a **fresh branch from current main**;
+9. create a **NEW PR using the repository PR template**;
+10. never reuse an old/merged feature branch;
+11. never invent unqueued work;
+12. keep production/security locks in force.
+
+## Wake behavior
+
+### GitHub push
+
+A signed `push` webhook is an immediate doorbell. The webhook:
+
+- verifies `X-Hub-Signature-256`;
+- requires `X-GitHub-Delivery`;
+- deduplicates the delivery durably;
+- queues a wake and returns `202`;
+- never sends a ChatGPT prompt directly.
+
+### Heartbeat
+
+`BKE_WORKER_HEARTBEAT_SECONDS` defaults to **1800 seconds (30 minutes)**.
+
+The heartbeat is a liveness/recovery trigger, not an engineering deadline. It never abandons an unfinished PR merely because 30 minutes elapsed.
+
+If ChatGPT is still generating, hydrating, unauthenticated, or otherwise not positively safe to interrupt, Worker sends nothing. The next push/heartbeat can try again.
+
+## Browser boundary
+
+Live `chatgpt.com` uses a normal human-owned Chromium session with a dedicated persistent profile and loopback CDP.
+
+- Authentication is human-only.
+- OAuth/MFA/CAPTCHA/security challenges are never automated.
+- CDP must be loopback-only.
+- Browser credentials/profile contents are never committed, logged, uploaded, or returned by Worker APIs.
+- Chat and Work are distinct execution surfaces. Current autonomous Worker is Chat-only and fails closed if configured for Work.
+
+## Runtime state
+
+Canonical states:
 
 ```text
 IDLE
 DISPATCHING
 WAITING_FOR_ENGINEERING_EVENT
-RECONCILING
 CONTINUING
-COMPLETE
 BLOCKED
 FAILED
 ```
 
-The worker persists only orchestration state: target project/conversation, Notion page, current checklist block, timestamps, last GitHub delivery ID, and failure state. It does **not** copy the full Notion checklist into another task database.
+Persisted state contains only:
 
-## Event behavior
+- configured ChatGPT target;
+- last dispatch time;
+- last GitHub delivery ID;
+- last wake time;
+- failure state.
 
-Initial start:
+If the process restarts after persisting `DISPATCHING` or `CONTINUING`, Worker cannot prove whether the prior prompt was sent. It enters `BLOCKED` rather than risk a duplicate send. Only explicit operator continuation can clear a persisted blocked/failed state.
 
-1. Fetch the Notion checklist.
-2. Find the first unchecked gate.
-3. Ensure persistent Chromium exists and ChatGPT is authenticated.
-4. Open **Projects**.
-5. Select the exact project.
-6. Select the exact conversation.
-7. Send `CONTINUE FROM THE NOTION CHECKLIST.`
-8. Enter `WAITING_FOR_ENGINEERING_EVENT`.
-
-GitHub push:
-
-1. Verify `X-Hub-Signature-256`.
-2. Require and persist `X-GitHub-Delivery` for idempotency.
-3. Acknowledge the webhook and enqueue a wake.
-4. Debounce before reconciliation.
-5. Fetch Notion.
-6. If all gates are checked, complete.
-7. Otherwise wait until the ChatGPT turn is idle, then send `CONTINUE FROM THE NOTION CHECKLIST.` to the same exact project/conversation.
-
-A recovery reconciliation runs every 5 minutes only while an engineering loop is active. It exists for missed deliveries, worker restarts, network interruption, and Notion updates that land after the last webhook.
-
-## Race guard
-
-The webhook endpoint never sends a prompt directly. It queues a wake and returns `202`.
-
-The hosted worker then applies:
-
-- webhook debounce (default 10 seconds),
-- Notion reconciliation,
-- minimum dispatch spacing (default 30 seconds),
-- composer idle check.
-
-A visible ChatGPT Stop control means the current turn is still active. A usable composer means a next turn can be sent.
-
-## Persistent Chromium
-
-Default profile:
+## Operator API
 
 ```text
-/var/lib/bke-worker/chatgpt-profile
-```
-
-This directory is a **credential**. Never commit it, upload it, log cookies from it, put it in Notion, or return its contents from an API.
-
-One worker process owns one persistent Chromium profile. Tasks reuse it; they do not launch a new browser per gate.
-
-Navigation is deterministic:
-
-```text
-ChatGPT
-  → Projects
-  → exact Project text
-  → exact Conversation text
-  → composer
-```
-
-No Recent-chat routing, coordinates, visual guessing, or new-chat engineering route is used.
-
-A Project/Conversation lookup failure gets one ChatGPT UI reset and one retry. Navigation failure does not restart Chromium. The persistent profile survives browser restart.
-
-## Configuration
-
-Environment variables:
-
-```text
-BKE_WORKER_NOTION_TOKEN=...
-BKE_WORKER_NOTION_PAGE=...
-BKE_WORKER_CHATGPT_PROJECT=...
-BKE_WORKER_CHATGPT_CONVERSATION=...
-BKE_WORKER_GITHUB_WEBHOOK_SECRET=...
-
-# optional
-BKE_WORKER_CHATGPT_PROFILE=/var/lib/bke-worker/chatgpt-profile
-BKE_WORKER_STATE_FILE=/var/lib/bke-worker/state/worker.json
-BKE_WORKER_HEADLESS=true
-BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS=10
-BKE_WORKER_RECOVERY_SECONDS=300
-BKE_WORKER_MIN_DISPATCH_SECONDS=30
-```
-
-The GitHub webhook target is:
-
-```text
+GET  /health
+GET  /health/live
+GET  /health/ready
+GET  /control/state
+GET  /control/summary
+POST /control/continue
+POST /control/chatgpt/probe
 POST /webhooks/github
 ```
 
-Subscribe to `push` only for V1 and configure the same webhook secret on GitHub and the worker.
+`/control/chatgpt/probe` is non-mutating: it validates the configured ChatGPT context and composer state without sending a prompt.
 
-Health/state endpoints:
-
-```text
-GET /health
-GET /control/state
-```
-
-No browser credentials are exposed through these endpoints.
-
-## Canonical certification — GitHub Actions
-
-GitHub Actions is the canonical Linux certification environment for V1. No separate Lima certification gate is required.
-
-The Ubuntu workflow certifies:
+## Configuration
 
 ```text
-.NET 10 restore/build
-        ↓
-Core event-loop tests
-        ↓
-Notion reconciliation tests
-        ↓
-GitHub webhook/signature tests
-        ↓
-install real Playwright Chromium
-        ↓
-launch persistent Chromium
-        ↓
-restart Chromium and prove profile storage survives
-        ↓
-controlled semantic ChatGPT surface
-Projects → exact Project → exact Conversation → composer
-        ↓
-prove SEND and busy/idle guard
-        ↓
-publish BKE.Worker.Server
-        ↓
-boot published server on Ubuntu
-        ↓
-GET /health
-        ↓
-GREEN
+BKE_WORKER_CHATGPT_PROJECT="BKE Worker"
+BKE_WORKER_CHATGPT_CONVERSATION="Worker Engineering"
+BKE_WORKER_CHATGPT_OVERRIDE_URL=""
+BKE_WORKER_CHATGPT_BASE_URL=https://chatgpt.com/
+
+BKE_WORKER_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
+BKE_WORKER_CHATGPT_PROFILE=/var/lib/bke-worker/chatgpt-profile
+BKE_WORKER_HEADLESS=false
+
+BKE_WORKER_GITHUB_WEBHOOK_SECRET=...
+BKE_WORKER_STATE_FILE=/var/lib/bke-worker/state/worker.json
+BKE_WORKER_WEBHOOK_DEBOUNCE_SECONDS=10
+BKE_WORKER_HEARTBEAT_SECONDS=1800
+BKE_WORKER_MIN_DISPATCH_SECONDS=30
 ```
 
-The controlled browser surface intentionally tests the automation contract without storing a real ChatGPT account session in GitHub Actions.
+Environment-variable names are generation-independent.
 
-GitHub Actions therefore certifies the **engine and Linux browser/runtime contract**. A live authenticated ChatGPT check on the deployed host is an adapter smoke test, not a prerequisite for proving the orchestration architecture.
+## CI policy
 
-## Production target
+PRs are ledgers, not heavy-CI triggers.
 
-Recommended initial host:
+Active CI is intentionally limited to:
 
-```text
-Ubuntu/Debian Linux VPS
-2 CPU
-4 GB RAM recommended
-20–40 GB storage
-.NET 10
-Playwright Chromium
-systemd
-```
+- a cheap automatic PR Guard; and
+- explicit intent certification invoked only when the PR certification plan requires it.
 
-Raspberry Pi remains a supported self-hosted backend candidate.
+The historical Phase 3–6 automatic workflows are archived under:
 
-V1 requires no PostgreSQL, Redis, Kubernetes, OpenAI API, or external ChatGPT-context reconstruction.
+`.github/legacy-workflows/2026-10-02/`
 
-## Certification boundary
+## Legacy Android prototype
 
-Canonical CI proves:
+The Android Accessibility worker remains historical prototype evidence. The GitHub-native Linux/Playwright server is the canonical autonomous runtime for this architecture.
 
-- event-driven worker behavior,
-- checkbox-driven progression,
-- webhook integrity and delivery dedupe,
-- Linux build/runtime compatibility,
-- actual Chromium launch,
-- persistent profile survival across browser restart,
-- deterministic semantic Project/Conversation navigation against a controlled UI contract,
-- composer send and busy/idle gating,
-- published server startup and health.
+## Production boundary
 
-CI does **not** store or certify a real ChatGPT account login. After deployment, the dedicated persistent profile is authenticated on the target host and a live smoke check can validate current ChatGPT-web compatibility.
-
-That smoke check is operational evidence, not a separate development environment gate.
+This repository may certify PREPRODUCTION/runtime behavior remotely. Production deployment, credential cutover, or other locked production actions require explicit authorization.
