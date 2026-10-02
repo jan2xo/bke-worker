@@ -1,1 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../BKE.Worker.Core/BKE.Worker.Core.csproj" /></ItemGroup></Project>
