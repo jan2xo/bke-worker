@@ -1,0 +1,331 @@
+name: Intent Certification
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact BKE Worker commit SHA to certify
+        required: true
+        type: string
+      modules:
+        description: Space-separated modules: core server chatgpt
+        required: true
+        default: core
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: bke-worker-intent-${{ (github.event_name == 'issue_comment' && github.event.issue.number) || inputs.source_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Resolve certification intent
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/certify '))
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      core: ${{ steps.plan.outputs.core }}
+      server: ${{ steps.plan.outputs.server }}
+      chatgpt: ${{ steps.plan.outputs.chatgpt }}
+    steps:
+      - id: plan
+        name: Resolve exact head and requested modules
+        uses: actions/github-script@v7
+        env:
+          DISPATCH_SHA: ${{ inputs.source_sha }}
+          DISPATCH_MODULES: ${{ inputs.modules }}
+        with:
+          script: |
+            let sourceSha;
+            let rawModules;
+
+            if (context.eventName === "issue_comment") {
+              const association = context.payload.comment?.author_association ?? "NONE";
+              const allowed = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+              if (!allowed.has(association)) {
+                core.setFailed(`Certification rejected for author association ${association}.`);
+                return;
+              }
+
+              const response = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              sourceSha = response.data.head.sha;
+              rawModules = (context.payload.comment?.body ?? "")
+                .replace(/^\/certify\s+/, "")
+                .trim();
+            } else {
+              sourceSha = (process.env.DISPATCH_SHA ?? "").trim();
+              rawModules = (process.env.DISPATCH_MODULES ?? "").trim();
+            }
+
+            if (!/^[0-9a-f]{40}$/.test(sourceSha ?? "")) {
+              core.setFailed("Certification requires an exact lowercase 40-character source SHA.");
+              return;
+            }
+
+            const requested = new Set(
+              rawModules.split(/\s+/).filter(Boolean)
+            );
+            const allowedModules = new Set(["core", "server", "chatgpt"]);
+            const unknown = [...requested].filter(module => !allowedModules.has(module));
+            if (requested.size === 0 || unknown.length > 0) {
+              core.setFailed(
+                `Certification modules must be one or more of core server chatgpt. Unknown: ${unknown.join(", ")}`
+              );
+              return;
+            }
+
+            core.setOutput("source_sha", sourceSha);
+            for (const module of allowedModules) {
+              core.setOutput(module, requested.has(module) ? "true" : "false");
+            }
+
+  core:
+    name: Core orchestration + GitHub boundary
+    needs: plan
+    if: needs.plan.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore canonical core tests
+        run: |
+          dotnet restore tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj
+          dotnet restore tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj
+
+      - name: Build canonical core tests
+        run: |
+          dotnet build tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj -c Release --no-restore
+          dotnet build tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj -c Release --no-restore
+
+      - name: Execute core orchestration tests
+        run: dotnet test tests/BKE.Worker.Core.Tests/BKE.Worker.Core.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Execute signed GitHub webhook tests
+        run: dotnet test tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Verify GitHub-native authority boundary
+        shell: python
+        run: |
+          from pathlib import Path
+
+          canonical = [
+              Path("src/BKE.Worker.Core"),
+              Path("src/BKE.Worker.GitHub"),
+              Path("src/BKE.Worker.Server"),
+              Path("src/BKE.Worker.ChatGPT"),
+              Path("tests/BKE.Worker.Core.Tests"),
+              Path("tests/BKE.Worker.GitHub.Tests"),
+              Path("scripts/bke-worker.env.example"),
+              Path("scripts/run-worker.sh"),
+              Path("README.md"),
+              Path("docs/autonomous-engineering.md"),
+              Path("BKE.Worker.sln"),
+          ]
+
+          text = ""
+          for item in canonical:
+              if item.is_dir():
+                  for path in item.rglob("*"):
+                      if path.is_file() and path.suffix in {".cs", ".csproj", ".md"}:
+                          text += path.read_text(encoding="utf-8") + "\n"
+              elif item.is_file():
+                  text += item.read_text(encoding="utf-8") + "\n"
+
+          forbidden = [
+              "BKE_WORKER_NOTION_",
+              "IChecklistReconciler",
+              "NotionPageId",
+              "ContinueFromNotionChecklist",
+              "BKE.Worker.Notion",
+          ]
+          present = [token for token in forbidden if token.lower() in text.lower()]
+          if present:
+              raise SystemExit(
+                  "Canonical Worker still contains Notion authority: "
+                  + ", ".join(present)
+              )
+
+          prompt = Path("src/BKE.Worker.Core/Contracts.cs").read_text(encoding="utf-8")
+          for token in [
+              "ContinueAutonomousEngineering",
+              "live GitHub state",
+              "fresh branch from current main",
+              "NEW PR",
+              ".github/pull_request_template.md",
+              "Do not invent unqueued work",
+          ]:
+              if token not in prompt:
+                  raise SystemExit(f"Locked autonomous prompt lost: {token}")
+
+          print("GitHub-native authority boundary: PASS")
+
+      - name: Diff hygiene
+        run: git diff --check
+
+  chatgpt:
+    name: Controlled ChatGPT adapter
+    needs: plan
+    if: needs.plan.outputs.chatgpt == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore and build ChatGPT adapter tests
+        run: |
+          dotnet restore tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj
+          dotnet build tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj -c Release --no-restore
+
+      - name: Install controlled Playwright Chromium
+        run: pwsh tests/BKE.Worker.ChatGPT.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Execute controlled semantic adapter tests
+        run: dotnet test tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Diff hygiene
+        run: git diff --check
+
+  server:
+    name: Published server + operator surface
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore server and browser test projects
+        run: |
+          dotnet restore src/BKE.Worker.Server/BKE.Worker.Server.csproj
+          dotnet restore tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj
+          dotnet restore tests/BKE.Worker.Server.Ui.Tests/BKE.Worker.Server.Ui.Tests.csproj
+
+      - name: Build server and browser test projects
+        run: |
+          dotnet build src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release --no-restore
+          dotnet build tests/BKE.Worker.ChatGPT.Tests/BKE.Worker.ChatGPT.Tests.csproj -c Release --no-restore
+          dotnet build tests/BKE.Worker.Server.Ui.Tests/BKE.Worker.Server.Ui.Tests.csproj -c Release --no-restore
+
+      - name: Install controlled Playwright Chromium
+        run: pwsh tests/BKE.Worker.ChatGPT.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Publish canonical Worker server
+        run: dotnet publish src/BKE.Worker.Server/BKE.Worker.Server.csproj -c Release --no-build -o artifacts/bke-worker-server
+
+      - name: Verify published runtime excludes Notion
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f artifacts/bke-worker-server/BKE.Worker.Server.dll
+          test -f artifacts/bke-worker-server/BKE.Worker.Core.dll
+          test -f artifacts/bke-worker-server/BKE.Worker.ChatGPT.dll
+          test -f artifacts/bke-worker-server/BKE.Worker.GitHub.dll
+          test ! -e artifacts/bke-worker-server/BKE.Worker.Notion.dll
+
+      - name: GitHub-native published-runtime harness
+        run: bash tests/integration/github_native_server.sh
+
+      - name: GitHub-native operator UI harness
+        run: bash tests/integration/github_native_ui.sh
+
+      - name: Verify deployment unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ExecStart=/usr/bin/dotnet /opt/bke-worker/BKE.Worker.Server.dll' deploy/systemd/bke-worker.service
+          grep -q 'EnvironmentFile=/etc/bke-worker/bke-worker.env' deploy/systemd/bke-worker.service
+          grep -q 'Restart=on-failure' deploy/systemd/bke-worker.service
+          grep -q 'StateDirectoryMode=0700' deploy/systemd/bke-worker.service
+          grep -q 'UMask=0077' deploy/systemd/bke-worker.service
+          systemd-analyze verify deploy/systemd/bke-worker.service
+
+      - name: Upload certified server
+        uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-server-linux-portable
+          path: artifacts/bke-worker-server
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Diff hygiene
+        run: git diff --check
+
+  required-certification:
+    name: Required certification
+    if: always() && needs.plan.result == 'success'
+    needs: [plan, core, server, chatgpt]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require requested exact-head proof
+        shell: bash
+        env:
+          CORE_REQUIRED: ${{ needs.plan.outputs.core }}
+          SERVER_REQUIRED: ${{ needs.plan.outputs.server }}
+          CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
+          CORE_RESULT: ${{ needs.core.result }}
+          SERVER_RESULT: ${{ needs.server.result }}
+          CHATGPT_RESULT: ${{ needs.chatgpt.result }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CORE_REQUIRED" != "true" || "$CORE_RESULT" == "success" ]]
+          [[ "$SERVER_REQUIRED" != "true" || "$SERVER_RESULT" == "success" ]]
+          [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
+          echo "Required certification PASS on exact head $SOURCE_SHA"
