@@ -149,6 +149,31 @@ public sealed class WorkerLoop(
                 LastWakeAt = DateTimeOffset.UtcNow,
             };
 
+            if (reason == WorkerWakeReason.Manual &&
+                wakeSnapshot.Target is not null &&
+                wakeSnapshot.State is
+                    WorkerRuntimeState.BLOCKED or
+                    WorkerRuntimeState.FAILED)
+            {
+                var reset = wakeSnapshot with
+                {
+                    State =
+                        WorkerRuntimeState
+                            .WAITING_FOR_ENGINEERING_EVENT,
+                    Failure = null,
+                };
+                await stateStore.Save(
+                    reset,
+                    cancellationToken);
+
+                return await TryDispatch(
+                    reset,
+                    WorkerRuntimeState.CONTINUING,
+                    reset.Target.Instruction,
+                    requireSafeToInterrupt: true,
+                    cancellationToken);
+            }
+
             if (!IsActive(wakeSnapshot.State) ||
                 wakeSnapshot.Target is null)
             {
