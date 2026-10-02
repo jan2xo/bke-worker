@@ -21,41 +21,37 @@
     h1 { font-size: 22px; margin: 0; }
     .subtle { color: #8d98a9; font-size: 13px; }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
-    .card { background: rgba(18, 23, 32, .86); border: 1px solid #252d3a; border-radius: 18px; padding: 18px; box-shadow: 0 14px 36px rgba(0,0,0,.16); }
-    .status-card { grid-column: span 5; min-height: 214px; }
+    .card { background: rgba(18, 23, 32, .86); border: 1px solid #252d3a; border-radius: 18px; padding: 18px; }
+    .status-card { grid-column: span 5; }
     .target-card { grid-column: span 7; }
-    .timeline-card { grid-column: span 8; }
-    .config-card { grid-column: span 4; }
-    .adapter-card { grid-column: span 12; }
-    .controls-card { grid-column: span 12; }
+    .runtime-card { grid-column: span 7; }
+    .config-card { grid-column: span 5; }
+    .adapter-card, .controls-card { grid-column: span 12; }
     .eyebrow { color: #78879a; text-transform: uppercase; letter-spacing: .12em; font-size: 11px; font-weight: 700; margin-bottom: 12px; }
     .state { font-size: clamp(28px, 4vw, 44px); line-height: 1; letter-spacing: -.04em; font-weight: 850; margin: 8px 0 14px; overflow-wrap: anywhere; }
     .pill { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 7px 10px; border: 1px solid #313a49; color: #d8dfeb; font-size: 12px; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #7d8796; }
-    .dot.good { background: #52d88a; box-shadow: 0 0 0 4px rgba(82,216,138,.08); }
+    .dot.good { background: #52d88a; }
     .dot.warn { background: #ffbf5b; }
     .dot.bad { background: #ff6b75; }
-    dl { margin: 0; display: grid; grid-template-columns: minmax(120px, 180px) 1fr; gap: 11px 18px; }
+    dl { margin: 0; display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 11px 18px; }
     dt { color: #748094; font-size: 12px; }
     dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
     .metric { padding: 12px 0; border-bottom: 1px solid #242b37; }
     .metric:last-child { border-bottom: 0; }
     .metric strong { display: block; font-size: 13px; margin-top: 3px; overflow-wrap: anywhere; }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button, .button-link { border: 1px solid #303a49; background: #161d28; color: #f4f7fb; border-radius: 11px; padding: 10px 14px; cursor: pointer; text-decoration: none; transition: .15s ease; }
-    button:hover, .button-link:hover { transform: translateY(-1px); border-color: #4b5a6e; background: #1c2634; }
+    button, .button-link { border: 1px solid #303a49; background: #161d28; color: #f4f7fb; border-radius: 11px; padding: 10px 14px; cursor: pointer; text-decoration: none; }
     button.primary { background: #f5f7fb; color: #090b10; border-color: #f5f7fb; font-weight: 750; }
-    button:disabled { opacity: .5; cursor: wait; transform: none; }
+    button:disabled { opacity: .5; cursor: wait; }
     .message { color: #8f9cad; font-size: 12px; margin-left: auto; }
     code { background: #0b0f16; border: 1px solid #202735; border-radius: 7px; padding: 2px 6px; font-size: 12px; }
     .failure { color: #ff8991; }
     .hidden { display: none; }
     footer { padding-top: 20px; color: #667286; font-size: 11px; text-align: center; }
     @media (max-width: 820px) {
-      .status-card, .target-card, .timeline-card, .config-card, .adapter-card, .controls-card { grid-column: span 12; }
-      header { align-items: flex-start; }
+      .status-card, .target-card, .runtime-card, .config-card, .adapter-card, .controls-card { grid-column: span 12; }
       dl { grid-template-columns: 1fr; gap: 5px; }
-      dd { margin-bottom: 8px; }
       .message { width: 100%; margin-left: 0; }
     }
   </style>
@@ -67,7 +63,7 @@
         <div class="mark">BKE</div>
         <div>
           <h1>BKE Worker</h1>
-          <div class="subtle">Operator Control Surface</div>
+          <div class="subtle">GitHub-native autonomous engineering</div>
         </div>
       </div>
       <span class="pill"><span id="liveDot" class="dot"></span><span id="liveText">Connecting…</span></span>
@@ -82,28 +78,29 @@
       </article>
 
       <article class="card target-card">
-        <div class="eyebrow">Current engineering target</div>
+        <div class="eyebrow">ChatGPT engineering target</div>
         <dl>
-          <dt>ChatGPT Project</dt><dd id="project">—</dd>
+          <dt>Project</dt><dd id="project">—</dd>
           <dt>Conversation</dt><dd id="conversation">—</dd>
-          <dt>Notion Page</dt><dd id="notionPage">—</dd>
-          <dt>Current Gate</dt><dd id="gate">—</dd>
           <dt>Instruction</dt><dd><code id="instruction">—</code></dd>
+          <dt>Authority</dt><dd id="authority">—</dd>
+          <dt>PR rule</dt><dd id="prRule">—</dd>
         </dl>
       </article>
 
-      <article class="card timeline-card">
+      <article class="card runtime-card">
         <div class="eyebrow">Runtime evidence</div>
         <div class="metric"><span class="subtle">Last dispatch</span><strong id="lastDispatch">Never</strong></div>
-        <div class="metric"><span class="subtle">Last reconciliation</span><strong id="lastReconcile">Never</strong></div>
+        <div class="metric"><span class="subtle">Last wake</span><strong id="lastWake">Never</strong></div>
         <div class="metric"><span class="subtle">Last GitHub delivery</span><strong id="lastDelivery">None</strong></div>
+        <div class="metric"><span class="subtle">Heartbeat</span><strong id="heartbeat">—</strong></div>
       </article>
 
       <article class="card config-card">
         <div class="eyebrow">Configuration</div>
-        <div class="metric"><span class="subtle">Notion</span><strong id="cfgNotion">—</strong></div>
         <div class="metric"><span class="subtle">ChatGPT target</span><strong id="cfgChatGPT">—</strong></div>
         <div class="metric"><span class="subtle">GitHub webhook</span><strong id="cfgGitHub">—</strong></div>
+        <div class="metric"><span class="subtle">Browser CDP</span><strong id="cfgCdp">—</strong></div>
         <div class="metric"><span class="subtle">Browser profile</span><strong id="profile">—</strong></div>
       </article>
 
@@ -123,7 +120,7 @@
       <article class="card controls-card">
         <div class="eyebrow">Operator controls</div>
         <div class="actions">
-          <button id="reconcile" class="primary">Force Reconcile</button>
+          <button id="continue" class="primary">Continue Engineering</button>
           <button id="probeChatGPT">Probe ChatGPT Adapter</button>
           <button id="refresh">Refresh</button>
           <a id="openChatGPT" class="button-link" href="https://chatgpt.com/" target="_blank" rel="noreferrer">Open ChatGPT</a>
@@ -131,7 +128,8 @@
         </div>
       </article>
     </section>
-    <footer>Adapter probing is non-mutating: it navigates the configured ChatGPT context and inspects semantic controls without sending a prompt.</footer>
+
+    <footer>Worker stores no Notion task database and no ChatGPT credentials. GitHub is durable engineering truth; the browser profile remains human-owned.</footer>
   </main>
 
   <script>
@@ -155,15 +153,18 @@
         byId('state').textContent = snapshot.state || 'IDLE';
         byId('project').textContent = target.project || 'Not configured';
         byId('conversation').textContent = target.conversation || 'Not configured';
-        byId('notionPage').textContent = target.notionPageId || 'Not configured';
-        byId('gate').textContent = snapshot.currentChecklistIdentifier || 'No active gate';
-        byId('instruction').textContent = target.instruction || 'CONTINUE FROM THE NOTION CHECKLIST.';
+        byId('instruction').textContent = target.instruction || 'CONTINUE AUTONOMOUS ENGINEERING.';
+        byId('authority').textContent = data.engineeringAuthority || 'github';
+        byId('prRule').textContent = data.oneIntentPerPullRequest
+          ? 'One intent per PR; next wave from current main'
+          : 'Unknown';
         byId('lastDispatch').textContent = fmt(snapshot.lastDispatchAt);
-        byId('lastReconcile').textContent = fmt(snapshot.lastReconciliationAt);
+        byId('lastWake').textContent = fmt(snapshot.lastWakeAt);
         byId('lastDelivery').textContent = snapshot.lastGitHubDeliveryId || 'None';
-        byId('cfgNotion').textContent = yesNo(config.notionConfigured);
-        byId('cfgChatGPT').textContent = yesNo(config.chatGptConfigured);
+        byId('heartbeat').textContent = (data.heartbeatSeconds || 1800) + ' seconds';
+        byId('cfgChatGPT').textContent = yesNo(config.chatGptTargetConfigured);
         byId('cfgGitHub').textContent = yesNo(config.githubWebhookConfigured);
+        byId('cfgCdp').textContent = yesNo(config.browserCdpConfigured);
         byId('profile').textContent = data.browserProfileDirectory || '—';
         byId('openChatGPT').href = data.chatGptBaseUrl || 'https://chatgpt.com/';
 
@@ -194,18 +195,19 @@
     }
 
     byId('refresh').addEventListener('click', load);
-    byId('reconcile').addEventListener('click', async () => {
-      const button = byId('reconcile');
+
+    byId('continue').addEventListener('click', async () => {
+      const button = byId('continue');
       button.disabled = true;
-      byId('message').textContent = 'Manual reconciliation queued…';
+      byId('message').textContent = 'Autonomous engineering continuation queued…';
       try {
-        const response = await fetch('/control/reconcile', { method: 'POST' });
+        const response = await fetch('/control/continue', { method: 'POST' });
         const body = await response.json();
-        if (!response.ok) throw new Error(body.message || ('HTTP ' + response.status));
-        byId('message').textContent = body.message || 'Manual reconciliation queued.';
+        if (!response.ok) throw new Error(body.detail || body.message || ('HTTP ' + response.status));
+        byId('message').textContent = body.message || 'Continuation queued.';
         setTimeout(load, 350);
       } catch (error) {
-        byId('message').textContent = 'Reconcile failed: ' + error.message;
+        byId('message').textContent = 'Continue failed: ' + error.message;
       } finally {
         button.disabled = false;
       }
