@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/BKE.Worker.Core/BKE.Worker.Core.csproj" />
+    <ProjectReference Include="../../src/BKE.Worker.ChatGPT/BKE.Worker.ChatGPT.csproj" />
+    <ProjectReference Include="../../src/BKE.Worker.Notion/BKE.Worker.Notion.csproj" />
+  </ItemGroup>
+</Project>

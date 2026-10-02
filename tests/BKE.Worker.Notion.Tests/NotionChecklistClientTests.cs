@@ -129,6 +129,66 @@ public sealed class NotionChecklistClientTests
         Assert.All(tasks, task => Assert.False(task.Checked));
     }
 
+    [Fact]
+    public async Task GetExecutionTarget_ReadsCanonicalTargetCallout()
+    {
+        const string response = """
+        {
+          "object":"list",
+          "results":[
+            {
+              "object":"block",
+              "id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+              "type":"callout",
+              "has_children":false,
+              "callout":{
+                "rich_text":[{
+                  "plain_text":"[BKE WORKER TARGET]\nPROJECT=BKE Worker\nCHAT=Worker Engineering\nOVERRIDE_URL="
+                }]
+              }
+            }
+          ],
+          "has_more":false,
+          "next_cursor":null
+        }
+        """;
+
+        using var http = new HttpClient(new StubHandler(_ => Json(response)));
+        var client = new NotionChecklistClient(http, "test-token");
+
+        var target = await client.GetExecutionTarget(
+            "3cc9faa6ec14810e9031e0ae22360e96",
+            CancellationToken.None);
+
+        Assert.Equal("BKE Worker", target.Project);
+        Assert.Equal("Worker Engineering", target.Chat);
+        Assert.Null(target.OverrideUrl);
+    }
+
+    [Fact]
+    public async Task GetExecutionTarget_WithoutTargetBlock_SelectsImplicitNewChatMetadata()
+    {
+        const string response = """
+        {
+          "object":"list",
+          "results":[],
+          "has_more":false,
+          "next_cursor":null
+        }
+        """;
+
+        using var http = new HttpClient(new StubHandler(_ => Json(response)));
+        var client = new NotionChecklistClient(http, "test-token");
+
+        var target = await client.GetExecutionTarget(
+            "3cc9faa6ec14810e9031e0ae22360e96",
+            CancellationToken.None);
+
+        Assert.Equal(string.Empty, target.Project);
+        Assert.Equal(string.Empty, target.Chat);
+        Assert.Null(target.OverrideUrl);
+    }
+
     private static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(value, System.Text.Encoding.UTF8, "application/json")
