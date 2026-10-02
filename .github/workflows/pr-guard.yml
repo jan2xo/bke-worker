@@ -1,0 +1,67 @@
+name: PR Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Intent + CI policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify BKE PR and intentional-CI policy
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          root = Path(".")
+          workflows = root / ".github/workflows"
+          active = sorted(path.name for path in workflows.glob("*.yml"))
+          expected = ["certify.yml", "pr-guard.yml"]
+          if active != expected:
+              raise SystemExit(
+                  f"Active workflows drifted: expected {expected}, got {active}"
+              )
+
+          certify = (workflows / "certify.yml").read_text(encoding="utf-8")
+          if "\n  workflow_dispatch:" not in certify or "\n  issue_comment:" not in certify:
+              raise SystemExit("Intent certification is not explicitly invokable.")
+
+          automatic = re.findall(
+              r"(?m)^  (push|pull_request|schedule|workflow_run):",
+              certify,
+          )
+          if automatic:
+              raise SystemExit(
+                  "Substantial certification gained automatic triggers: "
+                  + ", ".join(automatic)
+              )
+
+          template = (
+              root / ".github/pull_request_template.md"
+          ).read_text(encoding="utf-8")
+          required = [
+              "## Description",
+              "## How Has This Been Tested?",
+              "## Architecture / Security",
+              "## Checklist",
+              "## Certification Notes",
+              "One independent engineering intent belongs in one PR",
+              "fresh branch",
+              "current main",
+              "PR comments = durable BKE execution ledger",
+          ]
+          missing = [token for token in required if token not in template]
+          if missing:
+              raise SystemExit(
+                  "BKE PR template lost required autonomous-engineering rules: "
+                  + ", ".join(missing)
+              )
+
+          print("BKE Worker PR Guard: PASS")
