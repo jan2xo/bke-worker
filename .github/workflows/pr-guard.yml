@@ -54,7 +54,7 @@ jobs:
               "## Certification Notes",
               "One independent engineering intent belongs in one PR",
               "fresh branch",
-              "current main",
+              "next independent wave",
               "PR comments = durable BKE execution ledger",
           ]
           missing = [token for token in required if token not in template]
