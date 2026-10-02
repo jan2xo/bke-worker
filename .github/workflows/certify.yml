@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       modules:
-        description: Space-separated modules: core server chatgpt
+        description: "Space-separated modules: core server chatgpt"
         required: true
         default: core
         type: string
