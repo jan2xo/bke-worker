@@ -7,6 +7,12 @@ Keep this section readable for a human reviewer.
 Do not use the PR description as a chronological execution log.
 Detailed BKE execution checkpoints, stale CI generations, debugging history,
 artifact hashes, and merge verification belong in PR comments.
+
+BKE WAVE RULE:
+One independent engineering intent belongs in one PR.
+When this intent is complete, the next independent wave must start from current
+main on a fresh branch and open a new PR using this template.
+Do not reuse an old/merged feature branch for a new intent.
 -->
 
 This PR ...
@@ -96,6 +102,7 @@ Do not mark scenarios complete until the corresponding proof exists.
 - [ ] The minimum complete certification graph is declared
 - [ ] Required certification passed on the exact current head before merge
 - [ ] Production/security locks remain respected unless explicitly authorized
+- [ ] This PR contains one coherent engineering intent; the next independent wave will use a fresh PR from current `main`
 
 ---
 
