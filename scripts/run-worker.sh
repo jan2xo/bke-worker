@@ -20,17 +20,14 @@ export BKE_WORKER_BROWSER_CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http:
 export BKE_WORKER_CHATGPT_BASE_URL="${BKE_WORKER_CHATGPT_BASE_URL:-https://chatgpt.com/}"
 export BKE_WORKER_CHATGPT_PROFILE="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-chatgpt-profile}"
 export BKE_WORKER_STATE_FILE="${BKE_WORKER_STATE_FILE:-$HOME/.local/share/bke-worker/state/worker.json}"
+export BKE_WORKER_HEARTBEAT_SECONDS="${BKE_WORKER_HEARTBEAT_SECONDS:-1800}"
 export BKE_WORKER_HEADLESS=false
-# Keep Kestrel private. Cloudflare Tunnel is the only public ingress and forwards
-# only the exact GitHub webhook path to this loopback listener.
 export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5080}"
 
 mkdir -p "$(dirname "$BKE_WORKER_STATE_FILE")"
 chmod 700 "$(dirname "$BKE_WORKER_STATE_FILE")"
 
 required=(
-  BKE_WORKER_NOTION_TOKEN
-  BKE_WORKER_NOTION_PAGE
   BKE_WORKER_GITHUB_WEBHOOK_SECRET
 )
 
@@ -44,13 +41,12 @@ done
 cd "$ROOT_DIR"
 bash scripts/verify-live-host.sh
 
-echo "Starting BKE Worker in live CDP-attach mode."
+echo "Starting BKE Worker in GitHub-native autonomous engineering mode."
 echo "listen: $ASPNETCORE_URLS (loopback only)"
-echo "target authority: Notion execution page"
-echo "target block: [BKE WORKER TARGET]"
-echo "target rule: Project+Chat OR Override Link; no explicit target means New Chat. No cross-target fallback."
-echo "task truth: ordered Notion todo checkboxes"
-echo "GUARD: authentication remains human-only; CHATGPT_AUTH_REQUIRED must block before the first Notion read."
+echo "engineering truth: GitHub main + PRs + issues + certification checkpoints"
+echo "heartbeat: ${BKE_WORKER_HEARTBEAT_SECONDS}s"
+echo "wave rule: one intent -> one fresh PR from current main -> exact-head proof -> merge"
+echo "GUARD: ChatGPT authentication remains human-only."
 
 if [[ -n "${BKE_WORKER_SERVER_DLL:-}" ]]; then
   if [[ ! -f "$BKE_WORKER_SERVER_DLL" ]]; then
