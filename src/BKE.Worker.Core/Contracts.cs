@@ -27,31 +27,34 @@ public sealed record ContextTarget(
 }
 
 public enum ReasoningProfile { DEFAULT, MEDIUM, HIGH, MAX_AVAILABLE }
-public enum WorkStatus { TODO, RUNNING, DONE, FAILED, OWNER_DECISION }
 
-public sealed record WorkItem(
-    string Id,
-    string Instruction,
-    ContextTarget ContextTarget,
-    ReasoningProfile ReasoningProfile = ReasoningProfile.DEFAULT,
-    int Priority = 0,
-    int RetryCount = 0,
-    WorkStatus Status = WorkStatus.TODO,
-    string? Result = null,
-    string? StopReason = null);
-
-public sealed record ExecutionState(bool IsRunning, bool IsComplete, bool IsFailed, string? FailureReason = null);
+public sealed record ExecutionState(
+    bool IsRunning,
+    bool IsComplete,
+    bool IsFailed,
+    string? FailureReason = null);
 
 public sealed record WorkerPolicy(
     ReasoningProfile DefaultReasoning = ReasoningProfile.HIGH,
     TimeSpan? MinimumDispatchInterval = null)
 {
-    public TimeSpan DispatchInterval => MinimumDispatchInterval ?? TimeSpan.FromSeconds(30);
+    public TimeSpan DispatchInterval =>
+        MinimumDispatchInterval ?? TimeSpan.FromSeconds(30);
 }
 
 public static class WorkerPrompts
 {
-    public const string ContinueFromNotionChecklist = "CONTINUE FROM THE NOTION CHECKLIST.";
+    public const string ContinueAutonomousEngineering =
+        "CONTINUE AUTONOMOUS ENGINEERING. " +
+        "Recover the canonical Project Source and live GitHub state before acting. " +
+        "If an engineering PR is active, recover its intent and exact head, finish implementation, " +
+        "run only its declared minimum complete certification graph, verify exact-head proof, " +
+        "SHA-lock merge when good, and write the durable merge checkpoint. " +
+        "If that intent is complete and another explicitly queued engineering intent exists, " +
+        "start a fresh branch from current main, open a NEW PR using .github/pull_request_template.md, " +
+        "declare its certification graph, and execute it. " +
+        "Never reuse an old or merged feature branch for a new intent. " +
+        "Do not invent unqueued work. Keep production and security locks in force.";
 }
 
 public enum WorkerRuntimeState
@@ -59,9 +62,7 @@ public enum WorkerRuntimeState
     IDLE,
     DISPATCHING,
     WAITING_FOR_ENGINEERING_EVENT,
-    RECONCILING,
     CONTINUING,
-    COMPLETE,
     BLOCKED,
     FAILED
 }
@@ -69,16 +70,15 @@ public enum WorkerRuntimeState
 public enum WorkerWakeReason
 {
     GitHubPush,
-    RecoveryTimer,
+    Heartbeat,
     Manual
 }
 
 public sealed record EngineeringTarget(
     string Project,
     string Conversation,
-    string NotionPageId,
     ReasoningProfile ReasoningProfile = ReasoningProfile.HIGH,
-    string Instruction = WorkerPrompts.ContinueFromNotionChecklist,
+    string Instruction = WorkerPrompts.ContinueAutonomousEngineering,
     ChatGptExecutionSurface Surface = ChatGptExecutionSurface.Chat,
     string? OverrideUrl = null)
 {
@@ -87,13 +87,12 @@ public sealed record EngineeringTarget(
     public bool HasConversation => !string.IsNullOrWhiteSpace(Conversation);
     public bool HasProjectChat => HasProject && HasConversation;
     public bool HasPartialProjectChat => HasProject != HasConversation;
-    public bool HasAmbiguousExplicitTargets => UsesOverrideLink && (HasProject || HasConversation);
+    public bool HasAmbiguousExplicitTargets =>
+        UsesOverrideLink && (HasProject || HasConversation);
     public bool UsesNewChat => !UsesOverrideLink && !HasProject && !HasConversation;
 
     public ContextTarget ResolveContextTarget()
     {
-        // Exactly one explicit target mode may be selected. New Chat is the only implicit
-        // fallback/default and is used only when no explicit target was selected at all.
         if (HasAmbiguousExplicitTargets)
             throw new InvalidOperationException("CHATGPT_TARGET_AMBIGUOUS");
 
@@ -110,25 +109,16 @@ public sealed record EngineeringTarget(
     }
 }
 
-public sealed record ChecklistGate(string Id, string Text, bool Checked);
-
-public sealed record ChecklistReconciliation(
-    ChecklistGate? CurrentGate,
-    ChecklistGate? FirstUncheckedGate,
-    bool AllComplete);
-
 public sealed record WorkerSnapshot(
     WorkerRuntimeState State,
     EngineeringTarget? Target,
-    string? CurrentChecklistIdentifier,
     DateTimeOffset? LastDispatchAt,
     string? LastGitHubDeliveryId,
-    DateTimeOffset? LastReconciliationAt,
+    DateTimeOffset? LastWakeAt,
     string? Failure)
 {
     public static WorkerSnapshot Empty { get; } = new(
         WorkerRuntimeState.IDLE,
-        null,
         null,
         null,
         null,
@@ -147,18 +137,6 @@ public sealed record WorkerWakeEvent(
     string? DeliveryId,
     DateTimeOffset ReceivedAt);
 
-public interface IWorkSource
-{
-    Task<WorkItem?> GetNextRunnableTask(CancellationToken cancellationToken);
-    Task<bool> ClaimTask(WorkItem task, CancellationToken cancellationToken);
-    Task CompleteTask(WorkItem task, string result, CancellationToken cancellationToken);
-    Task FailTask(WorkItem task, string reason, bool ownerDecision, CancellationToken cancellationToken);
-}
-
-public interface IWorkStateStore { }
-public interface IContextResolver { ContextTarget Resolve(WorkItem task); }
-public interface IReasoningResolver { ReasoningProfile Resolve(ReasoningProfile requested, WorkerPolicy policy); }
-
 public interface IChatGPTDriver
 {
     Task Launch(CancellationToken cancellationToken);
@@ -171,15 +149,8 @@ public interface IChatGPTDriver
     Task<ExecutionState> GetExecutionState(CancellationToken cancellationToken);
     Task<string?> GetLatestResponse(CancellationToken cancellationToken);
 
-    Task<bool> CanSendNextTurn(CancellationToken cancellationToken) => Task.FromResult(true);
-}
-
-public interface IChecklistReconciler
-{
-    Task<ChecklistReconciliation> Reconcile(
-        string notionPageId,
-        string? currentChecklistIdentifier,
-        CancellationToken cancellationToken);
+    Task<bool> CanSendNextTurn(CancellationToken cancellationToken) =>
+        Task.FromResult(true);
 }
 
 public interface IWorkerStateStore
@@ -190,18 +161,21 @@ public interface IWorkerStateStore
 
 public interface IWorkerWakeSink
 {
-    ValueTask Enqueue(WorkerWakeEvent wakeEvent, CancellationToken cancellationToken);
+    ValueTask Enqueue(
+        WorkerWakeEvent wakeEvent,
+        CancellationToken cancellationToken);
 }
 
 public interface IWorkerLoop
 {
-    Task<WorkerLoopResult> Start(EngineeringTarget target, CancellationToken cancellationToken);
-    Task<WorkerLoopResult> Wake(WorkerWakeReason reason, string? deliveryId, CancellationToken cancellationToken);
-    Task<WorkerSnapshot> GetState(CancellationToken cancellationToken);
-}
+    Task<WorkerLoopResult> Start(
+        EngineeringTarget target,
+        CancellationToken cancellationToken);
 
-public sealed class ReasoningResolver : IReasoningResolver
-{
-    public ReasoningProfile Resolve(ReasoningProfile requested, WorkerPolicy policy) =>
-        requested == ReasoningProfile.DEFAULT ? policy.DefaultReasoning : requested;
+    Task<WorkerLoopResult> Wake(
+        WorkerWakeReason reason,
+        string? deliveryId,
+        CancellationToken cancellationToken);
+
+    Task<WorkerSnapshot> GetState(CancellationToken cancellationToken);
 }
