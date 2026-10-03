@@ -88,3 +88,21 @@ A new engineering wave must:
 10. write the durable merged checkpoint.
 
 Old or merged feature branches are never reused for a new intent.
+
+
+## Autonomous gatekeeper
+
+The continuation model is now formally defined in [Autonomous Gatekeeper Protocol v1](./autonomous-gatekeeper.md).
+
+Key rules:
+
+- wake transport is context/routing only, never execution authority;
+- current-main canonical instructions + live GitHub form the durable gatekeeper;
+- ordinary failures are fixed and retried without owner intervention;
+- same-intent remediation stays inside the active PR;
+- necessary independent dependencies become fresh GitHub PRs before execution;
+- a worker releases a blocked parent assignment before taking its dependency PR;
+- owner-only gates block only that lane;
+- another authorized runnable intent may continue while an owner-blocked lane waits;
+- if nothing authorized is runnable, the system waits instead of inventing work;
+- Notion may mirror architecture for humans but is never an execution queue or authority source.
