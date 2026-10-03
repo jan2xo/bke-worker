@@ -36,6 +36,22 @@
     );
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForSendButtonReady(timeoutMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const sendButton = findSendButton();
+      if (sendButton && !sendButton.disabled) {
+        return sendButton;
+      }
+      await sleep(50);
+    }
+    return null;
+  }
+
   function postNative(message) {
     try {
       nativePort?.postMessage(message);
@@ -113,7 +129,7 @@
     return false;
   }
 
-  function dispatchPrompt(command) {
+  async function dispatchPrompt(command) {
     const allowedKeys = [
       "type",
       "protocolVersion",
@@ -147,8 +163,7 @@
     }
 
     const composer = findComposer();
-    const sendButton = findSendButton();
-    if (!composer || !sendButton || sendButton.disabled) {
+    if (!composer) {
       postNative({
         type: "dispatch_result",
         protocolVersion: PROTOCOL_VERSION,
@@ -170,6 +185,18 @@
       return;
     }
 
+    const sendButton = await waitForSendButtonReady();
+    if (!sendButton || isTurnBusy()) {
+      postNative({
+        type: "dispatch_result",
+        protocolVersion: PROTOCOL_VERSION,
+        deliveryId: command.deliveryId,
+        accepted: false,
+        error: "SEND_UNAVAILABLE_AFTER_WRITE"
+      });
+      return;
+    }
+
     sendButton.click();
     postNative({
       type: "dispatch_result",
@@ -185,7 +212,7 @@
     if (typeof message !== "object" || message === null) {
       return;
     }
-    dispatchPrompt(message);
+    void dispatchPrompt(message);
   }
 
   async function report(force = false) {
