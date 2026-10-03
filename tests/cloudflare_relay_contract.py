@@ -42,6 +42,9 @@ for key in wake_keys:
     assert f'"{key}"' in android, key
 
 for token in (
+    'import { DurableObject } from "cloudflare:workers"',
+    'export class WorkerSession extends DurableObject',
+    'super(ctx, env)',
     'env.WORKER_SESSIONS.idFromName(routing.workerId)',
     'new WebSocketPair()',
     'this.state.acceptWebSocket(server)',
