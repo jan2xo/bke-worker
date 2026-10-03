@@ -382,7 +382,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.relay == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
     steps:
@@ -405,6 +405,41 @@ jobs:
 
       - name: Verify Android/relay cross-boundary contract
         run: python3 tests/cloudflare_relay_contract.py
+
+      - name: Execute local Worker + Durable Object smoke
+        working-directory: cloudflare-relay
+        shell: bash
+        env:
+          BKE_WORKER_GITHUB_WEBHOOK_SECRET: relay-ci-webhook-secret
+          BKE_WORKER_RELAY_TOKEN: relay-ci-session-token
+          BKE_RELAY_SMOKE_URL: http://127.0.0.1:8790
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.147.0 dev \
+            --local \
+            --env preproduction \
+            --ip 127.0.0.1 \
+            --port 8790 \
+            --log-level warn \
+            > /tmp/bke-worker-relay-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          trap 'kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in {1..60}; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8790/ || true)"
+            if [[ "$status" != "000" ]]; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "1" ]]; then
+            cat /tmp/bke-worker-relay-wrangler.log
+            exit 1
+          fi
+
+          npm run runtime-smoke
 
       - name: Diff hygiene
         run: git diff --check
