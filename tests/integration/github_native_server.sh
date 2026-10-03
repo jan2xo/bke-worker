@@ -121,7 +121,7 @@ PY
 
 assignment_body() {
   cat <<'JSON'
-{"action":"labeled","number":101,"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}
+{"action":"labeled","number":101,"label":{"name":"bke-worker:worker-a"},"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}
 JSON
 }
 
