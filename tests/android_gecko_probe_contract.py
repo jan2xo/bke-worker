@@ -57,7 +57,10 @@ for token in (
     "renderWorkerStatus()",
     "BKE WORKER",
     "LIVE STATUS",
-    "WORKER CONFIGURATION",
+    "WORKER CONFIGURATION ▾",
+    "WORKER CONFIGURATION ▴",
+    "configCard.visibility = View.GONE",
+    "configCard.visibility == View.VISIBLE",
     'text = "Start / Apply"',
     'text = "Stop"',
     "setBackgroundColor(COLOR_BACKGROUND)",
@@ -76,6 +79,7 @@ for forbidden in (
     'text = "Android Worker"',
     'text = "Relay + ChatGPT runtime"',
     'text = "Worker Configuration"',
+    'text = "WORKER CONFIGURATION"',
 ):
     assert forbidden not in activity, forbidden
 
