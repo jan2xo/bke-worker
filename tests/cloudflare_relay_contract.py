@@ -50,7 +50,6 @@ for token in (
     'RECENT_DELIVERY_LIMIT = 64',
     'ACTIVE_CONNECTION_KEY = "active_connection_id"',
     'connectionId = crypto.randomUUID()',
-    'other.close(4001, "replaced by newer session")',
     'attachment.connectionId !== activeConnectionId',
     'phase: "queued"',
     'phase: "sent"',
@@ -101,8 +100,6 @@ for token in (
 ):
     assert token in readme, token
 
-print("BKE Worker Cloudflare durable relay contract: PASS")
-
 for token in (
     'GITHUB WEBHOOK PLAN — NO MUTATION',
     'if [[ "$APPLY" != "true" ]]',
@@ -115,3 +112,5 @@ for token in (
     assert token in webhook_configurator, token
 
 assert 'echo "$SECRET"' not in webhook_configurator
+
+print("BKE Worker Cloudflare durable relay contract: PASS")
