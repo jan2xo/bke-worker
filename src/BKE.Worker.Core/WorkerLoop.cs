@@ -3,7 +3,8 @@ namespace BKE.Worker.Core;
 public sealed class WorkerLoop(
     IChatGPTDriver driver,
     IWorkerStateStore stateStore,
-    WorkerPolicy policy) : IWorkerLoop
+    WorkerPolicy policy,
+    WorkerIdentity identity) : IWorkerLoop
 {
     private const string DispatchOutcomeUnknown =
         "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART";
@@ -19,6 +20,16 @@ public sealed class WorkerLoop(
         "CHATGPT_TARGET_AMBIGUOUS";
     private const string TargetIncomplete =
         "CHATGPT_TARGET_INCOMPLETE";
+    private const string WorkerIdInvalid =
+        "WORKER_ID_INVALID";
+    private const string AssignmentInvalid =
+        "PR_ASSIGNMENT_INVALID";
+    private const string AssignmentRequired =
+        "ACTIVE_PR_ASSIGNMENT_REQUIRED";
+    private const string DuplicateAssignment =
+        "WORKER_ALREADY_ASSIGNED_TO_DIFFERENT_PR";
+    private const string AmbiguousAssignment =
+        "AMBIGUOUS_PR_ASSIGNMENT";
     private const string WakeDeferredNotSafe =
         "WAKE_DEFERRED_CHATGPT_NOT_SAFE_TO_INTERRUPT";
     private readonly SemaphoreSlim _mutex = new(1, 1);
@@ -32,21 +43,22 @@ public sealed class WorkerLoop(
         {
             var existing = await stateStore.Load(cancellationToken);
 
+            if (!identity.IsValid)
+            {
+                return await Block(
+                    existing with { Target = target },
+                    WorkerIdInvalid,
+                    cancellationToken);
+            }
+
             if (existing.State is
                 WorkerRuntimeState.DISPATCHING or
                 WorkerRuntimeState.CONTINUING)
             {
-                var blocked = existing with
-                {
-                    State = WorkerRuntimeState.BLOCKED,
-                    Failure = DispatchOutcomeUnknown,
-                };
-                await stateStore.Save(blocked, cancellationToken);
-                return new(
-                    blocked.State,
-                    false,
-                    false,
-                    DispatchOutcomeUnknown);
+                return await Block(
+                    existing,
+                    DispatchOutcomeUnknown,
+                    cancellationToken);
             }
 
             if (existing.State == WorkerRuntimeState.BLOCKED &&
@@ -57,6 +69,17 @@ public sealed class WorkerLoop(
                     false,
                     false,
                     "BLOCKED_REQUIRES_OPERATOR");
+            }
+
+            if (existing.State ==
+                    WorkerRuntimeState.WAITING_FOR_ASSIGNMENT &&
+                existing.Target == target)
+            {
+                return new(
+                    existing.State,
+                    false,
+                    false,
+                    "WAITING_FOR_ASSIGNMENT");
             }
 
             if (IsActive(existing.State))
@@ -80,35 +103,63 @@ public sealed class WorkerLoop(
             var validationFailure = ValidateTarget(target);
             if (validationFailure is not null)
             {
-                var blocked = new WorkerSnapshot(
-                    WorkerRuntimeState.BLOCKED,
-                    target,
-                    existing.LastDispatchAt,
-                    existing.LastGitHubDeliveryId,
-                    existing.LastWakeAt,
-                    validationFailure);
-                await stateStore.Save(blocked, cancellationToken);
-                return new(
-                    blocked.State,
-                    false,
-                    false,
-                    validationFailure);
+                return await Block(
+                    existing with { Target = target },
+                    validationFailure,
+                    cancellationToken);
             }
 
-            var waiting = new WorkerSnapshot(
-                WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT,
-                target,
-                existing.LastDispatchAt,
-                existing.LastGitHubDeliveryId,
-                DateTimeOffset.UtcNow,
-                null);
+            if (existing.Assignment is null)
+            {
+                var waitingForAssignment = existing with
+                {
+                    State =
+                        WorkerRuntimeState
+                            .WAITING_FOR_ASSIGNMENT,
+                    Target = target,
+                    Failure = null,
+                };
+                await stateStore.Save(
+                    waitingForAssignment,
+                    cancellationToken);
+                return new(
+                    waitingForAssignment.State,
+                    false,
+                    false,
+                    "WAITING_FOR_ASSIGNMENT");
+            }
+
+            if (!existing.Assignment.IsValid)
+            {
+                return await Block(
+                    existing with { Target = target },
+                    AssignmentInvalid,
+                    cancellationToken);
+            }
+
+            if (existing.Target is not null &&
+                existing.Target != target)
+            {
+                return await Block(
+                    existing,
+                    "ACTIVE_ASSIGNMENT_TARGET_MISMATCH",
+                    cancellationToken);
+            }
+
+            var waiting = existing with
+            {
+                State =
+                    WorkerRuntimeState
+                        .WAITING_FOR_ENGINEERING_EVENT,
+                Target = target,
+                LastWakeAt = DateTimeOffset.UtcNow,
+                Failure = null,
+            };
             await stateStore.Save(waiting, cancellationToken);
 
             return await TryDispatch(
                 waiting,
                 WorkerRuntimeState.DISPATCHING,
-                target.Instruction,
-                requireSafeToInterrupt: true,
                 cancellationToken);
         }
         finally
@@ -118,8 +169,7 @@ public sealed class WorkerLoop(
     }
 
     public async Task<WorkerLoopResult> Wake(
-        WorkerWakeReason reason,
-        string? deliveryId,
+        WorkerWakeEvent wakeEvent,
         CancellationToken cancellationToken)
     {
         await _mutex.WaitAsync(cancellationToken);
@@ -127,10 +177,11 @@ public sealed class WorkerLoop(
         {
             var snapshot = await stateStore.Load(cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(deliveryId) &&
+            if (!string.IsNullOrWhiteSpace(
+                    wakeEvent.DeliveryId) &&
                 string.Equals(
                     snapshot.LastGitHubDeliveryId,
-                    deliveryId,
+                    wakeEvent.DeliveryId,
                     StringComparison.Ordinal))
             {
                 return new(
@@ -143,18 +194,151 @@ public sealed class WorkerLoop(
             var wakeSnapshot = snapshot with
             {
                 LastGitHubDeliveryId =
-                    string.IsNullOrWhiteSpace(deliveryId)
+                    string.IsNullOrWhiteSpace(
+                        wakeEvent.DeliveryId)
                         ? snapshot.LastGitHubDeliveryId
-                        : deliveryId,
-                LastWakeAt = DateTimeOffset.UtcNow,
+                        : wakeEvent.DeliveryId,
+                LastWakeAt = wakeEvent.ReceivedAt,
             };
 
-            if (reason == WorkerWakeReason.Manual &&
-                wakeSnapshot.Target is not null &&
+            if (wakeEvent.Reason ==
+                WorkerWakeReason.AssignmentConflict)
+            {
+                return await Block(
+                    wakeSnapshot,
+                    AmbiguousAssignment,
+                    cancellationToken);
+            }
+
+            if (wakeEvent.Reason ==
+                WorkerWakeReason.AssignmentRevoked)
+            {
+                if (wakeSnapshot.Assignment is null ||
+                    wakeEvent.PullRequestNumber is null ||
+                    wakeSnapshot.Assignment.Number !=
+                        wakeEvent.PullRequestNumber.Value)
+                {
+                    await stateStore.Save(
+                        wakeSnapshot,
+                        cancellationToken);
+                    return new(
+                        wakeSnapshot.State,
+                        false,
+                        false,
+                        "ASSIGNMENT_REVOKE_NOT_ACTIVE");
+                }
+
+                var revoked = wakeSnapshot with
+                {
+                    State =
+                        WorkerRuntimeState
+                            .WAITING_FOR_ASSIGNMENT,
+                    Assignment = null,
+                    Failure = null,
+                };
+                await stateStore.Save(
+                    revoked,
+                    cancellationToken);
+                return new(
+                    revoked.State,
+                    false,
+                    false,
+                    "ASSIGNMENT_REVOKED");
+            }
+
+            if (wakeEvent.Assignment is { } incoming)
+            {
+                if (!incoming.IsValid)
+                {
+                    return await Block(
+                        wakeSnapshot,
+                        AssignmentInvalid,
+                        cancellationToken);
+                }
+
+                if (wakeSnapshot.Assignment is { } active &&
+                    active.Number != incoming.Number)
+                {
+                    return await Block(
+                        wakeSnapshot,
+                        DuplicateAssignment,
+                        cancellationToken);
+                }
+
+                wakeSnapshot = wakeSnapshot with
+                {
+                    State =
+                        WorkerRuntimeState
+                            .WAITING_FOR_ENGINEERING_EVENT,
+                    Assignment = incoming,
+                    Failure = null,
+                };
+                await stateStore.Save(
+                    wakeSnapshot,
+                    cancellationToken);
+            }
+
+            if (wakeEvent.Reason ==
+                WorkerWakeReason.GitHubPush)
+            {
+                if (wakeSnapshot.Assignment is null)
+                {
+                    var waiting =
+                        EnsureWaitingForAssignment(
+                            wakeSnapshot);
+                    await stateStore.Save(
+                        waiting,
+                        cancellationToken);
+                    return new(
+                        waiting.State,
+                        false,
+                        false,
+                        "NO_ACTIVE_PR_ASSIGNMENT");
+                }
+
+                var expectedRef =
+                    "refs/heads/" +
+                    wakeSnapshot.Assignment.HeadRef;
+                if (!string.Equals(
+                        expectedRef,
+                        wakeEvent.GitHubRef,
+                        StringComparison.Ordinal))
+                {
+                    await stateStore.Save(
+                        wakeSnapshot,
+                        cancellationToken);
+                    return new(
+                        wakeSnapshot.State,
+                        false,
+                        false,
+                        "PUSH_NOT_ASSIGNED_TO_WORKER");
+                }
+            }
+
+            if (wakeEvent.Reason ==
+                    WorkerWakeReason.Manual &&
                 wakeSnapshot.State is
                     WorkerRuntimeState.BLOCKED or
                     WorkerRuntimeState.FAILED)
             {
+                if (wakeSnapshot.Assignment is null)
+                {
+                    var waiting =
+                        EnsureWaitingForAssignment(
+                            wakeSnapshot) with
+                        {
+                            Failure = null,
+                        };
+                    await stateStore.Save(
+                        waiting,
+                        cancellationToken);
+                    return new(
+                        waiting.State,
+                        false,
+                        false,
+                        "NO_ACTIVE_PR_ASSIGNMENT");
+                }
+
                 var reset = wakeSnapshot with
                 {
                     State =
@@ -169,9 +353,22 @@ public sealed class WorkerLoop(
                 return await TryDispatch(
                     reset,
                     WorkerRuntimeState.CONTINUING,
-                    reset.Target.Instruction,
-                    requireSafeToInterrupt: true,
                     cancellationToken);
+            }
+
+            if (wakeSnapshot.Assignment is null)
+            {
+                var waiting =
+                    EnsureWaitingForAssignment(
+                        wakeSnapshot);
+                await stateStore.Save(
+                    waiting,
+                    cancellationToken);
+                return new(
+                    waiting.State,
+                    false,
+                    false,
+                    "NO_ACTIVE_PR_ASSIGNMENT");
             }
 
             if (!IsActive(wakeSnapshot.State) ||
@@ -191,17 +388,10 @@ public sealed class WorkerLoop(
                 ValidateTarget(wakeSnapshot.Target);
             if (validationFailure is not null)
             {
-                var blocked = wakeSnapshot with
-                {
-                    State = WorkerRuntimeState.BLOCKED,
-                    Failure = validationFailure,
-                };
-                await stateStore.Save(blocked, cancellationToken);
-                return new(
-                    blocked.State,
-                    false,
-                    false,
-                    validationFailure);
+                return await Block(
+                    wakeSnapshot,
+                    validationFailure,
+                    cancellationToken);
             }
 
             await stateStore.Save(
@@ -213,7 +403,8 @@ public sealed class WorkerLoop(
                     policy.DispatchInterval)
             {
                 return new(
-                    WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT,
+                    WorkerRuntimeState
+                        .WAITING_FOR_ENGINEERING_EVENT,
                     false,
                     false,
                     "DISPATCH_COOLDOWN_ACTIVE");
@@ -222,8 +413,6 @@ public sealed class WorkerLoop(
             return await TryDispatch(
                 wakeSnapshot,
                 WorkerRuntimeState.CONTINUING,
-                wakeSnapshot.Target.Instruction,
-                requireSafeToInterrupt: true,
                 cancellationToken);
         }
         finally
@@ -239,8 +428,6 @@ public sealed class WorkerLoop(
     private async Task<WorkerLoopResult> TryDispatch(
         WorkerSnapshot snapshot,
         WorkerRuntimeState dispatchState,
-        string instruction,
-        bool requireSafeToInterrupt,
         CancellationToken cancellationToken)
     {
         try
@@ -249,14 +436,18 @@ public sealed class WorkerLoop(
                 snapshot.Target ??
                 throw new InvalidOperationException(
                     "ENGINEERING_TARGET_REQUIRED");
+            var assignment =
+                snapshot.Assignment ??
+                throw new InvalidOperationException(
+                    AssignmentRequired);
 
             await driver.Launch(cancellationToken);
             await driver.OpenContext(
                 target.ResolveContextTarget(),
                 cancellationToken);
 
-            if (requireSafeToInterrupt &&
-                !await driver.CanSendNextTurn(cancellationToken))
+            if (!await driver.CanSendNextTurn(
+                    cancellationToken))
             {
                 var waiting = snapshot with
                 {
@@ -265,7 +456,9 @@ public sealed class WorkerLoop(
                             .WAITING_FOR_ENGINEERING_EVENT,
                     Failure = null,
                 };
-                await stateStore.Save(waiting, cancellationToken);
+                await stateStore.Save(
+                    waiting,
+                    cancellationToken);
                 return new(
                     waiting.State,
                     false,
@@ -283,7 +476,10 @@ public sealed class WorkerLoop(
                 cancellationToken);
 
             await driver.Send(
-                instruction,
+                WorkerPrompts.ForAssignment(
+                    identity,
+                    assignment,
+                    target.Instruction),
                 cancellationToken);
 
             var waitingAfterSend = dispatching with
@@ -318,11 +514,25 @@ public sealed class WorkerLoop(
         }
     }
 
+    private static WorkerSnapshot EnsureWaitingForAssignment(
+        WorkerSnapshot snapshot) =>
+        snapshot.Target is null
+            ? snapshot
+            : snapshot with
+            {
+                State =
+                    WorkerRuntimeState
+                        .WAITING_FOR_ASSIGNMENT,
+            };
+
     private static string? ValidateTarget(
         EngineeringTarget target)
     {
-        if (target.Surface != ChatGptExecutionSurface.Chat)
+        if (target.Surface !=
+            ChatGptExecutionSurface.Chat)
+        {
             return ExecutionSurfaceMismatch;
+        }
 
         try
         {
@@ -339,6 +549,26 @@ public sealed class WorkerLoop(
         {
             return ex.Message;
         }
+    }
+
+    private async Task<WorkerLoopResult> Block(
+        WorkerSnapshot snapshot,
+        string failure,
+        CancellationToken cancellationToken)
+    {
+        var blocked = snapshot with
+        {
+            State = WorkerRuntimeState.BLOCKED,
+            Failure = failure,
+        };
+        await stateStore.Save(
+            blocked,
+            cancellationToken);
+        return new(
+            blocked.State,
+            false,
+            false,
+            failure);
     }
 
     private async Task<WorkerLoopResult> Fail(
@@ -374,6 +604,9 @@ public sealed class WorkerLoop(
                 StringComparison.Ordinal) ||
             failure.Contains(
                 CdpMustBeLoopback,
+                StringComparison.Ordinal) ||
+            failure.Contains(
+                AssignmentRequired,
                 StringComparison.Ordinal);
 
         var failed = snapshot with
@@ -383,7 +616,9 @@ public sealed class WorkerLoop(
                 : WorkerRuntimeState.FAILED,
             Failure = failure,
         };
-        await stateStore.Save(failed, cancellationToken);
+        await stateStore.Save(
+            failed,
+            cancellationToken);
         return new(
             failed.State,
             false,
@@ -394,5 +629,6 @@ public sealed class WorkerLoop(
     private static bool IsActive(
         WorkerRuntimeState state) =>
         state is
-            WorkerRuntimeState.WAITING_FOR_ENGINEERING_EVENT;
+            WorkerRuntimeState
+                .WAITING_FOR_ENGINEERING_EVENT;
 }
