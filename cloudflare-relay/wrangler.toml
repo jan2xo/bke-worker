@@ -1,0 +1,20 @@
+name = "bke-worker-relay"
+main = "src/index.js"
+compatibility_date = "2026-10-04"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "WORKER_SESSIONS"
+class_name = "WorkerSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WorkerSession"]
+
+[env.preproduction]
+name = "bke-worker-relay-preproduction"
+workers_dev = true
+
+[[env.preproduction.durable_objects.bindings]]
+name = "WORKER_SESSIONS"
+class_name = "WorkerSession"
