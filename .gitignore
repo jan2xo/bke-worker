@@ -10,3 +10,7 @@ artifacts/
 chatgpt-profile/
 worker-state/
 *.worker-state.json
+
+# Browser extension build/dependency output.
+browser-extension/dist/
+browser-extension/node_modules/
