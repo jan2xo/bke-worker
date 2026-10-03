@@ -63,7 +63,7 @@ for attempt in $(seq 1 40); do
 done
 curl --fail --silent "$WORKER/health/ready" >/dev/null
 
-body='{"action":"labeled","number":101,"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}'
+body='{"action":"labeled","number":101,"label":{"name":"bke-worker:worker-a"},"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}'
 signature="$(
   BODY="$body" SECRET="$SECRET" python3 - <<'PY'
 import hashlib
