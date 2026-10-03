@@ -68,8 +68,12 @@ for forbidden in (
 for token in (
     'name = "WORKER_SESSIONS"',
     'class_name = "WorkerSession"',
-    'new_sqlite_classes = ["WorkerSession"]',
+    '[exports.WorkerSession]',
+    'type = "durable-object"',
+    'storage = "sqlite"',
+    '[secrets]',
     '[env.preproduction]',
+    '[env.preproduction.secrets]',
 ):
     assert token in wrangler, token
 
@@ -78,6 +82,8 @@ for forbidden in (
     "BKE_WORKER_RELAY_TOKEN =",
     "route =",
     "routes =",
+    "[[migrations]]",
+    "new_classes",
 ):
     assert forbidden not in wrangler, forbidden
 
