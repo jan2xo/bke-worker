@@ -14,7 +14,7 @@ for (const token of [
   'class_name = "WorkerSession"',
   '[secrets]',
   '"BKE_WORKER_GITHUB_WEBHOOK_SECRET"',
-  '"BKE_WORKER_RELAY_TOKEN"',
+  '"BKE_WORKER_RELAY_TOKEN_KEY"',
   '[env.preproduction]',
   '[env.preproduction.secrets]',
 ]) {
@@ -25,7 +25,7 @@ for (const token of [
 
 for (const forbidden of [
   "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
-  "BKE_WORKER_RELAY_TOKEN =",
+  "BKE_WORKER_RELAY_TOKEN_KEY =",
   "routes =",
   "route =",
   "[[migrations]]",
