@@ -52,6 +52,13 @@ for token in (
     "statusSnapshot()",
     "startStatusUpdates()",
     "renderWorkerStatus()",
+    "BKE Worker",
+    "WORKER CONFIGURATION",
+    "EXECUTION TARGET",
+    "CHATGPT",
+    "setPadding(32, 48, 32, 64)",
+    "textSize = 24f",
+    "textSize = 18f",
 ):
     assert token in activity, token
 
