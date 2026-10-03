@@ -123,12 +123,19 @@ async function probeChatGptTabs(): Promise<void> {
   );
 }
 
+async function initializeBridge(): Promise<void> {
+  await hardenStorageAccess();
+  await probeChatGptTabs();
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-  void chrome.action.setBadgeText({ text: "" });
+  void chrome.action
+    .setBadgeText({ text: "" })
+    .then(() => initializeBridge());
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void hardenStorageAccess().then(() => probeChatGptTabs());
+  void initializeBridge();
 });
 
 chrome.runtime.onMessage.addListener(
@@ -179,4 +186,4 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
-void probeChatGptTabs();
+void initializeBridge();
