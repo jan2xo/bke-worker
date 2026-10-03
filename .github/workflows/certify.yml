@@ -36,6 +36,7 @@ jobs:
       core: ${{ steps.plan.outputs.core }}
       server: ${{ steps.plan.outputs.server }}
       chatgpt: ${{ steps.plan.outputs.chatgpt }}
+      android: ${{ steps.plan.outputs.android }}
     steps:
       - id: plan
         name: Resolve exact head and requested modules
@@ -78,11 +79,11 @@ jobs:
             const requested = new Set(
               rawModules.split(/\s+/).filter(Boolean)
             );
-            const allowedModules = new Set(["core", "server", "chatgpt"]);
+            const allowedModules = new Set(["core", "server", "chatgpt", "android"]);
             const unknown = [...requested].filter(module => !allowedModules.has(module));
             if (requested.size === 0 || unknown.length > 0) {
               core.setFailed(
-                `Certification modules must be one or more of core server chatgpt. Unknown: ${unknown.join(", ")}`
+                `Certification modules must be one or more of core server chatgpt android. Unknown: ${unknown.join(", ")}`
               );
               return;
             }
@@ -318,10 +319,63 @@ jobs:
       - name: Diff hygiene
         run: git diff --check
 
+  android:
+    name: Android Gecko Worker probe
+    needs: plan
+    if: needs.plan.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 37.1
+        run: sdkmanager "platforms;android-37.1" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Verify Android Gecko probe contract
+        run: python3 tests/android_gecko_probe_contract.py
+
+      - name: Build Android Gecko debug APK
+        run: gradle -p android-gecko :app:assembleDebug --stacktrace
+
+      - name: Verify APK exists
+        shell: bash
+        run: test -f android-gecko/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Android Gecko probe APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-android-gecko-probe
+          path: android-gecko/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Diff hygiene
+        run: git diff --check
+
   required-certification:
     name: Required certification
     if: always() && needs.plan.result == 'success'
-    needs: [plan, core, server, chatgpt]
+    needs: [plan, core, server, chatgpt, android]
     runs-on: ubuntu-latest
     steps:
       - name: Require requested exact-head proof
@@ -330,13 +384,16 @@ jobs:
           CORE_REQUIRED: ${{ needs.plan.outputs.core }}
           SERVER_REQUIRED: ${{ needs.plan.outputs.server }}
           CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
+          ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
           CORE_RESULT: ${{ needs.core.result }}
           SERVER_RESULT: ${{ needs.server.result }}
           CHATGPT_RESULT: ${{ needs.chatgpt.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: |
           set -euo pipefail
           [[ "$CORE_REQUIRED" != "true" || "$CORE_RESULT" == "success" ]]
           [[ "$SERVER_REQUIRED" != "true" || "$SERVER_RESULT" == "success" ]]
           [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
+          [[ "$ANDROID_REQUIRED" != "true" || "$ANDROID_RESULT" == "success" ]]
           echo "Required certification PASS on exact head $SOURCE_SHA"
