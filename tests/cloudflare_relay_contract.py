@@ -7,6 +7,9 @@ protocol = (relay / "src/protocol.js").read_text(encoding="utf-8")
 runtime = (relay / "src/index.js").read_text(encoding="utf-8")
 wrangler = (relay / "wrangler.toml").read_text(encoding="utf-8")
 readme = (relay / "README.md").read_text(encoding="utf-8")
+webhook_configurator = (
+    relay / "scripts/configure-github-webhook.sh"
+).read_text(encoding="utf-8")
 android = (
     root
     / "android-gecko/app/src/main/kotlin/com/bke/worker/gecko/RelayProtocol.kt"
@@ -99,3 +102,16 @@ for token in (
     assert token in readme, token
 
 print("BKE Worker Cloudflare durable relay contract: PASS")
+
+for token in (
+    'GITHUB WEBHOOK PLAN — NO MUTATION',
+    'if [[ "$APPLY" != "true" ]]',
+    '"events": ["pull_request"]',
+    '"insecure_ssl": "0"',
+    '--method PATCH',
+    '--method POST',
+    '--input -',
+):
+    assert token in webhook_configurator, token
+
+assert 'echo "$SECRET"' not in webhook_configurator
