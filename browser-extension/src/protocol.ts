@@ -99,6 +99,32 @@ export function validateConfig(
   };
 }
 
+export function isValidChatGptPageStatus(
+  value: unknown,
+): value is ChatGptPageStatus {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<ChatGptPageStatus>;
+  if (
+    candidate.protocolVersion !== PROTOCOL_VERSION ||
+    typeof candidate.observedAt !== "string" ||
+    typeof candidate.url !== "string" ||
+    typeof candidate.visible !== "boolean" ||
+    typeof candidate.composerAvailable !== "boolean" ||
+    typeof candidate.turnBusy !== "boolean"
+  ) {
+    return false;
+  }
+
+  try {
+    return new URL(candidate.url).origin === "https://chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
 export function deriveConnectionState(
   config: BridgeConfig,
 ): BridgeConnectionState {
