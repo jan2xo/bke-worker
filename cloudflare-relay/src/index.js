@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import {
   CONTROL_REPOSITORY,
   MAX_WEBHOOK_BYTES,
@@ -171,9 +172,10 @@ export default {
   },
 };
 
-export class WorkerSession {
-  constructor(state, env) {
-    this.state = state;
+export class WorkerSession extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.state = ctx;
     this.env = env;
   }
 
