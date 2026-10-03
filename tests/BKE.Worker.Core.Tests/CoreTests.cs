@@ -350,6 +350,45 @@ public sealed class CoreTests
         Assert.Single(driver.Sent);
     }
 
+    [Fact]
+    public async Task Nonconsecutive_GitHub_redelivery_is_ignored()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await loop.Start(
+            Target(),
+            CancellationToken.None);
+        await loop.Wake(
+            AssignmentEvent(
+                "delivery-a"),
+            CancellationToken.None);
+        await loop.Wake(
+            PushEvent(
+                "delivery-b",
+                "refs/heads/feat/pr-b"),
+            CancellationToken.None);
+
+        var duplicate =
+            await loop.Wake(
+                AssignmentEvent(
+                    "delivery-a"),
+                CancellationToken.None);
+
+        Assert.True(
+            duplicate.DuplicateIgnored);
+        Assert.Single(driver.Sent);
+        Assert.Contains(
+            "delivery-a",
+            store.Snapshot
+                .RecentGitHubDeliveryIds!);
+        Assert.Contains(
+            "delivery-b",
+            store.Snapshot
+                .RecentGitHubDeliveryIds!);
+    }
+
     [Theory]
     [InlineData(
         WorkerRuntimeState.DISPATCHING)]
