@@ -55,6 +55,10 @@ async function handleGitHubWebhook(request, env) {
   const deliveryId = request.headers.get("X-GitHub-Delivery") || "";
   const signature = request.headers.get("X-Hub-Signature-256") || "";
   const eventName = request.headers.get("X-GitHub-Event") || "";
+  const contentLength = Number(request.headers.get("Content-Length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_WEBHOOK_BYTES) {
+    return json({ error: "GITHUB_PAYLOAD_TOO_LARGE" }, 413);
+  }
 
   const buffer = new Uint8Array(await request.arrayBuffer());
   if (buffer.byteLength > MAX_WEBHOOK_BYTES) {
@@ -253,6 +257,17 @@ export class WorkerSession extends DurableObject {
     }
 
     await this.rememberDelivery(recent, wake.delivery_id);
+
+    if (active?.phase === "queued") {
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+        wake,
+        phase: "queued",
+      });
+      return json({
+        state: "coalesced_queued",
+        delivery_id: wake.delivery_id,
+      }, 202);
+    }
 
     if (!active) {
       await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
