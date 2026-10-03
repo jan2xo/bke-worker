@@ -15,6 +15,7 @@ const ACTIVE_WAKE_KEY = "active_wake";
 const QUEUED_WAKE_KEY = "queued_wake";
 const RECENT_DELIVERIES_KEY = "recent_deliveries";
 const WORKER_ID_KEY = "worker_id";
+const ACTIVE_CONNECTION_KEY = "active_connection_id";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -217,9 +218,11 @@ export class WorkerSession {
     const client = pair[0];
     const server = pair[1];
 
+    const connectionId = crypto.randomUUID();
     this.state.acceptWebSocket(server);
     server.serializeAttachment({
       workerId,
+      connectionId,
       registered: false,
       sessionId: null,
     });
@@ -287,18 +290,22 @@ export class WorkerSession {
     await this.state.storage.put(RECENT_DELIVERIES_KEY, next);
   }
 
-  registeredSockets() {
-    return this.state.getWebSockets().filter((socket) => {
+  async authoritativeSocket() {
+    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    if (!activeConnectionId) return null;
+
+    return this.state.getWebSockets().find((socket) => {
       const attachment = socket.deserializeAttachment();
-      return attachment?.registered === true;
-    });
+      return attachment?.registered === true &&
+        attachment?.connectionId === activeConnectionId;
+    }) || null;
   }
 
   async sendActiveIfSafe() {
     const active = await this.state.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.phase !== "queued") return false;
 
-    const socket = this.registeredSockets()[0];
+    const socket = await this.authoritativeSocket();
     if (!socket) return false;
 
     socket.send(JSON.stringify(active.wake));
@@ -325,6 +332,14 @@ export class WorkerSession {
         return;
       }
 
+      const connectionId = attachment.connectionId;
+      if (typeof connectionId !== "string" || connectionId.length === 0) {
+        socket.close(1008, "connection identity missing");
+        return;
+      }
+
+      await this.state.storage.put(ACTIVE_CONNECTION_KEY, connectionId);
+
       for (const other of this.state.getWebSockets()) {
         if (other === socket) continue;
         const otherAttachment = other.deserializeAttachment();
@@ -335,6 +350,7 @@ export class WorkerSession {
 
       socket.serializeAttachment({
         workerId,
+        connectionId,
         registered: true,
         sessionId: parsed.session_id,
       });
@@ -344,6 +360,12 @@ export class WorkerSession {
 
     if (!validateAck(parsed, workerId)) {
       socket.close(1008, "invalid ack");
+      return;
+    }
+
+    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    if (!activeConnectionId || attachment.connectionId !== activeConnectionId) {
+      socket.close(1008, "stale session");
       return;
     }
 
@@ -383,13 +405,22 @@ export class WorkerSession {
     await this.sendActiveIfSafe();
   }
 
-  webSocketClose() {
+  async webSocketClose(socket) {
+    await this.clearConnectionIfAuthoritative(socket);
     // Deliberately retain durable wake state. A wake in sent/deferred/accepted
     // state is never automatically redelivered after a disconnect because
     // ChatGPT dispatch outcome may be ambiguous.
   }
 
-  webSocketError() {
-    // Same fail-closed rule as webSocketClose().
+  async webSocketError(socket) {
+    await this.clearConnectionIfAuthoritative(socket);
+  }
+
+  async clearConnectionIfAuthoritative(socket) {
+    const attachment = socket.deserializeAttachment() || {};
+    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    if (attachment.connectionId === activeConnectionId) {
+      await this.state.storage.delete(ACTIVE_CONNECTION_KEY);
+    }
   }
 }
