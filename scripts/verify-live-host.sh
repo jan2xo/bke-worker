@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-http://127.0.0.1:9222}"
-PROFILE_DIR="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-chatgpt-profile}"
+WORKER_ID="${BKE_WORKER_ID:-}"
+CDP_ENDPOINT="${BKE_WORKER_BROWSER_CDP_ENDPOINT:-}"
+PROFILE_DIR="${BKE_WORKER_CHATGPT_PROFILE:-$HOME/snap/chromium/common/bke-worker-${WORKER_ID:-unknown}-chatgpt-profile}"
+
+if [[ -z "$WORKER_ID" ]]; then
+  echo "ERROR: BKE_WORKER_ID is required." >&2
+  exit 1
+fi
+if [[ ! "$WORKER_ID" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+  echo "ERROR: invalid BKE_WORKER_ID." >&2
+  exit 1
+fi
+if [[ -z "$CDP_ENDPOINT" ]]; then
+  echo "ERROR: BKE_WORKER_BROWSER_CDP_ENDPOINT is required." >&2
+  exit 1
+fi
 
 for command in curl jq dotnet chromium; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -20,6 +34,8 @@ if uri.scheme not in {"http", "https"}:
     raise SystemExit("ERROR: CDP endpoint must be HTTP(S)")
 if uri.hostname not in {"127.0.0.1", "localhost", "::1"}:
     raise SystemExit("ERROR: CDP endpoint must be loopback-only")
+if uri.port is None:
+    raise SystemExit("ERROR: CDP endpoint must include an explicit per-worker port")
 PY
 
 if [[ ! -d "$PROFILE_DIR" ]]; then
@@ -44,7 +60,7 @@ if command -v ss >/dev/null 2>&1; then
 import sys
 from urllib.parse import urlparse
 u=urlparse(sys.argv[1])
-print(u.port or (443 if u.scheme == 'https' else 80))
+print(u.port)
 PY
 )"
   listeners="$(ss -ltnH | awk -v port=":$port" '$4 ~ port"$" {print $4}')"
@@ -62,9 +78,11 @@ if ! echo "$pages_json" | jq -e 'map(select((.url // "") | startswith("https://c
 fi
 
 printf 'LIVE HOST GREEN\n'
+printf '  worker: %s\n' "$WORKER_ID"
 printf '  browser: %s\n' "$(echo "$version_json" | jq -r '.Browser')"
 printf '  protocol: %s\n' "$(echo "$version_json" | jq -r '.["Protocol-Version"]')"
 printf '  CDP: %s\n' "$CDP_ENDPOINT"
 printf '  profile: %s\n' "$PROFILE_DIR"
+printf '  assignment label: bke-worker:%s\n' "$WORKER_ID"
 printf '  guard: loopback-only CDP verified\n'
 printf '  auth: human-owned; worker probe remains authoritative\n'
