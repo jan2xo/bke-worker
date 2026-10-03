@@ -41,15 +41,18 @@ npm run check
 
 `npm run build` emits browser-loadable JavaScript into `dist/`.
 
-## Load unpacked for local certification
+## Load into the exact worker profile for local certification
 
-After building:
+After building, bind the extension path to the worker environment instead of relying on a manual load in whichever Chromium profile happens to be open:
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Choose **Load unpacked**.
-4. Select this `browser-extension/` directory.
-5. Open the extension popup and set a worker ID such as `worker-a`.
-6. Open the worker's normal human-authenticated `chatgpt.com` session and press **Probe**.
+```bash
+BKE_WORKER_BROWSER_EXTENSION_PATH=$HOME/bke/bke-worker/browser-extension
+```
+
+Then start Chromium with `scripts/start-chatgpt-browser.sh`. The host script validates `manifest.json` plus the built `dist/` artifacts and passes the unpacked extension through Chromium's `--load-extension` flag for that exact worker profile.
+
+For ad-hoc inspection you may still use `chrome://extensions` -> Developer mode -> Load unpacked, but that does not certify the Worker startup/profile binding.
+
+Once loaded, open the extension popup, set a worker ID such as `worker-a`, and press **Probe** against the worker's normal human-authenticated `chatgpt.com` session.
 
 Do not use this extension as a production control surface until the bridge transport and command boundary are separately implemented and certified.
