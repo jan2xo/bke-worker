@@ -94,8 +94,8 @@ for token in (
     "#111417",
     "#79D8C4",
     "#0B0D0F",
-    'android:buttonStyle="@style/BkeWorkerButton"',
-    'android:editTextStyle="@style/BkeWorkerInput"',
+    'name="android:buttonStyle">@style/BkeWorkerButton',
+    'name="android:editTextStyle">@style/BkeWorkerInput',
     'android:textAllCaps="false"',
 ):
     assert token in styles, token
