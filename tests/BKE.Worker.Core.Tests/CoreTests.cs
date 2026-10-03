@@ -5,32 +5,56 @@ namespace BKE.Worker.Core.Tests;
 
 public sealed class CoreTests
 {
+    private static readonly WorkerIdentity Worker =
+        new("worker-a");
+
     [Fact]
     public void Default_reasoning_is_high() =>
         Assert.Equal(
             ReasoningProfile.HIGH,
             new WorkerPolicy().DefaultReasoning);
 
+    [Theory]
+    [InlineData("worker-a", true)]
+    [InlineData("a", true)]
+    [InlineData("worker-01", true)]
+    [InlineData("", false)]
+    [InlineData("Worker-A", false)]
+    [InlineData("-worker", false)]
+    [InlineData("worker_a", false)]
+    public void Worker_identity_has_canonical_format(
+        string value,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            WorkerIdentity.IsValidId(value));
+
     [Fact]
-    public void Autonomous_prompt_locks_GitHub_PR_execution_model()
+    public void Assignment_prompt_locks_worker_and_pr()
     {
         var prompt =
-            WorkerPrompts.ContinueAutonomousEngineering;
+            WorkerPrompts.ForAssignment(
+                Worker,
+                Assignment());
 
         Assert.Contains(
-            "live GitHub state",
+            "live GitHub",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "current main",
+            "worker_id=worker-a",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "NEW PR",
+            "assigned PR #101",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            ".github/pull_request_template.md",
+            "bke-worker:worker-a",
+            prompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "owns no second open PR",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -44,20 +68,47 @@ public sealed class CoreTests
     }
 
     [Fact]
-    public async Task Start_dispatches_locked_instruction_when_safe()
+    public async Task Start_waits_for_GitHub_assignment()
     {
         var driver = new FakeDriver();
         var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var loop = Loop(driver, store);
 
         var result =
             await loop.Start(
                 Target(),
+                CancellationToken.None);
+
+        Assert.False(result.PromptSent);
+        Assert.Equal(
+            WorkerRuntimeState
+                .WAITING_FOR_ASSIGNMENT,
+            result.State);
+        Assert.Equal(
+            "WAITING_FOR_ASSIGNMENT",
+            result.Message);
+        Assert.Empty(driver.Sent);
+        Assert.Equal(
+            Target(),
+            store.Snapshot.Target);
+        Assert.Null(store.Snapshot.Assignment);
+    }
+
+    [Fact]
+    public async Task Assigned_PR_dispatches_locked_instruction()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await loop.Start(
+            Target(),
+            CancellationToken.None);
+
+        var result =
+            await loop.Wake(
+                AssignmentEvent(
+                    "delivery-1"),
                 CancellationToken.None);
 
         Assert.True(result.PromptSent);
@@ -66,31 +117,37 @@ public sealed class CoreTests
                 .WAITING_FOR_ENGINEERING_EVENT,
             result.State);
         Assert.Single(driver.Sent);
+        Assert.Contains(
+            "worker_id=worker-a",
+            driver.Sent[0],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "assigned PR #101",
+            driver.Sent[0],
+            StringComparison.Ordinal);
         Assert.Equal(
-            WorkerPrompts
-                .ContinueAutonomousEngineering,
-            driver.Sent[0]);
-        Assert.Single(driver.Opened);
+            Assignment(),
+            store.Snapshot.Assignment);
         Assert.NotNull(
             store.Snapshot.LastDispatchAt);
     }
 
     [Fact]
-    public async Task Start_defers_when_chatgpt_is_not_safe()
+    public async Task Busy_assignment_defers_without_losing_claim()
     {
         var driver =
             new FakeDriver { CanSend = false };
         var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var loop = Loop(driver, store);
+
+        await loop.Start(
+            Target(),
+            CancellationToken.None);
 
         var result =
-            await loop.Start(
-                Target(),
+            await loop.Wake(
+                AssignmentEvent(
+                    "delivery-busy"),
                 CancellationToken.None);
 
         Assert.False(result.PromptSent);
@@ -101,37 +158,170 @@ public sealed class CoreTests
             WorkerRuntimeState
                 .WAITING_FOR_ENGINEERING_EVENT,
             store.Snapshot.State);
+        Assert.Equal(
+            Assignment(),
+            store.Snapshot.Assignment);
         Assert.Empty(driver.Sent);
     }
 
     [Fact]
-    public async Task GitHub_push_continues_same_target_when_safe()
+    public async Task Matching_push_continues_assigned_PR()
     {
         var driver = new FakeDriver();
         var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var loop = Loop(driver, store);
 
-        await loop.Start(
-            Target(),
-            CancellationToken.None);
+        await StartAndAssign(
+            loop,
+            driver);
 
         var result =
             await loop.Wake(
-                WorkerWakeReason.GitHubPush,
-                "delivery-1",
+                PushEvent(
+                    "delivery-push",
+                    "refs/heads/feat/pr-a"),
                 CancellationToken.None);
 
         Assert.True(result.PromptSent);
         Assert.Equal(2, driver.Sent.Count);
         Assert.Equal(
-            "delivery-1",
-            store.Snapshot.LastGitHubDeliveryId);
-        Assert.NotNull(store.Snapshot.LastWakeAt);
+            "delivery-push",
+            store
+                .Snapshot
+                .LastGitHubDeliveryId);
+    }
+
+    [Fact]
+    public async Task Unrelated_push_is_ignored()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await StartAndAssign(
+            loop,
+            driver);
+
+        var result =
+            await loop.Wake(
+                PushEvent(
+                    "delivery-other",
+                    "refs/heads/feat/pr-b"),
+                CancellationToken.None);
+
+        Assert.False(result.PromptSent);
+        Assert.Equal(
+            "PUSH_NOT_ASSIGNED_TO_WORKER",
+            result.Message);
+        Assert.Single(driver.Sent);
+    }
+
+    [Fact]
+    public async Task Second_PR_assignment_blocks_worker()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await StartAndAssign(
+            loop,
+            driver);
+
+        var result =
+            await loop.Wake(
+                AssignmentEvent(
+                    "delivery-2",
+                    new PullRequestAssignment(
+                        202,
+                        "feat/pr-b",
+                        Sha('b'))),
+                CancellationToken.None);
+
+        Assert.False(result.PromptSent);
+        Assert.Equal(
+            WorkerRuntimeState.BLOCKED,
+            result.State);
+        Assert.Equal(
+            "WORKER_ALREADY_ASSIGNED_TO_DIFFERENT_PR",
+            result.Message);
+        Assert.Single(driver.Sent);
+        Assert.Equal(
+            Assignment(),
+            store.Snapshot.Assignment);
+    }
+
+    [Fact]
+    public async Task Ambiguous_assignment_blocks_worker()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await StartAndAssign(
+            loop,
+            driver);
+
+        var result =
+            await loop.Wake(
+                new WorkerWakeEvent(
+                    WorkerWakeReason
+                        .AssignmentConflict,
+                    "delivery-conflict",
+                    DateTimeOffset.UtcNow,
+                    PullRequestNumber: 101),
+                CancellationToken.None);
+
+        Assert.False(result.PromptSent);
+        Assert.Equal(
+            WorkerRuntimeState.BLOCKED,
+            result.State);
+        Assert.Equal(
+            "AMBIGUOUS_PR_ASSIGNMENT",
+            result.Message);
+        Assert.Single(driver.Sent);
+    }
+
+    [Fact]
+    public async Task Assignment_revocation_stops_continuation()
+    {
+        var driver = new FakeDriver();
+        var store = new FakeStore();
+        var loop = Loop(driver, store);
+
+        await StartAndAssign(
+            loop,
+            driver);
+
+        var revoked =
+            await loop.Wake(
+                new WorkerWakeEvent(
+                    WorkerWakeReason
+                        .AssignmentRevoked,
+                    "delivery-revoke",
+                    DateTimeOffset.UtcNow,
+                    PullRequestNumber: 101),
+                CancellationToken.None);
+
+        Assert.False(revoked.PromptSent);
+        Assert.Equal(
+            WorkerRuntimeState
+                .WAITING_FOR_ASSIGNMENT,
+            revoked.State);
+        Assert.Null(
+            store.Snapshot.Assignment);
+
+        var push =
+            await loop.Wake(
+                PushEvent(
+                    "delivery-after-revoke",
+                    "refs/heads/feat/pr-a"),
+                CancellationToken.None);
+
+        Assert.False(push.PromptSent);
+        Assert.Equal(
+            "NO_ACTIVE_PR_ASSIGNMENT",
+            push.Message);
+        Assert.Single(driver.Sent);
     }
 
     [Fact]
@@ -139,34 +329,32 @@ public sealed class CoreTests
     {
         var driver = new FakeDriver();
         var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var loop = Loop(driver, store);
 
         await loop.Start(
             Target(),
             CancellationToken.None);
         await loop.Wake(
-            WorkerWakeReason.GitHubPush,
-            "same-delivery",
+            AssignmentEvent(
+                "same-delivery"),
             CancellationToken.None);
 
         var duplicate =
             await loop.Wake(
-                WorkerWakeReason.GitHubPush,
-                "same-delivery",
+                AssignmentEvent(
+                    "same-delivery"),
                 CancellationToken.None);
 
-        Assert.True(duplicate.DuplicateIgnored);
-        Assert.Equal(2, driver.Sent.Count);
+        Assert.True(
+            duplicate.DuplicateIgnored);
+        Assert.Single(driver.Sent);
     }
 
     [Theory]
-    [InlineData(WorkerRuntimeState.DISPATCHING)]
-    [InlineData(WorkerRuntimeState.CONTINUING)]
+    [InlineData(
+        WorkerRuntimeState.DISPATCHING)]
+    [InlineData(
+        WorkerRuntimeState.CONTINUING)]
     public async Task Restart_with_uncertain_send_blocks_without_resending(
         WorkerRuntimeState state)
     {
@@ -179,13 +367,9 @@ public sealed class CoreTests
                     null,
                     null,
                     null,
-                    null));
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+                    null,
+                    Assignment()));
+        var loop = Loop(driver, store);
 
         var result =
             await loop.Start(
@@ -214,18 +398,16 @@ public sealed class CoreTests
                     null,
                     null,
                     null,
-                    "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART"));
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+                    "DISPATCH_OUTCOME_UNKNOWN_AFTER_RESTART",
+                    Assignment()));
+        var loop = Loop(driver, store);
 
         var heartbeat =
             await loop.Wake(
-                WorkerWakeReason.Heartbeat,
-                null,
+                new WorkerWakeEvent(
+                    WorkerWakeReason.Heartbeat,
+                    null,
+                    DateTimeOffset.UtcNow),
                 CancellationToken.None);
 
         Assert.False(heartbeat.PromptSent);
@@ -236,8 +418,10 @@ public sealed class CoreTests
 
         var manual =
             await loop.Wake(
-                WorkerWakeReason.Manual,
-                null,
+                new WorkerWakeEvent(
+                    WorkerWakeReason.Manual,
+                    null,
+                    DateTimeOffset.UtcNow),
                 CancellationToken.None);
 
         Assert.True(manual.PromptSent);
@@ -249,16 +433,11 @@ public sealed class CoreTests
     }
 
     [Fact]
-    public async Task Work_surface_fails_closed_before_browser_activity()
+    public async Task Work_surface_fails_closed_before_assignment()
     {
         var driver = new FakeDriver();
         var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var loop = Loop(driver, store);
 
         var result =
             await loop.Start(
@@ -288,13 +467,17 @@ public sealed class CoreTests
                 new InvalidOperationException(
                     "CHATGPT_AUTH_REQUIRED"),
         };
-        var store = new FakeStore();
-        var loop = new WorkerLoop(
-            driver,
-            store,
-            new WorkerPolicy(
-                MinimumDispatchInterval:
-                    TimeSpan.Zero));
+        var store =
+            new FakeStore(
+                new WorkerSnapshot(
+                    WorkerRuntimeState.IDLE,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    Assignment()));
+        var loop = Loop(driver, store);
 
         var result =
             await loop.Start(
@@ -311,7 +494,7 @@ public sealed class CoreTests
     }
 
     [Fact]
-    public void Worker_snapshot_has_no_Notion_state()
+    public void Worker_snapshot_has_no_parallel_task_database()
     {
         var properties =
             typeof(WorkerSnapshot)
@@ -325,11 +508,83 @@ public sealed class CoreTests
             name =>
                 name.Contains(
                     "Notion",
-                    StringComparison.OrdinalIgnoreCase) ||
+                    StringComparison
+                        .OrdinalIgnoreCase) ||
                 name.Contains(
                     "Checklist",
-                    StringComparison.OrdinalIgnoreCase));
+                    StringComparison
+                        .OrdinalIgnoreCase) ||
+                name.Contains(
+                    "TaskQueue",
+                    StringComparison
+                        .OrdinalIgnoreCase));
+        Assert.Contains(
+            nameof(
+                WorkerSnapshot.Assignment),
+            properties);
     }
+
+    private static WorkerLoop Loop(
+        FakeDriver driver,
+        FakeStore store) =>
+        new(
+            driver,
+            store,
+            new WorkerPolicy(
+                MinimumDispatchInterval:
+                    TimeSpan.Zero),
+            Worker);
+
+    private static async Task StartAndAssign(
+        WorkerLoop loop,
+        FakeDriver driver)
+    {
+        await loop.Start(
+            Target(),
+            CancellationToken.None);
+        var assigned =
+            await loop.Wake(
+                AssignmentEvent(
+                    "delivery-assignment"),
+                CancellationToken.None);
+        Assert.True(assigned.PromptSent);
+        Assert.Single(driver.Sent);
+    }
+
+    private static WorkerWakeEvent
+        AssignmentEvent(
+            string delivery,
+            PullRequestAssignment? assignment =
+                null) =>
+        new(
+            WorkerWakeReason.GitHubPullRequest,
+            delivery,
+            DateTimeOffset.UtcNow,
+            Assignment:
+                assignment ??
+                Assignment(),
+            PullRequestNumber:
+                (assignment ??
+                 Assignment()).Number);
+
+    private static WorkerWakeEvent PushEvent(
+        string delivery,
+        string gitHubRef) =>
+        new(
+            WorkerWakeReason.GitHubPush,
+            delivery,
+            DateTimeOffset.UtcNow,
+            GitHubRef: gitHubRef);
+
+    private static PullRequestAssignment
+        Assignment() =>
+        new(
+            101,
+            "feat/pr-a",
+            Sha('a'));
+
+    private static string Sha(char value) =>
+        new(value, 40);
 
     private static EngineeringTarget Target() =>
         new(
@@ -340,8 +595,13 @@ public sealed class CoreTests
         WorkerSnapshot? initial = null)
         : IWorkerStateStore
     {
-        public WorkerSnapshot Snapshot { get; private set; } =
-            initial ?? WorkerSnapshot.Empty;
+        public WorkerSnapshot Snapshot
+        {
+            get;
+            private set;
+        } =
+            initial ??
+            WorkerSnapshot.Empty;
 
         public Task<WorkerSnapshot> Load(
             CancellationToken cancellationToken) =>
@@ -389,7 +649,8 @@ public sealed class CoreTests
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<ReasoningProfile>>
+        public Task<IReadOnlyList<
+            ReasoningProfile>>
             GetAvailableReasoningProfiles(
                 CancellationToken cancellationToken) =>
             Task.FromResult<
@@ -401,8 +662,9 @@ public sealed class CoreTests
             CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task<ReasoningProfile> GetCurrentReasoning(
-            CancellationToken cancellationToken) =>
+        public Task<ReasoningProfile>
+            GetCurrentReasoning(
+                CancellationToken cancellationToken) =>
             Task.FromResult(
                 ReasoningProfile.HIGH);
 
@@ -414,20 +676,23 @@ public sealed class CoreTests
             return Task.CompletedTask;
         }
 
-        public Task<ExecutionState> GetExecutionState(
-            CancellationToken cancellationToken) =>
+        public Task<ExecutionState>
+            GetExecutionState(
+                CancellationToken cancellationToken) =>
             Task.FromResult(
                 new ExecutionState(
                     !CanSend,
                     CanSend,
                     false));
 
-        public Task<string?> GetLatestResponse(
-            CancellationToken cancellationToken) =>
+        public Task<string?>
+            GetLatestResponse(
+                CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
 
-        public Task<bool> CanSendNextTurn(
-            CancellationToken cancellationToken) =>
+        public Task<bool>
+            CanSendNextTurn(
+                CancellationToken cancellationToken) =>
             Task.FromResult(CanSend);
     }
 }
