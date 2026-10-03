@@ -64,14 +64,23 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(20, 28, 20, 20)
+            setPadding(32, 48, 32, 64)
         }
+
+        root.addView(TextView(this).apply {
+            text = "BKE Worker"
+            textSize = 24f
+        })
 
         status = TextView(this).apply {
             text = "Browser: DETACHED\nChatGPT: STOPPED\nRelay: DISCONNECTED\nWorker ID: —"
-            textSize = 16f
         }
         root.addView(status)
+
+        root.addView(TextView(this).apply {
+            text = "WORKER CONFIGURATION"
+            textSize = 18f
+        })
 
         workerIdInput = EditText(this).apply {
             hint = "Worker ID"
@@ -124,6 +133,14 @@ class MainActivity : Activity() {
             text = "ChatGPT authentication is manual. The relay token stays in service memory only. Backgrounding detaches this view without closing the service-owned GeckoSession."
         }
         root.addView(note)
+
+        root.addView(TextView(this).apply {
+            text = "EXECUTION TARGET"
+            textSize = 18f
+        })
+        root.addView(TextView(this).apply {
+            text = "CHATGPT"
+        })
 
         geckoView = GeckoView(this)
         root.addView(
