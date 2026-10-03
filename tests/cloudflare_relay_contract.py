@@ -44,10 +44,10 @@ for key in wake_keys:
 for token in (
     'import { DurableObject } from "cloudflare:workers"',
     'export class WorkerSession extends DurableObject',
-    'super(ctx, env)',
+    'this.ctx.storage',
     'env.WORKER_SESSIONS.idFromName(routing.workerId)',
     'new WebSocketPair()',
-    'this.state.acceptWebSocket(server)',
+    'this.ctx.acceptWebSocket(server)',
     'server.serializeAttachment(',
     'other.close(4001, "replaced by newer session")',
     'RECENT_DELIVERY_LIMIT = 64',
