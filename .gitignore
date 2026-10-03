@@ -21,4 +21,5 @@ browser-extension/node_modules/
 # Cloudflare relay local material.
 cloudflare-relay/.wrangler/
 cloudflare-relay/node_modules/
-cloudflare-relay/.dev.vars
+cloudflare-relay/.dev.vars*
+cloudflare-relay/.env*
