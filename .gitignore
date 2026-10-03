@@ -17,3 +17,8 @@ browser-extension/node_modules/
 
 # UTM WSS smoke relay development TLS/private material.
 .bke-worker-utm-relay/
+
+# Cloudflare relay local material.
+cloudflare-relay/.wrangler/
+cloudflare-relay/node_modules/
+cloudflare-relay/.dev.vars
