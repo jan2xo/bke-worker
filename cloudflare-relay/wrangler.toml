@@ -1,7 +1,8 @@
 name = "bke-worker-relay"
 main = "src/index.js"
 compatibility_date = "2026-10-04"
-workers_dev = true
+workers_dev = false
+preview_urls = false
 
 [exports.WorkerSession]
 type = "durable-object"
@@ -20,6 +21,7 @@ required = [
 [env.preproduction]
 name = "bke-worker-relay-preproduction"
 workers_dev = true
+preview_urls = false
 
 [[env.preproduction.durable_objects.bindings]]
 name = "WORKER_SESSIONS"
