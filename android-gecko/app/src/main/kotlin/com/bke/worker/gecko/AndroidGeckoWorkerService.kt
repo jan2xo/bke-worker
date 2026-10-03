@@ -23,11 +23,15 @@ class AndroidGeckoWorkerService : Service() {
         private const val CHANNEL_ID = "bke_worker_gecko_probe"
         private const val NOTIFICATION_ID = 41801
 
-        private const val WORKER_ID = "android-worker-a"
+        private const val DEFAULT_WORKER_ID = "android-worker-a"
         private const val CHATGPT_URL = "https://chatgpt.com/"
         private const val EXTENSION_URI = "resource://android/assets/worker-extension/"
         private const val EXTENSION_ID = "bke-worker-gecko-probe@jl-bke.com"
         private const val NATIVE_APP = "bke.worker.gecko"
+
+        private const val EXTRA_WORKER_ID = "bke.worker.worker_id"
+        private const val EXTRA_RELAY_URL = "bke.worker.relay_url"
+        private const val EXTRA_RELAY_TOKEN = "bke.worker.relay_token"
 
         private const val STATE_STARTING = "STARTING"
         private const val STATE_READY = "READY"
@@ -35,13 +39,23 @@ class AndroidGeckoWorkerService : Service() {
         private const val STATE_NO_COMPOSER = "NO_COMPOSER"
         private const val STATE_FAILED = "FAILED"
 
+        private const val RECENT_DELIVERY_LIMIT = 64
+
         @Volatile
         var isRunning: Boolean = false
             private set
 
-        fun ensureRunning(context: Context) {
+        fun ensureRunning(
+            context: Context,
+            workerId: String = DEFAULT_WORKER_ID,
+            relayUrl: String = "",
+            relayToken: String = "",
+        ) {
             val app = context.applicationContext
             val intent = Intent(app, AndroidGeckoWorkerService::class.java)
+                .putExtra(EXTRA_WORKER_ID, workerId)
+                .putExtra(EXTRA_RELAY_URL, relayUrl)
+                .putExtra(EXTRA_RELAY_TOKEN, relayToken)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 app.startForegroundService(intent)
             } else {
@@ -70,64 +84,56 @@ class AndroidGeckoWorkerService : Service() {
     private val binder = LocalBinder()
     private val runtime by lazy { GeckoRuntimeProvider.get(applicationContext) }
     private val workerSession = GeckoSession()
+
+    private var activeWorkerId = DEFAULT_WORKER_ID
     private var workerState = STATE_STARTING
+    private var relayState = "UNPAIRED"
+
+    private var workerPort: WebExtension.Port? = null
+    private var relayClient: RelayWebSocketClient? = null
+
+    private val recentDeliveryIds = LinkedHashSet<String>()
+    private var activeWake: RelayWake? = null
+    private var activeSawBusy = false
+    private var pendingWake: RelayWake? = null
 
     fun session(): GeckoSession = workerSession
 
+    private val portDelegate = object : WebExtension.PortDelegate {
+        override fun onPortMessage(message: Any, port: WebExtension.Port) {
+            if (port !== workerPort || message !is JSONObject) return
+            handleExtensionMessage(message)
+        }
+
+        override fun onDisconnect(port: WebExtension.Port) {
+            if (port === workerPort) {
+                workerPort = null
+            }
+        }
+    }
+
     private val messageDelegate = object : WebExtension.MessageDelegate {
+        override fun onConnect(port: WebExtension.Port) {
+            if (port.name != NATIVE_APP || port.sender.session !== workerSession) {
+                port.disconnect()
+                return
+            }
+
+            workerPort?.disconnect()
+            workerPort = port
+            port.setDelegate(portDelegate)
+            maybeDispatchPendingWake()
+        }
+
         override fun onMessage(
             nativeApp: String,
             message: Any,
             sender: WebExtension.MessageSender,
         ): GeckoResult<Any>? {
-            if (nativeApp != NATIVE_APP || message !is JSONObject) {
+            if (nativeApp != NATIVE_APP || sender.session !== workerSession || message !is JSONObject) {
                 return null
             }
-
-            val expectedKeys = setOf(
-                "type",
-                "protocolVersion",
-                "observedAt",
-                "pageUrl",
-                "composerAvailable",
-                "turnBusy",
-            )
-            val actualKeys = buildSet {
-                val iterator = message.keys()
-                while (iterator.hasNext()) add(iterator.next())
-            }
-
-            if (actualKeys != expectedKeys ||
-                message.optString("type") != "worker_status" ||
-                message.optInt("protocolVersion", -1) != 1
-            ) {
-                Log.w(TAG, "Rejected malformed Worker probe message")
-                return null
-            }
-
-            val pageUrl = message.optString("pageUrl")
-            if (!isChatGptUrl(pageUrl)) {
-                Log.w(TAG, "Rejected non-ChatGPT Worker probe message")
-                return null
-            }
-
-            if (message.optString("observedAt").isBlank() ||
-                !message.has("composerAvailable") ||
-                !message.has("turnBusy")
-            ) {
-                Log.w(TAG, "Rejected incomplete Worker probe message")
-                return null
-            }
-
-            val composerAvailable = message.optBoolean("composerAvailable")
-            val turnBusy = message.optBoolean("turnBusy")
-            workerState = when {
-                turnBusy -> STATE_BUSY
-                composerAvailable -> STATE_READY
-                else -> STATE_NO_COMPOSER
-            }
-            updateNotification()
-            Log.d(TAG, "worker=$WORKER_ID state=$workerState")
+            handleExtensionMessage(message)
             return null
         }
     }
@@ -183,6 +189,16 @@ class AndroidGeckoWorkerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        if (intent != null && intent.hasExtra(EXTRA_WORKER_ID)) {
+            val config = RelayConfig(
+                workerId = intent.getStringExtra(EXTRA_WORKER_ID)?.trim().orEmpty(),
+                relayUrl = intent.getStringExtra(EXTRA_RELAY_URL)?.trim().orEmpty(),
+                bearerToken = intent.getStringExtra(EXTRA_RELAY_TOKEN).orEmpty(),
+            )
+            configureRelay(config)
+        }
+
         return START_STICKY
     }
 
@@ -190,9 +206,189 @@ class AndroidGeckoWorkerService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        relayClient?.stop()
+        relayClient = null
+        workerPort?.disconnect()
+        workerPort = null
         runCatching { workerSession.close() }
             .onFailure { Log.w(TAG, "Unable to close Worker GeckoSession cleanly", it) }
         super.onDestroy()
+    }
+
+    private fun configureRelay(config: RelayConfig) {
+        relayClient?.stop()
+        relayClient = null
+
+        val error = RelayProtocol.validateConfig(config)
+        if (error != null) {
+            relayState = error
+            updateNotification()
+            return
+        }
+
+        activeWorkerId = config.workerId
+        if (config.relayUrl.isBlank()) {
+            relayState = "UNPAIRED"
+            updateNotification()
+            return
+        }
+
+        relayState = "CONNECTING"
+        relayClient = RelayWebSocketClient(
+            config = config,
+            onWake = ::handleRelayWake,
+            onState = { state ->
+                relayState = state
+                updateNotification()
+            },
+        ).also { it.start() }
+        updateNotification()
+    }
+
+    private fun handleExtensionMessage(message: JSONObject) {
+        when (message.optString("type")) {
+            "worker_status" -> handleWorkerStatus(message)
+            "dispatch_result" -> handleDispatchResult(message)
+        }
+    }
+
+    private fun handleWorkerStatus(message: JSONObject) {
+        val expectedKeys = setOf(
+            "type",
+            "protocolVersion",
+            "observedAt",
+            "pageUrl",
+            "composerAvailable",
+            "turnBusy",
+        )
+        if (jsonKeys(message) != expectedKeys ||
+            message.optInt("protocolVersion", -1) != RelayProtocol.VERSION
+        ) {
+            return
+        }
+
+        val pageUrl = message.optString("pageUrl")
+        if (!isChatGptUrl(pageUrl) || message.optString("observedAt").isBlank()) {
+            return
+        }
+
+        val composerAvailable = message.optBoolean("composerAvailable")
+        val turnBusy = message.optBoolean("turnBusy")
+        workerState = when {
+            turnBusy -> STATE_BUSY
+            composerAvailable -> STATE_READY
+            else -> STATE_NO_COMPOSER
+        }
+
+        val active = activeWake
+        if (active != null) {
+            if (turnBusy) {
+                activeSawBusy = true
+            } else if (activeSawBusy && workerState == STATE_READY) {
+                relayClient?.sendAck(active.deliveryId, "completed")
+                activeWake = null
+                activeSawBusy = false
+                maybeDispatchPendingWake()
+            }
+        } else if (workerState == STATE_READY) {
+            maybeDispatchPendingWake()
+        }
+
+        updateNotification()
+    }
+
+    private fun handleDispatchResult(message: JSONObject) {
+        val expectedKeys = setOf(
+            "type",
+            "protocolVersion",
+            "deliveryId",
+            "accepted",
+            "error",
+        )
+        if (jsonKeys(message) != expectedKeys ||
+            message.optInt("protocolVersion", -1) != RelayProtocol.VERSION
+        ) {
+            return
+        }
+
+        val active = activeWake ?: return
+        if (message.optString("deliveryId") != active.deliveryId) return
+
+        if (message.optBoolean("accepted")) {
+            rememberDelivery(active.deliveryId)
+            relayClient?.sendAck(active.deliveryId, "accepted")
+            return
+        }
+
+        relayClient?.sendAck(active.deliveryId, "rejected")
+        activeWake = null
+        activeSawBusy = false
+        maybeDispatchPendingWake()
+    }
+
+    private fun handleRelayWake(wake: RelayWake) {
+        if (wake.workerId != activeWorkerId) return
+
+        if (wake.deliveryId in recentDeliveryIds ||
+            activeWake?.deliveryId == wake.deliveryId ||
+            pendingWake?.deliveryId == wake.deliveryId
+        ) {
+            relayClient?.sendAck(wake.deliveryId, "duplicate")
+            return
+        }
+
+        if (activeWake != null || workerState != STATE_READY || workerPort == null) {
+            pendingWake = wake
+            relayClient?.sendAck(wake.deliveryId, "deferred")
+            return
+        }
+
+        dispatchWake(wake)
+    }
+
+    private fun dispatchWake(wake: RelayWake) {
+        val port = workerPort
+        if (port == null || workerState != STATE_READY || activeWake != null) {
+            pendingWake = wake
+            relayClient?.sendAck(wake.deliveryId, "deferred")
+            return
+        }
+
+        val command = JSONObject()
+            .put("type", "dispatch_prompt")
+            .put("protocolVersion", RelayProtocol.VERSION)
+            .put("deliveryId", wake.deliveryId)
+            .put("prompt", RelayProtocol.continuationPrompt(wake))
+
+        activeWake = wake
+        activeSawBusy = false
+
+        runCatching { port.postMessage(command) }
+            .onFailure {
+                relayClient?.sendAck(wake.deliveryId, "bridge_failed")
+                activeWake = null
+                activeSawBusy = false
+            }
+    }
+
+    private fun maybeDispatchPendingWake() {
+        if (activeWake != null || workerState != STATE_READY || workerPort == null) return
+        val wake = pendingWake ?: return
+        pendingWake = null
+        dispatchWake(wake)
+    }
+
+    private fun rememberDelivery(deliveryId: String) {
+        recentDeliveryIds.add(deliveryId)
+        while (recentDeliveryIds.size > RECENT_DELIVERY_LIMIT) {
+            val oldest = recentDeliveryIds.firstOrNull() ?: break
+            recentDeliveryIds.remove(oldest)
+        }
+    }
+
+    private fun jsonKeys(json: JSONObject): Set<String> = buildSet {
+        val iterator = json.keys()
+        while (iterator.hasNext()) add(iterator.next())
     }
 
     private fun createNotificationChannel() {
@@ -202,7 +398,7 @@ class AndroidGeckoWorkerService : Service() {
             "BKE Worker Gecko",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Keeps the experimental BKE Worker Gecko session alive."
+            description = "Keeps the BKE Worker Gecko session and relay connection alive."
             setShowBadge(false)
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
@@ -228,7 +424,7 @@ class AndroidGeckoWorkerService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("BKE Worker")
-            .setContentText("$WORKER_ID • $workerState")
+            .setContentText("$activeWorkerId • $workerState • relay:$relayState")
             .setContentIntent(pendingIntent)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
