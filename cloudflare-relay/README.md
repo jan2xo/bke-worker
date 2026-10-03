@@ -19,9 +19,20 @@ GitHub remains the source of task ownership and exact-head truth. The relay neve
 Set these as Cloudflare Worker secrets. Never commit them:
 
 - `BKE_WORKER_GITHUB_WEBHOOK_SECRET`
-- `BKE_WORKER_RELAY_TOKEN`
+- `BKE_WORKER_RELAY_TOKEN_KEY`
 
 Variable names are generation-independent.
+
+`BKE_WORKER_RELAY_TOKEN_KEY` is a master relay key, not the value pasted into Android. Each worker receives a token derived from its own `worker_id`, so one worker cannot authenticate as another worker merely by knowing its own token.
+
+Generate the Android token locally after setting the master key in your shell:
+
+```bash
+BKE_WORKER_RELAY_TOKEN_KEY='<same master key configured in Cloudflare>' \
+  node scripts/derive-worker-token.mjs android-worker-a
+```
+
+Paste only the derived token into Android. Do not copy the master key to Android.
 
 ## Routing
 
@@ -61,7 +72,7 @@ When the owner is ready to certify/deploy preproduction:
 ```bash
 cd cloudflare-relay
 wrangler secret put BKE_WORKER_GITHUB_WEBHOOK_SECRET --env preproduction
-wrangler secret put BKE_WORKER_RELAY_TOKEN --env preproduction
+wrangler secret put BKE_WORKER_RELAY_TOKEN_KEY --env preproduction
 wrangler deploy --env preproduction
 ```
 
