@@ -191,6 +191,22 @@ Heartbeat is recovery/liveness, never a task timebox. It runs only while a valid
 
 If ChatGPT is busy, hydrating, unauthenticated, or otherwise not positively safe to interrupt, Worker sends nothing and retries on a later valid wake.
 
+## Chromium extension bridge foundation
+
+The repository now contains a browser-native foundation under `browser-extension/`.
+
+This is **not yet the canonical live browser adapter**. The current runtime remains .NET + persistent Chromium + loopback Playwright/CDP until the extension path is locally certified.
+
+The foundation uses Manifest V3 + TypeScript and is intentionally probe-only:
+
+- host access is limited to `https://chatgpt.com/*`;
+- it reports ChatGPT tab/composer/busy state without reading message contents;
+- worker ID and future controller URL are stored as non-secret per-profile configuration;
+- extension storage is restricted to trusted extension contexts;
+- there is no remote transport, prompt dispatch, cookie access, auth automation, or public CDP exposure.
+
+The planned next bridge wave is authenticated outbound control-plane transport plus bounded, idempotent dispatch. See `docs/browser-extension-bridge.md`.
+
 ## Browser and instance isolation
 
 Concurrent workers must not share writable runtime resources. Each worker needs a distinct:
