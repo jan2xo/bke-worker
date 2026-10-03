@@ -33,6 +33,18 @@ jobs:
           if "\n  workflow_dispatch:" not in certify or "\n  issue_comment:" not in certify:
               raise SystemExit("Intent certification is not explicitly invokable.")
 
+          for token in [
+              'new Set(["core", "server", "chatgpt", "android"])',
+              "name: Android Gecko Worker probe",
+              "python3 tests/android_gecko_probe_contract.py",
+              "gradle -p android-gecko :app:assembleDebug --stacktrace",
+              "bke-worker-android-gecko-probe",
+              "ANDROID_REQUIRED:",
+              "ANDROID_RESULT:",
+          ]:
+              if token not in certify:
+                  raise SystemExit(f"Android certification module lost: {token}")
+
           automatic = re.findall(
               r"(?m)^  (push|pull_request|schedule|workflow_run):",
               certify,
