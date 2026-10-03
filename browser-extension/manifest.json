@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "BKE Worker Browser Bridge",
+  "version": "0.1.0",
+  "description": "Account-isolated browser bridge foundation for BKE Worker ChatGPT sessions.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "dist/content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "BKE Worker Browser Bridge",
+    "default_popup": "popup.html"
+  }
+}
