@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   CONTROL_REPOSITORY,
   PROTOCOL,
-  bearerMatches,
+  deriveRelayToken,
+  relayBearerMatches,
   isValidWorkerId,
   routeGitHubPullRequest,
   validateAck,
@@ -131,11 +132,26 @@ test("non-control repository is ignored", () => {
   assert.equal(result.reason, "NON_CONTROL_REPOSITORY");
 });
 
-test("worker id and relay bearer validation are strict", () => {
+test("worker id and relay bearer tokens are worker-bound", async () => {
   assert.equal(isValidWorkerId("android-worker-a"), true);
   assert.equal(isValidWorkerId("Android-Worker-A"), false);
-  assert.equal(bearerMatches("Bearer abc123", "abc123"), true);
-  assert.equal(bearerMatches("Bearer abc124", "abc123"), false);
+
+  const key = "0123456789abcdef0123456789abcdef";
+  const androidToken = await deriveRelayToken(key, "android-worker-a");
+  assert.match(androidToken, /^[A-Za-z0-9_-]{43}$/);
+
+  assert.equal(
+    await relayBearerMatches(`Bearer ${androidToken}`, key, "android-worker-a"),
+    true,
+  );
+  assert.equal(
+    await relayBearerMatches(`Bearer ${androidToken}`, key, "worker-b"),
+    false,
+  );
+  assert.equal(
+    await relayBearerMatches("Bearer invalid", key, "android-worker-a"),
+    false,
+  );
 });
 
 test("register and ack packets match the Android protocol", () => {
