@@ -91,8 +91,17 @@ for token in (
     "composer.replaceChildren(document.createTextNode(prompt))",
     "composerAvailable",
     "turnBusy",
+    "async function waitForSendButtonReady(",
+    "await waitForSendButtonReady()",
+    '"SEND_UNAVAILABLE_AFTER_WRITE"',
+    "void dispatchPrompt(message)",
 ):
     assert token in probe, token
+
+write_index = probe.index("setComposerValue(composer, command.prompt)")
+send_wait_index = probe.index("await waitForSendButtonReady()")
+assert write_index < send_wait_index
+assert "if (!composer || !sendButton || sendButton.disabled)" not in probe
 
 for token in (
     'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
