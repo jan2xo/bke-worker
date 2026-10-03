@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.ViewGroup
 import android.widget.Button
@@ -27,6 +29,17 @@ class MainActivity : Activity() {
 
     private var workerService: AndroidGeckoWorkerService? = null
     private var bound = false
+    private var browserAttached = false
+
+    private val statusHandler = Handler(Looper.getMainLooper())
+    private val statusPoll = object : Runnable {
+        override fun run() {
+            renderWorkerStatus()
+            if (bound) {
+                statusHandler.postDelayed(this, 500)
+            }
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -34,14 +47,15 @@ class MainActivity : Activity() {
             workerService = local.service()
             bound = true
             attachSession()
-            status.text = "Worker: CONNECTED — browser session attached"
+            startStatusUpdates()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            stopStatusUpdates()
             detachSession()
             workerService = null
             bound = false
-            status.text = "Worker: DISCONNECTED"
+            renderWorkerStatus()
         }
     }
 
@@ -50,14 +64,23 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(20, 28, 20, 20)
+            setPadding(32, 48, 32, 64)
         }
 
+        root.addView(TextView(this).apply {
+            text = "BKE Worker"
+            textSize = 24f
+        })
+
         status = TextView(this).apply {
-            text = "Worker: STOPPED"
-            textSize = 16f
+            text = "Browser: DETACHED\nChatGPT: STOPPED\nRelay: DISCONNECTED\nWorker ID: —"
         }
         root.addView(status)
+
+        root.addView(TextView(this).apply {
+            text = "WORKER CONFIGURATION"
+            textSize = 18f
+        })
 
         workerIdInput = EditText(this).apply {
             hint = "Worker ID"
@@ -101,7 +124,7 @@ class MainActivity : Activity() {
                 detachSession()
                 unbindWorker()
                 AndroidGeckoWorkerService.stop(this@MainActivity)
-                status.text = "Worker: STOPPED"
+                renderWorkerStatus()
             }
         }
         root.addView(stop)
@@ -110,6 +133,14 @@ class MainActivity : Activity() {
             text = "ChatGPT authentication is manual. The relay token stays in service memory only. Backgrounding detaches this view without closing the service-owned GeckoSession."
         }
         root.addView(note)
+
+        root.addView(TextView(this).apply {
+            text = "EXECUTION TARGET"
+            textSize = 18f
+        })
+        root.addView(TextView(this).apply {
+            text = "CHATGPT"
+        })
 
         geckoView = GeckoView(this)
         root.addView(
@@ -132,6 +163,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        stopStatusUpdates()
         detachSession()
         unbindWorker()
         super.onStop()
@@ -140,6 +172,7 @@ class MainActivity : Activity() {
     private fun bindWorker() {
         if (bound) {
             attachSession()
+            startStatusUpdates()
             return
         }
 
@@ -161,14 +194,49 @@ class MainActivity : Activity() {
         val session = workerService?.session() ?: return
         runCatching {
             geckoView.setSession(session)
+        }.onSuccess {
+            browserAttached = true
+            renderWorkerStatus()
         }.onFailure {
-            status.text = "Worker: SESSION_ATTACH_FAILED"
+            browserAttached = false
+            status.text = "Browser: ATTACH_FAILED\nChatGPT: UNKNOWN\nRelay: UNKNOWN\nWorker ID: —"
         }
     }
 
     private fun detachSession() {
         runCatching {
             geckoView.releaseSession()
+        }
+        browserAttached = false
+    }
+
+    private fun startStatusUpdates() {
+        statusHandler.removeCallbacks(statusPoll)
+        renderWorkerStatus()
+        statusHandler.postDelayed(statusPoll, 500)
+    }
+
+    private fun stopStatusUpdates() {
+        statusHandler.removeCallbacks(statusPoll)
+    }
+
+    private fun renderWorkerStatus() {
+        val snapshot = workerService?.statusSnapshot()
+        if (snapshot == null) {
+            status.text = buildString {
+                appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
+                appendLine("ChatGPT: STOPPED")
+                appendLine("Relay: DISCONNECTED")
+                append("Worker ID: —")
+            }
+            return
+        }
+
+        status.text = buildString {
+            appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
+            appendLine("ChatGPT: " + snapshot.chatGptState)
+            appendLine("Relay: " + snapshot.relayState)
+            append("Worker ID: " + snapshot.workerId)
         }
     }
 
