@@ -22,6 +22,9 @@ for token in (
     '"opened", "reopened", "labeled", "synchronize"',
     'type: "wake"',
     'repo: CONTROL_REPOSITORY',
+    'deriveRelayToken',
+    'relayBearerMatches',
+    'RELAY_TOKEN_CONTEXT + workerId',
     'validateRegister',
     'validateAck',
 ):
@@ -64,7 +67,7 @@ for token in (
     'ack.state === "rejected"',
     'ack.state === "completed"',
     'BKE_WORKER_GITHUB_WEBHOOK_SECRET',
-    'BKE_WORKER_RELAY_TOKEN',
+    'BKE_WORKER_RELAY_TOKEN_KEY',
 ):
     assert token in runtime, token
 
@@ -93,7 +96,7 @@ for token in (
 
 for forbidden in (
     "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
-    "BKE_WORKER_RELAY_TOKEN =",
+    "BKE_WORKER_RELAY_TOKEN_KEY =",
     "route =",
     "routes =",
     "[[migrations]]",
