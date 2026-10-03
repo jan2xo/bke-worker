@@ -121,9 +121,8 @@ class MainActivity : Activity() {
         statusCard.addView(status)
         root.addView(statusCard)
 
-        val configCard = compactCardContainer().apply {
-            visibility = View.GONE
-        }
+        val configCard = compactCardContainer()
+        configCard.visibility = View.GONE
 
         val configToggle = TextView(this).apply {
             text = "WORKER CONFIGURATION ▾"
