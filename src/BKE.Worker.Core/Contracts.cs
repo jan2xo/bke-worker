@@ -90,7 +90,10 @@ public sealed record PullRequestAssignment(
         !HeadRef.StartsWith(
             "refs/",
             StringComparison.Ordinal) &&
-        !string.IsNullOrWhiteSpace(HeadSha);
+        HeadSha.Length == 40 &&
+        HeadSha.All(character =>
+            character is >= '0' and <= '9' ||
+            character is >= 'a' and <= 'f');
 }
 
 public static class WorkerPrompts
@@ -188,10 +191,12 @@ public sealed record WorkerSnapshot(
     string? LastGitHubDeliveryId,
     DateTimeOffset? LastWakeAt,
     string? Failure,
-    PullRequestAssignment? Assignment = null)
+    PullRequestAssignment? Assignment = null,
+    string[]? RecentGitHubDeliveryIds = null)
 {
     public static WorkerSnapshot Empty { get; } = new(
         WorkerRuntimeState.IDLE,
+        null,
         null,
         null,
         null,
