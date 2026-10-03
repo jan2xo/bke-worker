@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deriveConnectionState,
   isAllowedControllerUrl,
+  isValidChatGptPageStatus,
   isValidWorkerId,
   validateConfig,
 } from "../dist/protocol.js";
@@ -61,5 +62,44 @@ test("connection state does not imply authenticated transport", () => {
       controllerUrl: "wss://control.example/bridge",
     }),
     "READY_FOR_TRANSPORT",
+  );
+});
+
+
+test("ChatGPT status validation accepts only bounded chatgpt.com observations", () => {
+  assert.equal(
+    isValidChatGptPageStatus({
+      protocolVersion: 1,
+      observedAt: new Date().toISOString(),
+      url: "https://chatgpt.com/c/example",
+      visible: true,
+      composerAvailable: true,
+      turnBusy: false,
+    }),
+    true,
+  );
+
+  assert.equal(
+    isValidChatGptPageStatus({
+      protocolVersion: 1,
+      observedAt: "now",
+      url: "https://evil.example/c/example",
+      visible: true,
+      composerAvailable: true,
+      turnBusy: false,
+    }),
+    false,
+  );
+
+  assert.equal(
+    isValidChatGptPageStatus({
+      protocolVersion: 2,
+      observedAt: "now",
+      url: "https://chatgpt.com/c/example",
+      visible: true,
+      composerAvailable: true,
+      turnBusy: false,
+    }),
+    false,
   );
 });
