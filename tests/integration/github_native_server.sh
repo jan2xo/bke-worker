@@ -168,6 +168,12 @@ assert p["heartbeatSeconds"] == 1800, p
 assert "notion" not in json.dumps(p).lower(), p
 PY
 
+echo "GITHUB-NATIVE: unrelated PR metadata action does not redispatch"
+edited='{"action":"edited","number":101,"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}'
+test "$(send_webhook pull_request delivery-edited "$edited")" = "202"
+sleep 2
+test "$(prompt_count)" = "1"
+
 echo "GITHUB-NATIVE: invalid webhook signature fails closed"
 push='{"ref":"refs/heads/feat/pr-a","after":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
 test "$(send_webhook push bad-signature "$push" invalid)" = "401"
