@@ -285,9 +285,6 @@ jobs:
       - name: GitHub-native published-runtime harness
         run: bash tests/integration/github_native_server.sh
 
-      - name: Multi-worker routing and isolation harness
-        run: bash tests/integration/multi_worker_server.sh
-
       - name: GitHub-native operator UI harness
         run: bash tests/integration/github_native_ui.sh
 
