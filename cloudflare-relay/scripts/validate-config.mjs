@@ -5,6 +5,8 @@ const config = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8"
 for (const token of [
   'name = "bke-worker-relay"',
   'main = "src/index.js"',
+  'workers_dev = false',
+  'preview_urls = false',
   '[exports.WorkerSession]',
   'type = "durable-object"',
   'storage = "sqlite"',
