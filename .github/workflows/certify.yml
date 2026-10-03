@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       modules:
-        description: "Space-separated modules: core server chatgpt"
+        description: "Space-separated modules: core server chatgpt android relay"
         required: true
         default: core
         type: string
@@ -37,6 +37,7 @@ jobs:
       server: ${{ steps.plan.outputs.server }}
       chatgpt: ${{ steps.plan.outputs.chatgpt }}
       android: ${{ steps.plan.outputs.android }}
+      relay: ${{ steps.plan.outputs.relay }}
     steps:
       - id: plan
         name: Resolve exact head and requested modules
@@ -79,11 +80,11 @@ jobs:
             const requested = new Set(
               rawModules.split(/\s+/).filter(Boolean)
             );
-            const allowedModules = new Set(["core", "server", "chatgpt", "android"]);
+            const allowedModules = new Set(["core", "server", "chatgpt", "android", "relay"]);
             const unknown = [...requested].filter(module => !allowedModules.has(module));
             if (requested.size === 0 || unknown.length > 0) {
               core.setFailed(
-                `Certification modules must be one or more of core server chatgpt android. Unknown: ${unknown.join(", ")}`
+                `Certification modules must be one or more of core server chatgpt android relay. Unknown: ${unknown.join(", ")}`
               );
               return;
             }
@@ -375,10 +376,43 @@ jobs:
       - name: Diff hygiene
         run: git diff --check
 
+
+  relay:
+    name: Cloudflare durable relay
+    needs: plan
+    if: needs.plan.outputs.relay == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify Cloudflare relay protocol and config
+        working-directory: cloudflare-relay
+        run: npm run check
+
+      - name: Verify Android/relay cross-boundary contract
+        run: python3 tests/cloudflare_relay_contract.py
+
+      - name: Diff hygiene
+        run: git diff --check
+
   required-certification:
     name: Required certification
     if: always() && needs.plan.result == 'success'
-    needs: [plan, core, server, chatgpt, android]
+    needs: [plan, core, server, chatgpt, android, relay]
     runs-on: ubuntu-latest
     steps:
       - name: Require requested exact-head proof
@@ -388,10 +422,12 @@ jobs:
           SERVER_REQUIRED: ${{ needs.plan.outputs.server }}
           CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
           ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
+          RELAY_REQUIRED: ${{ needs.plan.outputs.relay }}
           CORE_RESULT: ${{ needs.core.result }}
           SERVER_RESULT: ${{ needs.server.result }}
           CHATGPT_RESULT: ${{ needs.chatgpt.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          RELAY_RESULT: ${{ needs.relay.result }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -399,4 +435,5 @@ jobs:
           [[ "$SERVER_REQUIRED" != "true" || "$SERVER_RESULT" == "success" ]]
           [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
           [[ "$ANDROID_REQUIRED" != "true" || "$ANDROID_RESULT" == "success" ]]
+          [[ "$RELAY_REQUIRED" != "true" || "$RELAY_RESULT" == "success" ]]
           echo "Required certification PASS on exact head $SOURCE_SHA"
