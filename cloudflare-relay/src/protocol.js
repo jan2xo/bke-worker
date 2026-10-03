@@ -33,21 +33,71 @@ export function isValidDeliveryId(value) {
   return typeof value === "string" && DELIVERY.test(value);
 }
 
-export function constantTimeEqualString(left, right) {
-  if (typeof left !== "string" || typeof right !== "string") return false;
-  const length = Math.max(left.length, right.length);
-  let diff = left.length ^ right.length;
-  for (let index = 0; index < length; index += 1) {
-    diff |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  }
-  return diff === 0;
+const RELAY_TOKEN_CONTEXT = "bke-worker-relay-v1:";
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
 }
 
-export function bearerMatches(headerValue, expectedToken) {
-  if (typeof expectedToken !== "string" || expectedToken.length === 0) return false;
-  return constantTimeEqualString(
+function base64UrlToBytes(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    return null;
+  }
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "=";
+  try {
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function relayHmacKey(secretKey, usages) {
+  if (typeof secretKey !== "string" || secretKey.length < 32) return null;
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secretKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    usages,
+  );
+}
+
+export async function deriveRelayToken(secretKey, workerId) {
+  if (!isValidWorkerId(workerId)) throw new Error("WORKER_ID_INVALID");
+  const key = await relayHmacKey(secretKey, ["sign"]);
+  if (!key) throw new Error("RELAY_TOKEN_KEY_INVALID");
+  const signature = new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(RELAY_TOKEN_CONTEXT + workerId),
+    ),
+  );
+  return bytesToBase64Url(signature);
+}
+
+export async function relayBearerMatches(headerValue, secretKey, workerId) {
+  if (!isValidWorkerId(workerId)) return false;
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(
     typeof headerValue === "string" ? headerValue : "",
-    `Bearer ${expectedToken}`,
+  );
+  if (!match) return false;
+
+  const supplied = base64UrlToBytes(match[1]);
+  const key = await relayHmacKey(secretKey, ["verify"]);
+  if (!supplied || !key) return false;
+
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    supplied,
+    new TextEncoder().encode(RELAY_TOKEN_CONTEXT + workerId),
   );
 }
 
