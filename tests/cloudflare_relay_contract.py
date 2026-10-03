@@ -77,6 +77,8 @@ for forbidden in (
 for token in (
     'name = "WORKER_SESSIONS"',
     'class_name = "WorkerSession"',
+    'workers_dev = false',
+    'preview_urls = false',
     '[exports.WorkerSession]',
     'type = "durable-object"',
     'storage = "sqlite"',
