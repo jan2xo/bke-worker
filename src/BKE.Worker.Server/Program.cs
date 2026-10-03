@@ -4,25 +4,40 @@ using System.Threading.Channels;
 using BKE.Worker.ChatGPT.Playwright;
 using BKE.Worker.Core;
 using BKE.Worker.GitHub;
+using BKE.Worker.Server;
 
-var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-{
-    Args = args,
-    WebRootPath = Path.Combine(
-        AppContext.BaseDirectory,
-        "wwwroot")
-});
+var builder = WebApplication.CreateBuilder(
+    new WebApplicationOptions
+    {
+        Args = args,
+        WebRootPath = Path.Combine(
+            AppContext.BaseDirectory,
+            "wwwroot")
+    });
+
 var settings =
     WorkerServerSettings.FromConfiguration(
         builder.Configuration);
+var identity =
+    new WorkerIdentity(
+        settings.WorkerId);
+
+using var isolationLease =
+    settings.IsConfigured
+        ? WorkerIsolationLease.Acquire(
+            settings.ResourceLockDirectory,
+            settings.IsolationResources)
+        : WorkerIsolationLease.Empty;
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(
         new JsonStringEnumConverter()));
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton(identity);
 builder.Services.AddSingleton(
     new GitHubWebhookOptions(
-        settings.GitHubWebhookSecret));
+        settings.GitHubWebhookSecret,
+        identity));
 builder.Services.AddSingleton<GitHubSignatureVerifier>();
 builder.Services.AddSingleton<ProjectNavigator>();
 builder.Services.AddSingleton<ConversationNavigator>();
@@ -37,24 +52,34 @@ builder.Services.AddSingleton<ChromiumHost>();
 builder.Services.AddSingleton<ChatGPTWebDriver>();
 builder.Services.AddSingleton<IChatGPTDriver>(
     services =>
-        services.GetRequiredService<ChatGPTWebDriver>());
+        services.GetRequiredService<
+            ChatGPTWebDriver>());
 builder.Services.AddSingleton<IWorkerStateStore>(
-    _ => new JsonWorkerStateStore(settings.StateFile));
+    _ => new JsonWorkerStateStore(
+        settings.StateFile));
 builder.Services.AddSingleton(
     new WorkerPolicy(
         MinimumDispatchInterval:
             settings.MinimumDispatchInterval));
 builder.Services.AddSingleton<IWorkerLoop>(
     services => new WorkerLoop(
-        services.GetRequiredService<IChatGPTDriver>(),
-        services.GetRequiredService<IWorkerStateStore>(),
-        services.GetRequiredService<WorkerPolicy>()));
+        services.GetRequiredService<
+            IChatGPTDriver>(),
+        services.GetRequiredService<
+            IWorkerStateStore>(),
+        services.GetRequiredService<
+            WorkerPolicy>(),
+        services.GetRequiredService<
+            WorkerIdentity>()));
 builder.Services.AddSingleton<WorkerWakeQueue>();
 builder.Services.AddSingleton<IWorkerWakeSink>(
     services =>
-        services.GetRequiredService<WorkerWakeQueue>());
-builder.Services.AddSingleton<GitHubWebhookEndpoint>();
-builder.Services.AddHostedService<WorkerHostedService>();
+        services.GetRequiredService<
+            WorkerWakeQueue>());
+builder.Services.AddSingleton<
+    GitHubWebhookEndpoint>();
+builder.Services.AddHostedService<
+    WorkerHostedService>();
 
 var app = builder.Build();
 
@@ -68,8 +93,15 @@ app.MapGet(
         status = "ok",
         configured = settings.IsConfigured,
         runtime = "github-native-playwright",
+        workerId = settings.WorkerId,
+        assignmentLabel =
+            identity.IsValid
+                ? identity.AssignmentLabel
+                : null,
         heartbeatSeconds =
-            (int)settings.HeartbeatInterval.TotalSeconds,
+            (int)settings
+                .HeartbeatInterval
+                .TotalSeconds,
     }));
 
 app.MapGet(
@@ -78,6 +110,7 @@ app.MapGet(
     {
         status = "alive",
         runtime = "github-native-playwright",
+        workerId = settings.WorkerId,
     }));
 
 app.MapGet(
@@ -91,9 +124,17 @@ app.MapGet(
                     ? "ready"
                     : "not_ready",
             configured = settings.IsConfigured,
-            runtime = "github-native-playwright",
+            runtime =
+                "github-native-playwright",
+            workerId = settings.WorkerId,
+            assignmentLabel =
+                identity.IsValid
+                    ? identity.AssignmentLabel
+                    : null,
             heartbeatSeconds =
-                (int)settings.HeartbeatInterval.TotalSeconds,
+                (int)settings
+                    .HeartbeatInterval
+                    .TotalSeconds,
         };
 
         return settings.IsConfigured
@@ -111,7 +152,8 @@ app.MapGet(
         IWorkerLoop loop,
         CancellationToken cancellationToken) =>
         Results.Ok(
-            await loop.GetState(cancellationToken)));
+            await loop.GetState(
+                cancellationToken)));
 
 app.MapGet(
     "/control/summary",
@@ -120,12 +162,26 @@ app.MapGet(
         CancellationToken cancellationToken) =>
     {
         var snapshot =
-            await loop.GetState(cancellationToken);
+            await loop.GetState(
+                cancellationToken);
+
         return Results.Ok(new
         {
-            runtime = "github-native-playwright",
+            runtime =
+                "github-native-playwright",
             ready = settings.IsConfigured,
+            workerId = settings.WorkerId,
+            assignmentLabel =
+                identity.IsValid
+                    ? identity.AssignmentLabel
+                    : null,
+            activeAssignment =
+                snapshot.Assignment,
             engineeringAuthority = "github",
+            assignmentAuthority =
+                "github-pr-label",
+            oneWorkerPerPullRequest = true,
+            onePullRequestPerWorker = true,
             oneIntentPerPullRequest = true,
             freshBranchFromCurrentMain = true,
             pullRequestTemplate =
@@ -138,28 +194,40 @@ app.MapGet(
             target = snapshot.Target,
             configuration = new
             {
+                workerIdConfigured =
+                    settings
+                        .WorkerIdConfigured,
                 githubWebhookConfigured =
                     !string.IsNullOrWhiteSpace(
                         settings
                             .GitHubWebhookSecret),
                 chatGptTargetConfigured =
-                    settings.ChatGptTargetConfigured,
+                    settings
+                        .ChatGptTargetConfigured,
                 chatGptTargetMode =
-                    settings.ChatGptTargetMode,
+                    settings
+                        .ChatGptTargetMode,
                 browserCdpConfigured =
-                    settings.BrowserCdpConfigured,
+                    settings
+                        .BrowserCdpConfigured,
+                resourceLockDirectory =
+                    settings
+                        .ResourceLockDirectory,
             },
             browser = new
             {
                 mode =
-                    settings.BrowserCdpConfigured
+                    settings
+                        .BrowserCdpConfigured
                         ? "cdp-attach"
                         : "playwright-launch",
                 liveChatGptRequiresCdp =
-                    settings.LiveChatGptBaseUrl,
+                    settings
+                        .LiveChatGptBaseUrl,
             },
             browserProfileDirectory =
-                settings.ChatGptProfileDirectory,
+                settings
+                    .ChatGptProfileDirectory,
             chatGptBaseUrl =
                 settings.ChatGptBaseUrl,
         });
@@ -168,6 +236,7 @@ app.MapGet(
 app.MapPost(
     "/control/continue",
     async (
+        IWorkerLoop loop,
         IWorkerWakeSink wakeSink,
         CancellationToken cancellationToken) =>
     {
@@ -177,10 +246,24 @@ app.MapPost(
                 title:
                     "BKE Worker is not configured",
                 detail:
-                    "Configure the deterministic ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook secret before manual continuation.",
+                    "Configure worker identity, a deterministic ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook secret before manual continuation.",
                 statusCode:
                     StatusCodes
                         .Status503ServiceUnavailable);
+        }
+
+        var snapshot =
+            await loop.GetState(
+                cancellationToken);
+        if (snapshot.Assignment is null)
+        {
+            return Results.Problem(
+                title:
+                    "No active PR assignment",
+                detail:
+                    $"Assign exactly one open PR with label {identity.AssignmentLabel} before continuing this worker.",
+                statusCode:
+                    StatusCodes.Status409Conflict);
         }
 
         await wakeSink.Enqueue(
@@ -190,13 +273,21 @@ app.MapPost(
                 DateTimeOffset.UtcNow),
             cancellationToken);
 
-        return Results.Accepted(value: new
-        {
-            accepted = true,
-            reason = WorkerWakeReason.Manual,
-            message =
-                "Manual autonomous engineering continuation queued.",
-        });
+        return Results.Accepted(
+            value: new
+            {
+                accepted = true,
+                reason =
+                    WorkerWakeReason.Manual,
+                workerId =
+                    identity.Id,
+                pullRequest =
+                    snapshot
+                        .Assignment
+                        .Number,
+                message =
+                    "Manual autonomous engineering continuation queued.",
+            });
     });
 
 app.MapPost(
@@ -212,7 +303,8 @@ app.MapPost(
                 settings.ChatGptTargetAmbiguous
                     ? "Project + Conversation and Override Link are mutually exclusive."
                     : settings.ChatGptOverridePresent &&
-                      !settings.ChatGptOverrideConfigured
+                      !settings
+                          .ChatGptOverrideConfigured
                         ? "The configured ChatGPT override URL is invalid. Use an HTTPS chatgpt.com conversation URL containing /c/<conversation-id>."
                         : "Project and Conversation must be configured together, or configure an Override Link.";
 
@@ -226,7 +318,8 @@ app.MapPost(
         }
 
         var snapshot =
-            await loop.GetState(cancellationToken);
+            await loop.GetState(
+                cancellationToken);
 
         if (snapshot.State is
             WorkerRuntimeState.DISPATCHING or
@@ -238,24 +331,31 @@ app.MapPost(
                 detail:
                     "Adapter probing is blocked while the worker is dispatching.",
                 statusCode:
-                    StatusCodes.Status409Conflict);
+                    StatusCodes
+                        .Status409Conflict);
         }
 
         var result =
             settings.ChatGptTargetMode switch
             {
                 "override-link" =>
-                    await driver.ProbeOverrideLink(
-                        settings.ChatGptOverrideUrl,
-                        cancellationToken),
+                    await driver
+                        .ProbeOverrideLink(
+                            settings
+                                .ChatGptOverrideUrl,
+                            cancellationToken),
                 "project-chat" =>
-                    await driver.ProbeExactContext(
-                        settings.ChatGptProject,
-                        settings.ChatGptConversation,
-                        cancellationToken),
+                    await driver
+                        .ProbeExactContext(
+                            settings
+                                .ChatGptProject,
+                            settings
+                                .ChatGptConversation,
+                            cancellationToken),
                 _ =>
-                    await driver.ProbeNewChat(
-                        cancellationToken),
+                    await driver
+                        .ProbeNewChat(
+                            cancellationToken),
             };
 
         return result.Compatible
@@ -280,6 +380,7 @@ app.MapPost(
 await app.RunAsync();
 
 public sealed record WorkerServerSettings(
+    string WorkerId,
     string ChatGptProject,
     string ChatGptConversation,
     string ChatGptOverrideUrl,
@@ -288,13 +389,19 @@ public sealed record WorkerServerSettings(
     string ChatGptProfileDirectory,
     string StateFile,
     string BrowserCdpEndpoint,
+    string ResourceLockDirectory,
     bool Headless,
     TimeSpan WebhookDebounce,
     TimeSpan HeartbeatInterval,
     TimeSpan MinimumDispatchInterval)
 {
+    public bool WorkerIdConfigured =>
+        WorkerIdentity.IsValidId(
+            WorkerId);
+
     public bool ChatGptProjectPresent =>
-        !string.IsNullOrWhiteSpace(ChatGptProject);
+        !string.IsNullOrWhiteSpace(
+            ChatGptProject);
 
     public bool ChatGptConversationPresent =>
         !string.IsNullOrWhiteSpace(
@@ -371,10 +478,17 @@ public sealed record WorkerServerSettings(
         BrowserCdpConfigured;
 
     public bool IsConfigured =>
+        WorkerIdConfigured &&
         BrowserRuntimeConfigured &&
         ChatGptTargetConfigured &&
         !string.IsNullOrWhiteSpace(
-            GitHubWebhookSecret);
+            GitHubWebhookSecret) &&
+        !string.IsNullOrWhiteSpace(
+            ChatGptProfileDirectory) &&
+        !string.IsNullOrWhiteSpace(
+            StateFile) &&
+        !string.IsNullOrWhiteSpace(
+            ResourceLockDirectory);
 
     public EngineeringTarget Target =>
         new(
@@ -383,9 +497,55 @@ public sealed record WorkerServerSettings(
             OverrideUrl:
                 ChatGptOverrideUrl);
 
+    public string ChatGptTargetIsolationKey =>
+        string.Join(
+            "|",
+            ChatGptBaseUrl
+                .Trim()
+                .TrimEnd('/'),
+            ChatGptTargetMode,
+            ChatGptOverridePresent
+                ? ChatGptOverrideUrl.Trim()
+                : ChatGptProject +
+                  "\n" +
+                  ChatGptConversation);
+
+    public IEnumerable<
+        KeyValuePair<string, string>>
+        IsolationResources
+    {
+        get
+        {
+            yield return new(
+                "worker-id",
+                WorkerId);
+            yield return new(
+                "chatgpt-target",
+                ChatGptTargetIsolationKey);
+            yield return new(
+                "chatgpt-profile",
+                Path.GetFullPath(
+                    ChatGptProfileDirectory));
+            yield return new(
+                "state-file",
+                Path.GetFullPath(
+                    StateFile));
+
+            if (BrowserCdpConfigured)
+            {
+                yield return new(
+                    "browser-cdp",
+                    BrowserCdpEndpoint.Trim());
+            }
+        }
+    }
+
     public static WorkerServerSettings FromConfiguration(
         IConfiguration configuration) =>
         new(
+            configuration[
+                "BKE_WORKER_ID"] ??
+                string.Empty,
             configuration[
                 "BKE_WORKER_CHATGPT_PROJECT"] ??
                 string.Empty,
@@ -410,6 +570,9 @@ public sealed record WorkerServerSettings(
             configuration[
                 "BKE_WORKER_BROWSER_CDP_ENDPOINT"] ??
                 string.Empty,
+            configuration[
+                "BKE_WORKER_RESOURCE_LOCK_DIRECTORY"] ??
+                "/var/lib/bke-worker/locks",
             ParseBool(
                 configuration[
                     "BKE_WORKER_HEADLESS"],
@@ -430,8 +593,9 @@ public sealed record WorkerServerSettings(
                         "BKE_WORKER_MIN_DISPATCH_SECONDS"],
                     30)));
 
-    private static bool IsValidChatGptConversationOverride(
-        string value)
+    private static bool
+        IsValidChatGptConversationOverride(
+            string value)
     {
         if (!Uri.TryCreate(
                 value,
@@ -503,7 +667,8 @@ public sealed record WorkerServerSettings(
 public sealed class JsonWorkerStateStore(
     string path) : IWorkerStateStore
 {
-    private static readonly JsonSerializerOptions
+    private static readonly
+        JsonSerializerOptions
         SerializerOptions = new()
         {
             WriteIndented = true,
@@ -532,7 +697,8 @@ public sealed class JsonWorkerStateStore(
                     cancellationToken);
             return
                 JsonSerializer
-                    .Deserialize<WorkerSnapshot>(
+                    .Deserialize<
+                        WorkerSnapshot>(
                         json,
                         SerializerOptions) ??
                 WorkerSnapshot.Empty;
@@ -584,9 +750,10 @@ public sealed class JsonWorkerStateStore(
 public sealed class WorkerWakeQueue :
     IWorkerWakeSink
 {
-    private readonly Channel<WorkerWakeEvent>
-        _channel =
-            Channel.CreateUnbounded<WorkerWakeEvent>(
+    private readonly Channel<
+        WorkerWakeEvent> _channel =
+            Channel.CreateUnbounded<
+                WorkerWakeEvent>(
                 new UnboundedChannelOptions
                 {
                     SingleReader = true,
@@ -619,7 +786,7 @@ public sealed class WorkerHostedService(
         if (!settings.IsConfigured)
         {
             logger.LogWarning(
-                "BKE Worker is unconfigured; set deterministic ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook secret.");
+                "BKE Worker is unconfigured; set BKE_WORKER_ID, deterministic ChatGPT target, loopback browser CDP for live chatgpt.com, and GitHub webhook secret.");
             await Task.Delay(
                 Timeout.InfiniteTimeSpan,
                 stoppingToken);
@@ -632,13 +799,16 @@ public sealed class WorkerHostedService(
                 stoppingToken);
 
         logger.LogInformation(
-            "Worker startup result: {State} {Message}",
+            "Worker {WorkerId} startup result: {State} {Message}",
+            settings.WorkerId,
             start.State,
             start.Message);
 
         await Task.WhenAll(
-            ConsumeWakeEvents(stoppingToken),
-            RunHeartbeat(stoppingToken));
+            ConsumeWakeEvents(
+                stoppingToken),
+            RunHeartbeat(
+                stoppingToken));
     }
 
     private async Task ConsumeWakeEvents(
@@ -649,8 +819,10 @@ public sealed class WorkerHostedService(
             wakeQueue.Reader.ReadAllAsync(
                 cancellationToken))
         {
-            if (wakeEvent.Reason ==
-                WorkerWakeReason.GitHubPush)
+            if (wakeEvent.Reason is
+                WorkerWakeReason.GitHubPush or
+                WorkerWakeReason
+                    .GitHubPullRequest)
             {
                 await Task.Delay(
                     settings.WebhookDebounce,
@@ -659,12 +831,12 @@ public sealed class WorkerHostedService(
 
             var result =
                 await loop.Wake(
-                    wakeEvent.Reason,
-                    wakeEvent.DeliveryId,
+                    wakeEvent,
                     cancellationToken);
 
             logger.LogInformation(
-                "Worker wake {Reason}: {State} {Message} promptSent={PromptSent}",
+                "Worker {WorkerId} wake {Reason}: {State} {Message} promptSent={PromptSent}",
+                settings.WorkerId,
                 wakeEvent.Reason,
                 result.State,
                 result.Message,
@@ -694,14 +866,19 @@ public sealed class WorkerHostedService(
                 continue;
             }
 
-            var result =
-                await loop.Wake(
+            var wakeEvent =
+                new WorkerWakeEvent(
                     WorkerWakeReason.Heartbeat,
                     null,
+                    DateTimeOffset.UtcNow);
+            var result =
+                await loop.Wake(
+                    wakeEvent,
                     cancellationToken);
 
             logger.LogInformation(
-                "Heartbeat: {State} {Message} promptSent={PromptSent}",
+                "Worker {WorkerId} heartbeat: {State} {Message} promptSent={PromptSent}",
+                settings.WorkerId,
                 result.State,
                 result.Message,
                 result.PromptSent);
