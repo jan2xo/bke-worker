@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   CONTROL_REPOSITORY,
   MAX_WEBHOOK_BYTES,
-  bearerMatches,
+  relayBearerMatches,
   isValidWorkerId,
   routeGitHubPullRequest,
   validateAck,
@@ -133,9 +133,9 @@ async function handleRelayUpgrade(request, env, workerId) {
   if (!isValidWorkerId(workerId)) {
     return json({ error: "WORKER_ID_INVALID" }, 400);
   }
-  const relayToken = env.BKE_WORKER_RELAY_TOKEN;
+  const relayToken = env.BKE_WORKER_RELAY_TOKEN_KEY;
   if (!relayToken) return json({ error: "RELAY_TOKEN_UNCONFIGURED" }, 503);
-  if (!bearerMatches(request.headers.get("Authorization") || "", relayToken)) {
+  if (!(await relayBearerMatches(request.headers.get("Authorization") || "", relayToken, workerId))) {
     return json({ error: "RELAY_UNAUTHORIZED" }, 401);
   }
   if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
@@ -206,8 +206,8 @@ export class WorkerSession extends DurableObject {
   }
 
   async connect(request, workerId) {
-    const token = this.env.BKE_WORKER_RELAY_TOKEN;
-    if (!token || !bearerMatches(request.headers.get("Authorization") || "", token)) {
+    const token = this.env.BKE_WORKER_RELAY_TOKEN_KEY;
+    if (!token || !(await relayBearerMatches(request.headers.get("Authorization") || "", token, workerId))) {
       return json({ error: "RELAY_UNAUTHORIZED" }, 401);
     }
     if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
