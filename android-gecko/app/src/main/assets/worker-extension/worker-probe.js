@@ -5,9 +5,12 @@
   const PROTOCOL_VERSION = 1;
   const REPORT_DEBOUNCE_MS = 300;
   const PERIODIC_REPORT_MS = 5000;
+  const PORT_RECONNECT_MS = 1000;
 
   let timer = null;
   let lastStableState = "";
+  let nativePort = null;
+  let reconnectTimer = null;
 
   function findComposer() {
     return (
@@ -18,11 +21,171 @@
     );
   }
 
+  function findSendButton() {
+    return (
+      document.querySelector('button[data-testid="send-button"]') ||
+      document.querySelector('[data-testid="send-button"]') ||
+      document.querySelector('button[aria-label*="Send"]')
+    );
+  }
+
   function isTurnBusy() {
     return Boolean(
       document.querySelector('[data-testid="stop-button"]') ||
       document.querySelector('button[aria-label*="Stop"]')
     );
+  }
+
+  function postNative(message) {
+    try {
+      nativePort?.postMessage(message);
+    } catch {
+      schedulePortReconnect();
+    }
+  }
+
+  function schedulePortReconnect() {
+    nativePort = null;
+    if (reconnectTimer !== null) {
+      return;
+    }
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectNativePort();
+    }, PORT_RECONNECT_MS);
+  }
+
+  function connectNativePort() {
+    if (nativePort !== null) {
+      return;
+    }
+
+    try {
+      const port = browser.runtime.connectNative(NATIVE_APP);
+      nativePort = port;
+      port.onMessage.addListener(handleNativeCommand);
+      port.onDisconnect.addListener(() => {
+        if (nativePort === port) {
+          nativePort = null;
+        }
+        schedulePortReconnect();
+      });
+      void report(true);
+    } catch {
+      schedulePortReconnect();
+    }
+  }
+
+  function setComposerValue(composer, prompt) {
+    composer.focus();
+
+    if (composer instanceof HTMLTextAreaElement) {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      );
+      if (!descriptor?.set) {
+        return false;
+      }
+      descriptor.set.call(composer, prompt);
+      composer.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: prompt
+        })
+      );
+      return true;
+    }
+
+    if (composer instanceof HTMLElement && composer.isContentEditable) {
+      composer.replaceChildren(document.createTextNode(prompt));
+      composer.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: prompt
+        })
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  function dispatchPrompt(command) {
+    const allowedKeys = [
+      "type",
+      "protocolVersion",
+      "deliveryId",
+      "prompt"
+    ];
+    const keys = Object.keys(command).sort();
+    if (
+      keys.length !== allowedKeys.length ||
+      keys.some((key, index) => key !== [...allowedKeys].sort()[index]) ||
+      command.type !== "dispatch_prompt" ||
+      command.protocolVersion !== PROTOCOL_VERSION ||
+      typeof command.deliveryId !== "string" ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(command.deliveryId) ||
+      typeof command.prompt !== "string" ||
+      command.prompt.length < 1 ||
+      command.prompt.length > 4096
+    ) {
+      return;
+    }
+
+    if (location.origin !== "https://chatgpt.com" || isTurnBusy()) {
+      postNative({
+        type: "dispatch_result",
+        protocolVersion: PROTOCOL_VERSION,
+        deliveryId: command.deliveryId,
+        accepted: false,
+        error: "CHATGPT_NOT_READY"
+      });
+      return;
+    }
+
+    const composer = findComposer();
+    const sendButton = findSendButton();
+    if (!composer || !sendButton || sendButton.disabled) {
+      postNative({
+        type: "dispatch_result",
+        protocolVersion: PROTOCOL_VERSION,
+        deliveryId: command.deliveryId,
+        accepted: false,
+        error: "COMPOSER_UNAVAILABLE"
+      });
+      return;
+    }
+
+    if (!setComposerValue(composer, command.prompt)) {
+      postNative({
+        type: "dispatch_result",
+        protocolVersion: PROTOCOL_VERSION,
+        deliveryId: command.deliveryId,
+        accepted: false,
+        error: "COMPOSER_WRITE_FAILED"
+      });
+      return;
+    }
+
+    sendButton.click();
+    postNative({
+      type: "dispatch_result",
+      protocolVersion: PROTOCOL_VERSION,
+      deliveryId: command.deliveryId,
+      accepted: true,
+      error: null
+    });
+    setTimeout(() => void report(true), 50);
+  }
+
+  function handleNativeCommand(message) {
+    if (typeof message !== "object" || message === null) {
+      return;
+    }
+    dispatchPrompt(message);
   }
 
   async function report(force = false) {
@@ -45,12 +208,7 @@
       return;
     }
     lastStableState = stableState;
-
-    try {
-      await browser.runtime.sendNativeMessage(NATIVE_APP, payload);
-    } catch (error) {
-      console.debug("[BKE Worker Gecko] status probe skipped", error);
-    }
+    postNative(payload);
   }
 
   function scheduleReport() {
@@ -76,5 +234,5 @@
   document.addEventListener("visibilitychange", () => void report(true));
 
   setInterval(() => void report(), PERIODIC_REPORT_MS);
-  void report(true);
+  connectNativePort();
 })();
