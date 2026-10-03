@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   deriveConnectionState,
+  isValidChatGptPageStatus,
   validateConfig,
   type BridgeConfig,
   type BridgeStatus,
@@ -84,33 +85,11 @@ async function recordChatGptStatus(
     return { ok: false, error: "CHATGPT_SENDER_INVALID" };
   }
 
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    (payload as { protocolVersion?: unknown }).protocolVersion !==
-      PROTOCOL_VERSION
-  ) {
+  if (!isValidChatGptPageStatus(payload)) {
     return { ok: false, error: "CHATGPT_STATUS_INVALID" };
   }
 
-  const candidate = payload as ChatGptPageStatus;
-  if (
-    typeof candidate.observedAt !== "string" ||
-    typeof candidate.url !== "string" ||
-    typeof candidate.visible !== "boolean" ||
-    typeof candidate.composerAvailable !== "boolean" ||
-    typeof candidate.turnBusy !== "boolean"
-  ) {
-    return { ok: false, error: "CHATGPT_STATUS_INVALID" };
-  }
-
-  try {
-    if (new URL(candidate.url).origin !== "https://chatgpt.com") {
-      return { ok: false, error: "CHATGPT_STATUS_URL_INVALID" };
-    }
-  } catch {
-    return { ok: false, error: "CHATGPT_STATUS_URL_INVALID" };
-  }
+  const candidate: ChatGptPageStatus = payload;
 
   await chrome.storage.session.set({
     [STATUS_KEY]: candidate,
