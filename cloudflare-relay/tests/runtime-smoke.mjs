@@ -118,9 +118,11 @@ class RawWebSocket {
         const head = handshake.subarray(0, marker).toString("utf8");
         const rest = handshake.subarray(marker + 4);
         assert.match(head, /^HTTP\/1\.1 101\b/m);
-        assert.match(
-          head.toLowerCase(),
-          new RegExp(`sec-websocket-accept:\\s*${expectedAccept.toLowerCase()}`),
+        assert.ok(
+          head.toLowerCase().includes(
+            `sec-websocket-accept: ${expectedAccept.toLowerCase()}`,
+          ),
+          "WebSocket accept header mismatch",
         );
 
         this.buffer = Buffer.concat([this.buffer, rest]);
