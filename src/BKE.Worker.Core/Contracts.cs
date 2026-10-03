@@ -42,6 +42,57 @@ public sealed record WorkerPolicy(
         MinimumDispatchInterval ?? TimeSpan.FromSeconds(30);
 }
 
+public sealed record WorkerIdentity(string Id)
+{
+    public const string AssignmentLabelPrefix = "bke-worker:";
+
+    public bool IsValid => IsValidId(Id);
+
+    public string AssignmentLabel =>
+        AssignmentLabelPrefix + Id;
+
+    public static bool IsValidId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > 63)
+        {
+            return false;
+        }
+
+        if (!IsLowerAlphaNumeric(value[0]))
+            return false;
+
+        foreach (var character in value)
+        {
+            if (!IsLowerAlphaNumeric(character) &&
+                character != '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsLowerAlphaNumeric(char value) =>
+        value is >= 'a' and <= 'z' ||
+        value is >= '0' and <= '9';
+}
+
+public sealed record PullRequestAssignment(
+    int Number,
+    string HeadRef,
+    string HeadSha)
+{
+    public bool IsValid =>
+        Number > 0 &&
+        !string.IsNullOrWhiteSpace(HeadRef) &&
+        !HeadRef.StartsWith(
+            "refs/",
+            StringComparison.Ordinal) &&
+        !string.IsNullOrWhiteSpace(HeadSha);
+}
+
 public static class WorkerPrompts
 {
     public const string ContinueAutonomousEngineering =
@@ -55,11 +106,29 @@ public static class WorkerPrompts
         "declare its certification graph, and execute it. " +
         "Never reuse an old or merged feature branch for a new intent. " +
         "Do not invent unqueued work. Keep production and security locks in force.";
+
+    public static string ForAssignment(
+        WorkerIdentity worker,
+        PullRequestAssignment assignment,
+        string baseInstruction =
+            ContinueAutonomousEngineering) =>
+        baseInstruction + " " +
+        $"WORKER OWNERSHIP LOCK: worker_id={worker.Id}; assigned PR #{assignment.Number}; " +
+        $"expected assignment label={worker.AssignmentLabel}. " +
+        "Before any engineering action, recover live GitHub and verify the assigned PR is open, " +
+        $"has exactly one {AssignmentLabelPrefixForPrompt()} label and it is {worker.AssignmentLabel}, " +
+        $"and verify worker_id={worker.Id} owns no second open PR. " +
+        "If ownership is missing, duplicated, stale, or ambiguous, stop without changing code, " +
+        "certifying, or merging. Never act on another worker's PR.";
+
+    private static string AssignmentLabelPrefixForPrompt() =>
+        $"'{WorkerIdentity.AssignmentLabelPrefix}<worker_id>'";
 }
 
 public enum WorkerRuntimeState
 {
     IDLE,
+    WAITING_FOR_ASSIGNMENT,
     DISPATCHING,
     WAITING_FOR_ENGINEERING_EVENT,
     CONTINUING,
@@ -70,6 +139,9 @@ public enum WorkerRuntimeState
 public enum WorkerWakeReason
 {
     GitHubPush,
+    GitHubPullRequest,
+    AssignmentRevoked,
+    AssignmentConflict,
     Heartbeat,
     Manual
 }
@@ -115,10 +187,12 @@ public sealed record WorkerSnapshot(
     DateTimeOffset? LastDispatchAt,
     string? LastGitHubDeliveryId,
     DateTimeOffset? LastWakeAt,
-    string? Failure)
+    string? Failure,
+    PullRequestAssignment? Assignment = null)
 {
     public static WorkerSnapshot Empty { get; } = new(
         WorkerRuntimeState.IDLE,
+        null,
         null,
         null,
         null,
@@ -135,7 +209,10 @@ public sealed record WorkerLoopResult(
 public sealed record WorkerWakeEvent(
     WorkerWakeReason Reason,
     string? DeliveryId,
-    DateTimeOffset ReceivedAt);
+    DateTimeOffset ReceivedAt,
+    PullRequestAssignment? Assignment = null,
+    int? PullRequestNumber = null,
+    string? GitHubRef = null);
 
 public interface IChatGPTDriver
 {
@@ -173,8 +250,7 @@ public interface IWorkerLoop
         CancellationToken cancellationToken);
 
     Task<WorkerLoopResult> Wake(
-        WorkerWakeReason reason,
-        string? deliveryId,
+        WorkerWakeEvent wakeEvent,
         CancellationToken cancellationToken);
 
     Task<WorkerSnapshot> GetState(CancellationToken cancellationToken);
