@@ -98,7 +98,7 @@ class MainActivity : Activity() {
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(8))
         }
         header.addView(TextView(this).apply {
             text = "BKE WORKER"
@@ -107,25 +107,13 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = 0.08f
         })
-        header.addView(TextView(this).apply {
-            text = "Android Worker"
-            textSize = 25f
-            setTextColor(COLOR_TEXT_PRIMARY)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(3), 0, dp(3))
-        })
-        header.addView(TextView(this).apply {
-            text = "Relay + ChatGPT runtime"
-            textSize = 13f
-            setTextColor(COLOR_TEXT_SECONDARY)
-        })
         root.addView(header)
 
-        val statusCard = cardContainer()
+        val statusCard = compactCardContainer()
         statusCard.addView(cardEyebrow("LIVE STATUS"))
         status = TextView(this).apply {
-            text = "Browser: DETACHED\nChatGPT: STOPPED\nRelay: DISCONNECTED\nWorker ID: —"
-            textSize = 13f
+            text = "BROWSER: DETACHED\nCHAT: STOPPED\nRELAY: DISCONNECTED\nWORKER ID: —"
+            textSize = 12f
             setTextColor(COLOR_TEXT_SECONDARY)
             typeface = Typeface.MONOSPACE
         }
@@ -133,14 +121,15 @@ class MainActivity : Activity() {
         root.addView(statusCard)
 
         root.addView(TextView(this).apply {
-            text = "Worker Configuration"
-            textSize = 21f
-            setTextColor(COLOR_TEXT_PRIMARY)
+            text = "WORKER CONFIGURATION"
+            textSize = 12f
+            setTextColor(COLOR_ACCENT)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(2), dp(2), 0, dp(8))
+            letterSpacing = 0.08f
+            setPadding(dp(2), 0, 0, dp(6))
         })
 
-        val configCard = cardContainer()
+        val configCard = compactCardContainer()
 
         workerIdInput = EditText(this).apply {
             hint = "Worker ID"
@@ -271,7 +260,7 @@ class MainActivity : Activity() {
             renderWorkerStatus()
         }.onFailure {
             browserAttached = false
-            status.text = "Browser: ATTACH_FAILED\nChatGPT: UNKNOWN\nRelay: UNKNOWN\nWorker ID: —"
+            status.text = "BROWSER: ATTACH_FAILED\nCHAT: UNKNOWN\nRELAY: UNKNOWN\nWORKER ID: —"
         }
     }
 
@@ -296,31 +285,31 @@ class MainActivity : Activity() {
         val snapshot = workerService?.statusSnapshot()
         if (snapshot == null) {
             status.text = buildString {
-                appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
-                appendLine("ChatGPT: STOPPED")
-                appendLine("Relay: DISCONNECTED")
-                append("Worker ID: —")
+                appendLine("BROWSER: " + if (browserAttached) "ATTACHED" else "DETACHED")
+                appendLine("CHAT: STOPPED")
+                appendLine("RELAY: DISCONNECTED")
+                append("WORKER ID: —")
             }
             return
         }
 
         status.text = buildString {
-            appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
-            appendLine("ChatGPT: " + snapshot.chatGptState)
-            appendLine("Relay: " + snapshot.relayState)
-            append("Worker ID: " + snapshot.workerId)
+            appendLine("BROWSER: " + if (browserAttached) "ATTACHED" else "DETACHED")
+            appendLine("CHAT: " + snapshot.chatGptState)
+            appendLine("RELAY: " + snapshot.relayState)
+            append("WORKER ID: " + snapshot.workerId)
         }
     }
 
-    private fun cardContainer(): LinearLayout = LinearLayout(this).apply {
+    private fun compactCardContainer(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(15), dp(13), dp(15), dp(13))
+        setPadding(dp(12), dp(10), dp(12), dp(10))
         background = roundedBackground(COLOR_CARD, COLOR_CARD_STROKE, 16)
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply {
-            bottomMargin = dp(12)
+            bottomMargin = dp(10)
         }
     }
 
@@ -338,7 +327,7 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply {
-            bottomMargin = if (last) dp(10) else dp(8)
+            bottomMargin = if (last) dp(8) else dp(6)
         }
 
     private fun roundedBackground(fillColor: Int, strokeColor: Int, radiusDp: Int): GradientDrawable =
