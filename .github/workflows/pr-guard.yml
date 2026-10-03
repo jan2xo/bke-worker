@@ -37,6 +37,7 @@ jobs:
               'new Set(["core", "server", "chatgpt", "android"])',
               "name: Android Gecko Worker probe",
               "python3 tests/android_gecko_probe_contract.py",
+              "python3 tests/utm_relay_contract.py",
               "gradle -p android-gecko :app:assembleDebug --stacktrace",
               "bke-worker-android-gecko-probe",
               "ANDROID_REQUIRED:",
