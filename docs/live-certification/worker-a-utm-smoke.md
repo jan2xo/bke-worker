@@ -1,6 +1,6 @@
 # Worker A UTM Live Certification
 
-STATUS: PENDING
+STATUS: REAL_CHATGPT_LIVE
 
 Expected worker: `worker-a`
 
