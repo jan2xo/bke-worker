@@ -64,6 +64,89 @@ Worker does **not** maintain another engineering task database. Cached assignmen
 
 Worker stores no GitHub API token. ChatGPT uses its connected GitHub capability to recover repository truth.
 
+## Program direction: pre-execution architecture + Master Command Center
+
+> **Roadmap / not yet implemented runtime behavior.** The current canonical Worker still uses the authority model above. This section records the next autonomous-program direction without claiming those capabilities already exist.
+
+The target is to remove the human owner from the ordinary engineering keepalive loop. The human defines the mission, constraints, and locked production/security boundaries once. A selected **Master ChatGPT** conversation then researches the system, plans the authorized work, delegates independent intents, reviews evidence, and keeps the program moving through GitHub-native PR ledgers.
+
+Before a large program is executed, Master should produce a **Pre-Execution Architecture Package** that covers:
+
+- the desired finished behavior and mission boundary;
+- reusable BKE capabilities and existing repository constraints;
+- current technology research where freshness matters;
+- viable **technology combinations**, not isolated product comparisons;
+- incompatibilities and system-level tradeoffs;
+- one recommended coherent architecture;
+- ownership boundaries for identity, state, licensing, browser execution, deployment, and durable truth;
+- API/data contracts, security model, failure model, deployment model, and scaling model;
+- migration/compatibility strategy;
+- the execution dependency graph;
+- PR decomposition and parallelizable waves;
+- the minimum complete certification graph;
+- merge order, stop conditions, and production/security locks.
+
+The intended operating model is:
+
+```text
+HUMAN OWNER
+defines mission + constraints + locked boundaries
+        |
+        v
+MASTER CHATGPT
+researches combinations + locks coherent architecture
+        |
+        v
+MASTER COMMAND CENTER
+routes selected chat / GitHub / CI / worker events
+        |
+        v
+N CHATGPT ENGINEERING WORKERS
+        |
+        +-- PR A -> worker-a -> isolated Chromium profile / ChatGPT A
+        +-- PR B -> worker-b -> isolated Chromium profile / ChatGPT B
+        +-- PR C -> worker-c -> isolated Chromium profile / ChatGPT C
+        +-- ...
+        |
+        v
+GITHUB PR LEDGERS + CI + EXACT-HEAD PROOF
+        |
+        v
+MASTER reviews / corrects / certifies / merges / unlocks dependents
+```
+
+The Command Center is a routing, observation, and control surface. **It is not a second planner or task database. ChatGPT remains the reasoning brain and GitHub remains durable engineering truth.**
+
+Selected engineering chats may report discoveries and results back to Master. Master must recover live GitHub before acting and classify the new information against the authorized mission:
+
+```text
+same existing intent
+-> update/clarify the current PR context
+-> continue the assigned worker
+
+new independent intent required by the authorized mission
+-> current main
+-> fresh branch
+-> fresh PR
+-> assign an available worker
+
+ambiguous or outside mission
+-> fail closed / surface for review
+```
+
+Removing the human from the keepalive loop does **not** authorize a self-invented backlog. Master may derive work that is necessary to complete the authorized mission, but it must not create unrelated product work.
+
+The long-term target is **N concurrent worker identities**, limited by resource/isolation constraints rather than a fixed worker count. Every worker still preserves:
+
+```text
+one worker instance -> one active PR
+one active PR -> one worker instance
+```
+
+The intended engineering intelligence layer is **normal ChatGPT Chat conversations with connected tools/capabilities**. Codex is not assumed or required as the worker brain. BKE Worker, future MCP capabilities, and future browser-extension infrastructure provide routing, liveness, browser/tool access, and bounded execution surfaces; ChatGPT performs the engineering reasoning.
+
+A successful future program should allow the owner to define and approve a large architecture once, leave ordinary execution to Master + the worker fleet, and later audit whether the GitHub execution was deliberate, bounded, certified, and correct instead of manually sending continuation messages every few minutes.
+
 ## Worker identity and PR delegation
 
 Each runtime requires a stable `BKE_WORKER_ID` matching:
