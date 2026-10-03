@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.ViewGroup
 import android.widget.Button
@@ -27,6 +29,17 @@ class MainActivity : Activity() {
 
     private var workerService: AndroidGeckoWorkerService? = null
     private var bound = false
+    private var browserAttached = false
+
+    private val statusHandler = Handler(Looper.getMainLooper())
+    private val statusPoll = object : Runnable {
+        override fun run() {
+            renderWorkerStatus()
+            if (bound) {
+                statusHandler.postDelayed(this, 500)
+            }
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -34,14 +47,15 @@ class MainActivity : Activity() {
             workerService = local.service()
             bound = true
             attachSession()
-            status.text = "Worker: CONNECTED — browser session attached"
+            startStatusUpdates()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            stopStatusUpdates()
             detachSession()
             workerService = null
             bound = false
-            status.text = "Worker: DISCONNECTED"
+            renderWorkerStatus()
         }
     }
 
@@ -54,7 +68,7 @@ class MainActivity : Activity() {
         }
 
         status = TextView(this).apply {
-            text = "Worker: STOPPED"
+            text = "Browser: DETACHED\nChatGPT: STOPPED\nRelay: DISCONNECTED\nWorker ID: —"
             textSize = 16f
         }
         root.addView(status)
@@ -101,7 +115,7 @@ class MainActivity : Activity() {
                 detachSession()
                 unbindWorker()
                 AndroidGeckoWorkerService.stop(this@MainActivity)
-                status.text = "Worker: STOPPED"
+                renderWorkerStatus()
             }
         }
         root.addView(stop)
@@ -132,6 +146,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        stopStatusUpdates()
         detachSession()
         unbindWorker()
         super.onStop()
@@ -140,6 +155,7 @@ class MainActivity : Activity() {
     private fun bindWorker() {
         if (bound) {
             attachSession()
+            startStatusUpdates()
             return
         }
 
@@ -161,14 +177,49 @@ class MainActivity : Activity() {
         val session = workerService?.session() ?: return
         runCatching {
             geckoView.setSession(session)
+        }.onSuccess {
+            browserAttached = true
+            renderWorkerStatus()
         }.onFailure {
-            status.text = "Worker: SESSION_ATTACH_FAILED"
+            browserAttached = false
+            status.text = "Browser: ATTACH_FAILED\nChatGPT: UNKNOWN\nRelay: UNKNOWN\nWorker ID: —"
         }
     }
 
     private fun detachSession() {
         runCatching {
             geckoView.releaseSession()
+        }
+        browserAttached = false
+    }
+
+    private fun startStatusUpdates() {
+        statusHandler.removeCallbacks(statusPoll)
+        renderWorkerStatus()
+        statusHandler.postDelayed(statusPoll, 500)
+    }
+
+    private fun stopStatusUpdates() {
+        statusHandler.removeCallbacks(statusPoll)
+    }
+
+    private fun renderWorkerStatus() {
+        val snapshot = workerService?.statusSnapshot()
+        if (snapshot == null) {
+            status.text = buildString {
+                appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
+                appendLine("ChatGPT: STOPPED")
+                appendLine("Relay: DISCONNECTED")
+                append("Worker ID: —")
+            }
+            return
+        }
+
+        status.text = buildString {
+            appendLine("Browser: " + if (browserAttached) "ATTACHED" else "DETACHED")
+            appendLine("ChatGPT: " + snapshot.chatGptState)
+            appendLine("Relay: " + snapshot.relayState)
+            append("Worker ID: " + snapshot.workerId)
         }
     }
 
