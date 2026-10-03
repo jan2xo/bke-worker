@@ -70,3 +70,14 @@ Then configure the Android relay URL as:
 `wss://<preproduction-worker-host>/relay/android-worker-a`
 
 Production deployment, DNS cutover, and GitHub webhook mutation remain locked until explicitly authorized.
+
+## GitHub webhook mutation guard
+
+The repository webhook configurator is deliberately non-mutating by default:
+
+```bash
+BKE_WORKER_CLOUDFLARE_WEBHOOK_URL="https://<preproduction-worker-host>/webhooks/github" \
+  bash scripts/configure-github-webhook.sh
+```
+
+That prints the intended configuration only. After relay certification and explicit owner authorization, add `--apply` and provide `BKE_WORKER_GITHUB_WEBHOOK_SECRET`. The script creates or updates only the exact pull-request webhook and sends the secret to `gh api` through stdin rather than printing it or placing it directly in command arguments.
