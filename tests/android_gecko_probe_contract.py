@@ -12,6 +12,9 @@ manifest = (base / "AndroidManifest.xml").read_text(encoding="utf-8")
 ext_manifest = (base / "assets/worker-extension/manifest.json").read_text(encoding="utf-8")
 probe = (base / "assets/worker-extension/worker-probe.js").read_text(encoding="utf-8")
 build = (root / "android-gecko/app/build.gradle.kts").read_text(encoding="utf-8")
+styles = (base / "res/values/styles.xml").read_text(encoding="utf-8")
+button_surface = (base / "res/drawable/bke_worker_button.xml").read_text(encoding="utf-8")
+input_surface = (base / "res/drawable/bke_worker_input.xml").read_text(encoding="utf-8")
 
 for token in (
     "class AndroidGeckoWorkerService : Service()",
@@ -44,7 +47,7 @@ for token in (
     "AndroidGeckoWorkerService.ensureRunning(",
     "relayUrlInput",
     "relayTokenInput",
-    "Runtime relay token (not persisted)",
+    "Runtime relay token",
     "Browser: ",
     "ChatGPT: ",
     "Relay: ",
@@ -52,15 +55,28 @@ for token in (
     "statusSnapshot()",
     "startStatusUpdates()",
     "renderWorkerStatus()",
-    "BKE Worker",
-    "WORKER CONFIGURATION",
-    "EXECUTION TARGET",
-    "CHATGPT",
-    "setPadding(32, 48, 32, 64)",
-    "textSize = 24f",
-    "textSize = 18f",
+    "BKE WORKER",
+    "Android Worker",
+    "Relay + ChatGPT runtime",
+    "LIVE STATUS",
+    "Worker Configuration",
+    'text = "Start / Apply"',
+    'text = "Stop"',
+    "setBackgroundColor(COLOR_BACKGROUND)",
+    "cardContainer()",
+    "cardEyebrow(",
+    "WindowInsets.Type.statusBars()",
+    "Color.rgb(17, 20, 23)",
+    "Color.rgb(121, 216, 196)",
 ):
     assert token in activity, token
+
+for forbidden in (
+    "ChatGPT authentication is manual.",
+    "EXECUTION TARGET",
+    'text = "CHATGPT"',
+):
+    assert forbidden not in activity, forbidden
 
 for token in (
     'android:name=".AndroidGeckoWorkerService"',
@@ -68,8 +84,35 @@ for token in (
     'android:foregroundServiceType="specialUse"',
     'android:stopWithTask="false"',
     "android.permission.POST_NOTIFICATIONS",
+    'android:label="BKE Worker"',
+    'android:theme="@style/BkeWorkerTheme"',
 ):
     assert token in manifest, token
+
+for token in (
+    'name="BkeWorkerTheme"',
+    "#111417",
+    "#79D8C4",
+    "#0B0D0F",
+    'name="android:buttonStyle">@style/BkeWorkerButton',
+    'name="android:editTextStyle">@style/BkeWorkerInput',
+    'name="android:textAllCaps">false',
+):
+    assert token in styles, token
+
+for token in (
+    '#20262B',
+    '#38434C',
+    'android:radius="10dp"',
+):
+    assert token in button_surface, token
+
+for token in (
+    '#171C20',
+    '#79D8C4',
+    'android:radius="12dp"',
+):
+    assert token in input_surface, token
 
 for token in (
     '"manifest_version": 2',

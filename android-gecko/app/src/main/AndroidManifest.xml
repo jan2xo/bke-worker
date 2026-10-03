@@ -7,10 +7,10 @@
 
     <application
         android:allowBackup="false"
-        android:label="BKE Worker Gecko"
+        android:label="BKE Worker"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/BkeWorkerTheme">
 
         <service
             android:name=".AndroidGeckoWorkerService"
