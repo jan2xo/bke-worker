@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import net from "node:net";
+import { deriveRelayToken } from "../src/protocol.js";
 
 const baseUrl = process.env.BKE_RELAY_SMOKE_URL || "http://127.0.0.1:8790";
-const relayToken = process.env.BKE_WORKER_RELAY_TOKEN || "";
+const relayTokenKey = process.env.BKE_WORKER_RELAY_TOKEN_KEY || "";
 const webhookSecret = process.env.BKE_WORKER_GITHUB_WEBHOOK_SECRET || "";
 
-assert.ok(relayToken, "BKE_WORKER_RELAY_TOKEN required");
+assert.ok(relayTokenKey, "BKE_WORKER_RELAY_TOKEN_KEY required");
 assert.ok(webhookSecret, "BKE_WORKER_GITHUB_WEBHOOK_SECRET required");
 
 const url = new URL(baseUrl);
 const host = url.hostname;
 const port = Number(url.port || 80);
 const workerId = "android-worker-a";
+const relayToken = await deriveRelayToken(relayTokenKey, workerId);
 
 function encodeClientText(text) {
   const payload = Buffer.from(text, "utf8");
