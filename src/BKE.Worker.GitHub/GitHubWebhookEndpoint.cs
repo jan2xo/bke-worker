@@ -351,6 +351,42 @@ public sealed class GitHubWebhookEndpoint(
                 });
         }
 
+        var establishesAssignment =
+            string.Equals(
+                action,
+                "opened",
+                StringComparison.Ordinal) ||
+            string.Equals(
+                action,
+                "reopened",
+                StringComparison.Ordinal) ||
+            (string.Equals(
+                 action,
+                 "labeled",
+                 StringComparison.Ordinal) &&
+             root.TryGetProperty(
+                 "label",
+                 out var addedLabel) &&
+             string.Equals(
+                 ReadString(
+                     addedLabel,
+                     "name"),
+                 options.Worker.AssignmentLabel,
+                 StringComparison.OrdinalIgnoreCase));
+
+        if (!establishesAssignment)
+        {
+            return Results.Accepted(
+                value: new
+                {
+                    accepted = false,
+                    delivery = deliveryId,
+                    reason =
+                        "PULL_REQUEST_EVENT_NOT_ROUTING_TRIGGER",
+                    pullRequest = number,
+                });
+        }
+
         if (!pullRequest.TryGetProperty(
                 "head",
                 out var head) ||
