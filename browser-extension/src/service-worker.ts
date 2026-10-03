@@ -20,6 +20,17 @@ const DEFAULT_CONFIG: BridgeConfig = {
   controllerUrl: "",
 };
 
+async function hardenStorageAccess(): Promise<void> {
+  await Promise.all([
+    chrome.storage.local.setAccessLevel({
+      accessLevel: "TRUSTED_CONTEXTS",
+    }),
+    chrome.storage.session.setAccessLevel({
+      accessLevel: "TRUSTED_CONTEXTS",
+    }),
+  ]);
+}
+
 async function getConfig(): Promise<BridgeConfig> {
   const stored = await chrome.storage.local.get(CONFIG_KEY);
   const value = stored[CONFIG_KEY];
@@ -138,7 +149,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void probeChatGptTabs();
+  void hardenStorageAccess().then(() => probeChatGptTabs());
 });
 
 chrome.runtime.onMessage.addListener(
