@@ -153,11 +153,13 @@ Do not let multiple workers race on one PR or one ChatGPT conversation.
 
 - **GitHub** = canonical source, task delegation, PR ledger, CI, merge, release/provenance truth.
 - **This file on current `main`** = canonical BKE Worker operating and architecture contract.
-- **ChatGPT engineering conversation** = engineering executor that reads this file from GitHub and then recovers live GitHub state.
-- **BKE Worker instance** = liveness, wake delivery, routing, webhook dedupe, browser safety, recovery heartbeat, and assigned-PR continuity.
-- **Human operator** = mission/task authorization, ChatGPT authentication/OAuth/MFA/CAPTCHA, production/security authorization, and ambiguous-state recovery.
+- **ChatGPT engineering conversation / authorized Master** = engineering executor that reads this file from GitHub, recovers live GitHub state, and may decompose an already-authorized mission into necessary GitHub-durable dependency intents.
+- **BKE Worker instance** = liveness, wake delivery, routing, webhook dedupe, browser safety, recovery heartbeat, and assigned-PR continuity. Worker runtime is not a planner.
+- **Human operator** = mission authorization, ChatGPT authentication/OAuth/MFA/CAPTCHA, production/security authorization, explicitly owner-only decisions, and ambiguous-state recovery.
 
-Worker is orchestration/liveness, not a second planner. It must not invent unqueued engineering work.
+The engineering executor may create a fresh dependency PR only when that dependency is demonstrably necessary to complete the already-authorized mission. It must make the dependency durable in GitHub before execution. Unrelated improvements, nice-to-haves, speculative backlog items, and opportunistic refactors are not executable authority.
+
+Worker runtime remains orchestration/liveness, not a second planner or task database.
 
 ## 7. CHATGPT / BROWSER BOUNDARY
 
@@ -181,15 +183,31 @@ If there is already an active delegated PR for the worker, continue that PR rath
 
 If no active PR exists and the user or authorized Master explicitly authorizes a new intent, start from current main on a fresh branch and create a new PR using `.github/pull_request_template.md`.
 
-## 9. EXECUTION IS INTENT-DRIVEN
+## 9. AUTONOMOUS GATEKEEPER AND INTENT-DRIVEN EXECUTION
 
 A substantial turn should complete one coherent certification intent whenever possible.
 
 Continue through implementation, narrow debugging, exact-head certification, merge, and main verification when execution is already authorized and required certification is available.
 
-Do not stop because of arbitrary elapsed time. Stop before beginning a materially different independent intent.
+A wake message is routing context only. Before engineering action, recover this current-main contract and live GitHub truth. Cloudflare, VPS, WebSocket, Android, Chromium, or other wake transports must not become task authority or a parallel planning database.
 
-Do not invent unqueued work.
+Within an already-authorized mission, use this durable decision rule:
+
+1. if the assigned PR is runnable, continue it;
+2. if it has an ordinary implementation/test failure, diagnose, fix, rerun, and continue;
+3. if a discovered need is same-intent remediation, keep it in the current PR;
+4. if a discovered need is a necessary independent dependency, checkpoint the parent as blocked by that dependency, release the parent's active worker assignment, create one fresh dependency PR from current main, make the dependency durable in GitHub, then execute/certify/merge it under the normal one-intent/one-PR rule;
+5. after the dependency merges, re-evaluate and resume the parent when it is runnable;
+6. if the current lane requires an owner-only action, checkpoint it as owner-blocked, release the active assignment, and continue another authorized runnable intent if one exists;
+7. if nothing authorized is runnable, wait for the owner or a new authorized GitHub event.
+
+An owner-blocked lane must not freeze unrelated authorized runnable work.
+
+A necessary spawned dependency is not "invented work" when it is required by the authorized mission and is first made explicit/durable in GitHub. Nice-to-haves, speculative improvements, unrelated work, and opportunistic backlog creation remain forbidden.
+
+Do not let one worker actively own both a blocked parent PR and its dependency PR simultaneously.
+
+Detailed rules and failure semantics are documented in `docs/autonomous-gatekeeper.md`.
 
 ## 10. CI IS INTENTIONAL
 
@@ -249,9 +267,13 @@ The program direction is autonomous multi-worker engineering with a Master Comma
 
 The human defines the mission and locked production/security boundaries. Pre-execution architecture should research and select one coherent technology combination, record dependencies, decompose independent intents, and define their certification graph before broad parallel execution.
 
-The Master may route explicitly authorized work, but GitHub remains durable truth. Worker instances remain liveness/routing components and do not maintain a parallel planning database.
+The Master may route explicitly authorized work and may create necessary dependency intents inside the authorized mission envelope, but each independent dependency must first become durable GitHub work and then follow the normal fresh-PR/certification rules.
 
-The active work queue and next executable intent are determined from live GitHub state, not hard-coded into this instruction file.
+A blocked owner-only lane does not block the whole mission. The Master may continue other authorized runnable intents while preserving the blocked lane and its exact evidence.
+
+Worker instances remain liveness/routing components and do not maintain a parallel planning database.
+
+The active work queue, dependency relationships, blocked-owner state, and next executable intent are determined from live GitHub state, not hard-coded into this instruction file or stored as canonical state in Notion/Cloudflare/VPS.
 
 ## 15. CANONICAL MAXIMS
 
@@ -262,3 +284,7 @@ The active work queue and next executable intent are determined from live GitHub
 `One intent -> one fresh PR -> minimum complete certification -> exact-head proof -> SHA-locked merge.`
 
 `Canonical rules come from current main. Assigned work comes from the exact PR head.`
+
+`Necessary dependency -> make it durable in GitHub -> fresh PR -> certify -> merge -> resume parent.`
+
+`Blocked lane != blocked mission. Continue other authorized runnable work; wait only when nothing authorized is runnable.`
