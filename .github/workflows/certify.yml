@@ -354,6 +354,9 @@ jobs:
       - name: Verify Android Gecko probe contract
         run: python3 tests/android_gecko_probe_contract.py
 
+      - name: Verify UTM WSS relay smoke contract
+        run: python3 tests/utm_relay_contract.py
+
       - name: Build Android Gecko debug APK
         run: gradle -p android-gecko :app:assembleDebug --stacktrace
 
