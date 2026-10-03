@@ -61,6 +61,8 @@ The foundation requests only:
 - `storage`;
 - host access to `https://chatgpt.com/*`.
 
+The service worker immediately restricts both `chrome.storage.local` and `chrome.storage.session` to `TRUSTED_CONTEXTS`, so content scripts cannot read bridge configuration or transient stored status directly.
+
 It intentionally does not request:
 
 - `<all_urls>`;
