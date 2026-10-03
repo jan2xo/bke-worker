@@ -143,8 +143,8 @@ PY
 test "$(prompt_count "$FIXTURE_A")" = "0"
 test "$(prompt_count "$FIXTURE_B")" = "0"
 
-pr_a='{"action":"labeled","number":101,"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}'
-pr_b='{"action":"labeled","number":202,"pull_request":{"number":202,"state":"open","head":{"ref":"feat/pr-b","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"labels":[{"name":"bke-worker:worker-b"}]}}'
+pr_a='{"action":"labeled","number":101,"label":{"name":"bke-worker:worker-a"},"pull_request":{"number":101,"state":"open","head":{"ref":"feat/pr-a","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"labels":[{"name":"bke-worker:worker-a"}]}}'
+pr_b='{"action":"labeled","number":202,"label":{"name":"bke-worker:worker-b"},"pull_request":{"number":202,"state":"open","head":{"ref":"feat/pr-b","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"labels":[{"name":"bke-worker:worker-b"}]}}'
 
 echo "MULTI-WORKER: PR A routes only to worker A"
 test "$(send_webhook "$WORKER_A" pull_request a-assign "$pr_a" "$ROOT/a-assign-a.json")" = "202"
@@ -219,7 +219,7 @@ wait "$WORKER_C_PID" 2>/dev/null || true
 grep -q 'WORKER_RESOURCE_IN_USE:chatgpt-target' "$ROOT/worker-c.log"
 
 echo "MULTI-WORKER: duplicate active PR ownership blocks worker A"
-pr_a_second='{"action":"labeled","number":303,"pull_request":{"number":303,"state":"open","head":{"ref":"feat/pr-c","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"labels":[{"name":"bke-worker:worker-a"}]}}'
+pr_a_second='{"action":"labeled","number":303,"label":{"name":"bke-worker:worker-a"},"pull_request":{"number":303,"state":"open","head":{"ref":"feat/pr-c","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"labels":[{"name":"bke-worker:worker-a"}]}}'
 test "$(send_webhook "$WORKER_A" pull_request a-second "$pr_a_second" "$ROOT/a-second.json")" = "202"
 for attempt in $(seq 1 30); do
   state="$(curl --fail --silent "$WORKER_A/control/state")"
@@ -237,7 +237,7 @@ done
 test "$(prompt_count "$FIXTURE_A")" = "2"
 
 echo "MULTI-WORKER: ambiguous PR labels block every claimed worker"
-ambiguous='{"action":"labeled","number":404,"pull_request":{"number":404,"state":"open","head":{"ref":"feat/pr-d","sha":"ffffffffffffffffffffffffffffffffffffffff"},"labels":[{"name":"bke-worker:worker-a"},{"name":"bke-worker:worker-b"}]}}'
+ambiguous='{"action":"labeled","number":404,"label":{"name":"bke-worker:worker-b"},"pull_request":{"number":404,"state":"open","head":{"ref":"feat/pr-d","sha":"ffffffffffffffffffffffffffffffffffffffff"},"labels":[{"name":"bke-worker:worker-a"},{"name":"bke-worker:worker-b"}]}}'
 test "$(send_webhook "$WORKER_A" pull_request ambiguous-a "$ambiguous" "$ROOT/ambiguous-a.json")" = "409"
 test "$(send_webhook "$WORKER_B" pull_request ambiguous-b "$ambiguous" "$ROOT/ambiguous-b.json")" = "409"
 for worker in "$WORKER_A" "$WORKER_B"; do
