@@ -239,4 +239,7 @@ test "$(prompt_count)" = "3"
 code="$(curl --silent --output "$ROOT/manual-no-assignment.json" --write-out '%{http_code}' -X POST "$WORKER/control/continue")"
 test "$code" = "409"
 
+echo "GITHUB-NATIVE: multi-worker routing and isolation"
+bash tests/integration/multi_worker_server.sh
+
 echo "GITHUB-NATIVE SERVER HARNESS: GREEN"
