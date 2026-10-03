@@ -14,3 +14,6 @@ worker-state/
 # Browser extension build/dependency output.
 browser-extension/dist/
 browser-extension/node_modules/
+
+# UTM WSS smoke relay development TLS/private material.
+.bke-worker-utm-relay/

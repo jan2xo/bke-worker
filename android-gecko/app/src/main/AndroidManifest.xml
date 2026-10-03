@@ -8,6 +8,7 @@
     <application
         android:allowBackup="false"
         android:label="BKE Worker Gecko"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
