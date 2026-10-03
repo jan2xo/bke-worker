@@ -55,6 +55,36 @@ jobs:
                   + ", ".join(automatic)
               )
 
+          canonical = (
+              root / "BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md"
+          ).read_text(encoding="utf-8")
+          for token in [
+              "AUTONOMOUS GATEKEEPER AND INTENT-DRIVEN EXECUTION",
+              "necessary independent dependency",
+              "owner-blocked",
+              "Blocked lane != blocked mission",
+              "docs/autonomous-gatekeeper.md",
+          ]:
+              if token not in canonical:
+                  raise SystemExit(
+                      "Autonomous gatekeeper contract lost required rule: " + token
+                  )
+
+          gatekeeper = (
+              root / "docs/autonomous-gatekeeper.md"
+          ).read_text(encoding="utf-8")
+          for token in [
+              "Durable IF / ELSE decision engine",
+              "Necessary independent dependency",
+              "Invented or speculative work",
+              "Owner-blocked lane behavior",
+              "Notion mirror policy",
+          ]:
+              if token not in gatekeeper:
+                  raise SystemExit(
+                      "Autonomous gatekeeper documentation lost: " + token
+                  )
+
           template = (
               root / ".github/pull_request_template.md"
           ).read_text(encoding="utf-8")
