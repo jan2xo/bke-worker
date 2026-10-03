@@ -146,6 +146,7 @@ jobs:
               Path("scripts/run-worker.sh"),
               Path("README.md"),
               Path("docs/autonomous-engineering.md"),
+              Path("docs/multi-worker-pr-delegation.md"),
               Path("BKE.Worker.sln"),
           ]
 
@@ -180,6 +181,8 @@ jobs:
               "NEW PR",
               ".github/pull_request_template.md",
               "Do not invent unqueued work",
+              "WORKER OWNERSHIP LOCK",
+              "bke-worker:",
           ]:
               if token not in prompt:
                   raise SystemExit(f"Locked autonomous prompt lost: {token}")
@@ -282,6 +285,9 @@ jobs:
       - name: GitHub-native published-runtime harness
         run: bash tests/integration/github_native_server.sh
 
+      - name: Multi-worker routing and isolation harness
+        run: bash tests/integration/multi_worker_server.sh
+
       - name: GitHub-native operator UI harness
         run: bash tests/integration/github_native_ui.sh
 
@@ -294,7 +300,11 @@ jobs:
           grep -q 'Restart=on-failure' deploy/systemd/bke-worker.service
           grep -q 'StateDirectoryMode=0700' deploy/systemd/bke-worker.service
           grep -q 'UMask=0077' deploy/systemd/bke-worker.service
+          grep -q 'EnvironmentFile=/etc/bke-worker/%i.env' deploy/systemd/bke-worker@.service
+          grep -q 'StateDirectoryMode=0700' deploy/systemd/bke-worker@.service
+          grep -q 'UMask=0077' deploy/systemd/bke-worker@.service
           systemd-analyze verify deploy/systemd/bke-worker.service
+          systemd-analyze verify deploy/systemd/bke-worker@.service
 
       - name: Upload certified server
         uses: actions/upload-artifact@v4
