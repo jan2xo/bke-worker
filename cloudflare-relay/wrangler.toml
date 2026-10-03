@@ -15,7 +15,7 @@ class_name = "WorkerSession"
 [secrets]
 required = [
   "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
-  "BKE_WORKER_RELAY_TOKEN",
+  "BKE_WORKER_RELAY_TOKEN_KEY",
 ]
 
 [env.preproduction]
@@ -30,5 +30,5 @@ class_name = "WorkerSession"
 [env.preproduction.secrets]
 required = [
   "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
-  "BKE_WORKER_RELAY_TOKEN",
+  "BKE_WORKER_RELAY_TOKEN_KEY",
 ]
