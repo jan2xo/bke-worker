@@ -411,7 +411,7 @@ jobs:
         shell: bash
         env:
           BKE_WORKER_GITHUB_WEBHOOK_SECRET: relay-ci-webhook-secret
-          BKE_WORKER_RELAY_TOKEN: relay-ci-session-token
+          BKE_WORKER_RELAY_TOKEN_KEY: relay-ci-master-key-0123456789abcdef
           BKE_RELAY_SMOKE_URL: http://127.0.0.1:8790
         run: |
           set -euo pipefail
