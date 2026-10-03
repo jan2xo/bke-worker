@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BKE Worker Browser Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>BKE Worker</h1>
+      <p class="subtitle">Browser Bridge Foundation</p>
+
+      <label>
+        Worker ID
+        <input id="worker-id" autocomplete="off" placeholder="worker-a" />
+      </label>
+
+      <label>
+        Controller URL
+        <input
+          id="controller-url"
+          autocomplete="off"
+          placeholder="wss://controller.example/bridge"
+        />
+      </label>
+
+      <div class="buttons">
+        <button id="save" type="button">Save</button>
+        <button id="probe" type="button">Probe</button>
+      </div>
+
+      <p id="feedback" class="feedback"></p>
+      <section id="status" aria-live="polite"></section>
+
+      <p class="boundary">
+        No passwords, cookies, OAuth tokens, MFA data, or ChatGPT message
+        contents are collected by this foundation.
+      </p>
+    </main>
+    <script type="module" src="dist/popup.js"></script>
+  </body>
+</html>

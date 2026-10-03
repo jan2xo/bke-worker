@@ -161,6 +161,22 @@ The intended engineering intelligence layer is **normal ChatGPT Chat conversatio
 
 A successful future program should allow the owner to define and approve a large architecture once, leave ordinary execution to Master + the worker fleet, and later audit whether the GitHub execution was deliberate, bounded, certified, and correct instead of manually sending continuation messages every few minutes.
 
+## Chromium extension bridge foundation
+
+The repository now contains a browser-native foundation under `browser-extension/`.
+
+This is **not yet the canonical live browser adapter**. The current runtime remains .NET + persistent Chromium + loopback Playwright/CDP until the extension path is locally certified.
+
+The foundation uses Manifest V3 + TypeScript and is intentionally probe-only:
+
+- host access is limited to `https://chatgpt.com/*`;
+- it reports ChatGPT tab/composer/busy state without reading message contents;
+- worker ID and future controller URL are stored as non-secret per-profile configuration;
+- extension storage is restricted to trusted extension contexts;
+- there is no remote transport, prompt dispatch, cookie access, auth automation, or public CDP exposure.
+
+The planned next bridge wave is authenticated outbound control-plane transport plus bounded, idempotent dispatch. See `docs/browser-extension-bridge.md`.
+
 ## Worker identity and PR delegation
 
 Each runtime requires a stable `BKE_WORKER_ID` matching:
