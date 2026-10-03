@@ -145,6 +145,7 @@ jobs:
               Path("scripts/bke-worker.env.example"),
               Path("scripts/run-worker.sh"),
               Path("README.md"),
+              Path("BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md"),
               Path("docs/autonomous-engineering.md"),
               Path("docs/multi-worker-pr-delegation.md"),
               Path("BKE.Worker.sln"),
@@ -176,12 +177,15 @@ jobs:
           prompt = Path("src/BKE.Worker.Core/Contracts.cs").read_text(encoding="utf-8")
           for token in [
               "ContinueAutonomousEngineering",
+              "BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md",
+              "current main of jan2xo/bke-worker",
               "live GitHub state",
               "fresh branch from current main",
               "NEW PR",
               ".github/pull_request_template.md",
               "Do not invent unqueued work",
               "WORKER OWNERSHIP LOCK",
+              "expected head SHA=",
               "bke-worker:",
           ]:
               if token not in prompt:

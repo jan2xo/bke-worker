@@ -61,7 +61,9 @@ Webhook delivery IDs are retained in a bounded durable recent-delivery window. R
 
 ## ChatGPT execution boundary
 
-Each worker dispatch prompt identifies its `worker_id` and assigned PR number and requires ChatGPT to recover live GitHub before acting.
+Each worker dispatch prompt identifies its `worker_id`, assigned PR number, expected head ref, and expected head SHA. Before acting, ChatGPT must recover `BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md` from the current `main` branch of `jan2xo/bke-worker`, then recover live GitHub state.
+
+The worker ChatGPT account does not need to share the owner's ChatGPT Project, memory, or prior chats. Those surfaces are never execution authority.
 
 Before implementation or merge work ChatGPT must verify:
 
