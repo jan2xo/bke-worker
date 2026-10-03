@@ -173,12 +173,6 @@ export default {
 };
 
 export class WorkerSession extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    this.state = ctx;
-    this.env = env;
-  }
-
   async fetch(request) {
     const workerId = request.headers.get("x-bke-worker-id") || "";
     if (!isValidWorkerId(workerId)) {
@@ -199,9 +193,9 @@ export class WorkerSession extends DurableObject {
   }
 
   async ensureIdentity(workerId) {
-    const existing = await this.state.storage.get(WORKER_ID_KEY);
+    const existing = await this.ctx.storage.get(WORKER_ID_KEY);
     if (existing === undefined) {
-      await this.state.storage.put(WORKER_ID_KEY, workerId);
+      await this.ctx.storage.put(WORKER_ID_KEY, workerId);
       return true;
     }
     return existing === workerId;
@@ -221,7 +215,7 @@ export class WorkerSession extends DurableObject {
     const server = pair[1];
 
     const connectionId = crypto.randomUUID();
-    this.state.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server);
     server.serializeAttachment({
       workerId,
       connectionId,
@@ -246,7 +240,7 @@ export class WorkerSession extends DurableObject {
       return json({ state: "duplicate", delivery_id: wake.delivery_id }, 200);
     }
 
-    const active = await this.state.storage.get(ACTIVE_WAKE_KEY);
+    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (active && active.wake.pr_number !== wake.pr_number) {
       return json(
         {
@@ -261,7 +255,7 @@ export class WorkerSession extends DurableObject {
     await this.rememberDelivery(recent, wake.delivery_id);
 
     if (!active) {
-      await this.state.storage.put(ACTIVE_WAKE_KEY, {
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
         wake,
         phase: "queued",
       });
@@ -272,7 +266,7 @@ export class WorkerSession extends DurableObject {
       }, 202);
     }
 
-    await this.state.storage.put(QUEUED_WAKE_KEY, wake);
+    await this.ctx.storage.put(QUEUED_WAKE_KEY, wake);
     return json({
       state: "queued_behind_active",
       delivery_id: wake.delivery_id,
@@ -281,7 +275,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async recentDeliveries() {
-    return (await this.state.storage.get(RECENT_DELIVERIES_KEY)) || [];
+    return (await this.ctx.storage.get(RECENT_DELIVERIES_KEY)) || [];
   }
 
   async rememberDelivery(recent, deliveryId) {
@@ -289,14 +283,14 @@ export class WorkerSession extends DurableObject {
       .filter((item) => item !== deliveryId)
       .concat(deliveryId)
       .slice(-RECENT_DELIVERY_LIMIT);
-    await this.state.storage.put(RECENT_DELIVERIES_KEY, next);
+    await this.ctx.storage.put(RECENT_DELIVERIES_KEY, next);
   }
 
   async authoritativeSocket() {
-    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
     if (!activeConnectionId) return null;
 
-    return this.state.getWebSockets().find((socket) => {
+    return this.ctx.getWebSockets().find((socket) => {
       const attachment = socket.deserializeAttachment();
       return attachment?.registered === true &&
         attachment?.connectionId === activeConnectionId;
@@ -304,14 +298,14 @@ export class WorkerSession extends DurableObject {
   }
 
   async sendActiveIfSafe() {
-    const active = await this.state.storage.get(ACTIVE_WAKE_KEY);
+    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.phase !== "queued") return false;
 
     const socket = await this.authoritativeSocket();
     if (!socket) return false;
 
     socket.send(JSON.stringify(active.wake));
-    await this.state.storage.put(ACTIVE_WAKE_KEY, {
+    await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
       wake: active.wake,
       phase: "sent",
     });
@@ -340,9 +334,9 @@ export class WorkerSession extends DurableObject {
         return;
       }
 
-      await this.state.storage.put(ACTIVE_CONNECTION_KEY, connectionId);
+      await this.ctx.storage.put(ACTIVE_CONNECTION_KEY, connectionId);
 
-      for (const other of this.state.getWebSockets()) {
+      for (const other of this.ctx.getWebSockets()) {
         if (other === socket) continue;
         const otherAttachment = other.deserializeAttachment();
         if (otherAttachment?.registered === true) {
@@ -365,7 +359,7 @@ export class WorkerSession extends DurableObject {
       return;
     }
 
-    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
     if (!activeConnectionId || attachment.connectionId !== activeConnectionId) {
       socket.close(1008, "stale session");
       return;
@@ -375,14 +369,14 @@ export class WorkerSession extends DurableObject {
   }
 
   async handleAck(ack, socket) {
-    const active = await this.state.storage.get(ACTIVE_WAKE_KEY);
+    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.wake.delivery_id !== ack.delivery_id) {
       socket.close(1008, "ack delivery mismatch");
       return;
     }
 
     if (ack.state === "deferred" || ack.state === "accepted") {
-      await this.state.storage.put(ACTIVE_WAKE_KEY, {
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
         wake: active.wake,
         phase: ack.state,
       });
@@ -390,17 +384,17 @@ export class WorkerSession extends DurableObject {
     }
 
     if (ack.state === "rejected" || ack.state === "completed") {
-      await this.state.storage.delete(ACTIVE_WAKE_KEY);
+      await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
       await this.promoteQueuedWake();
     }
   }
 
   async promoteQueuedWake() {
-    const queued = await this.state.storage.get(QUEUED_WAKE_KEY);
+    const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
     if (!queued) return;
 
-    await this.state.storage.delete(QUEUED_WAKE_KEY);
-    await this.state.storage.put(ACTIVE_WAKE_KEY, {
+    await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+    await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
       wake: queued,
       phase: "queued",
     });
@@ -420,9 +414,9 @@ export class WorkerSession extends DurableObject {
 
   async clearConnectionIfAuthoritative(socket) {
     const attachment = socket.deserializeAttachment() || {};
-    const activeConnectionId = await this.state.storage.get(ACTIVE_CONNECTION_KEY);
+    const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
     if (attachment.connectionId === activeConnectionId) {
-      await this.state.storage.delete(ACTIVE_CONNECTION_KEY);
+      await this.ctx.storage.delete(ACTIVE_CONNECTION_KEY);
     }
   }
 }
