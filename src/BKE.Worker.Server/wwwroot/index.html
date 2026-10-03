@@ -80,6 +80,9 @@
       <article class="card target-card">
         <div class="eyebrow">ChatGPT engineering target</div>
         <dl>
+          <dt>Worker ID</dt><dd id="workerId">—</dd>
+          <dt>Assignment label</dt><dd id="assignmentLabel">—</dd>
+          <dt>Assigned PR</dt><dd id="assignedPr">Unassigned</dd>
           <dt>Project</dt><dd id="project">—</dd>
           <dt>Conversation</dt><dd id="conversation">—</dd>
           <dt>Instruction</dt><dd><code id="instruction">—</code></dd>
@@ -151,13 +154,19 @@
         const config = data.configuration || {};
 
         byId('state').textContent = snapshot.state || 'IDLE';
+        byId('workerId').textContent = data.workerId || 'Not configured';
+        byId('assignmentLabel').textContent = data.assignmentLabel || 'Not configured';
+        byId('assignedPr').textContent = data.activeAssignment
+          ? ('#' + data.activeAssignment.number + ' · ' + data.activeAssignment.headRef)
+          : 'Unassigned';
         byId('project').textContent = target.project || 'Not configured';
         byId('conversation').textContent = target.conversation || 'Not configured';
         byId('instruction').textContent = target.instruction || 'CONTINUE AUTONOMOUS ENGINEERING.';
         byId('authority').textContent = data.engineeringAuthority || 'github';
-        byId('prRule').textContent = data.oneIntentPerPullRequest
-          ? 'One intent per PR; next wave from current main'
-          : 'Unknown';
+        byId('prRule').textContent =
+          data.oneWorkerPerPullRequest && data.onePullRequestPerWorker
+            ? 'One worker ↔ one active PR; next wave from current main'
+            : 'Unknown';
         byId('lastDispatch').textContent = fmt(snapshot.lastDispatchAt);
         byId('lastWake').textContent = fmt(snapshot.lastWakeAt);
         byId('lastDelivery').textContent = snapshot.lastGitHubDeliveryId || 'None';

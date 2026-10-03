@@ -1,126 +1,92 @@
-# ChatGPT Target Routing
+# ChatGPT target routing
 
-BKE Worker supports two Chat execution-target modes.
+BKE Worker routes each worker instance to exactly one configured Chat execution target.
+
+Target configuration is runtime/bootstrap configuration. It is not task authority. GitHub PR assignment labels determine which engineering PR a worker is allowed to advance.
 
 ## Mode A — semantic Project + Conversation
 
 ```text
-Notion target
-  Project = BKE Worker
-  Conversation = Worker Engineering
+worker-a
+  BKE_WORKER_CHATGPT_PROJECT=BKE Worker
+  BKE_WORKER_CHATGPT_CONVERSATION=Worker Engineering A
         |
         v
-BKE Worker
+persistent Chromium profile A
         |
         v
-https://chatgpt.com/projects
-        |
-        v
-exact project row
-        |
-        v
-exact conversation
+exact project + exact conversation A
 ```
 
-This mode is resilient when no stable direct link has been recorded, but it depends on current ChatGPT semantic navigation surfaces.
+The worker resolves the exact Project and Conversation through the current ChatGPT UI.
 
-## Mode B — override link
+## Mode B — direct conversation override
 
 ```text
-Notion target
-  Override URL = https://chatgpt.com/.../c/<conversation-id>
+worker-b
+  BKE_WORKER_CHATGPT_OVERRIDE_URL=https://chatgpt.com/.../c/<conversation-id>
         |
         v
-BKE Worker
+persistent Chromium profile B
         |
         v
 exact conversation URL
 ```
 
-When an override URL is present, it **wins** over Project + Conversation.
-
-The worker must not navigate arbitrary URLs. Accepted override links must:
+Accepted override links must:
 
 - use HTTPS;
 - use `chatgpt.com` or `www.chatgpt.com`;
 - contain a `/c/<conversation-id>` path segment;
-- land on the same conversation ID after navigation.
+- resolve to the same conversation ID after navigation.
 
-Invalid override links fail closed as:
+Invalid links fail closed as `CHATGPT_OVERRIDE_URL_INVALID`. A valid but unreachable target fails as `CONTEXT_NOT_FOUND`.
 
-```text
-CHATGPT_OVERRIDE_URL_INVALID
-```
+Project/Conversation and Override Link are mutually exclusive. Ambiguous or partial target configuration fails closed.
 
-A valid override that cannot be reached or no longer resolves to the expected conversation fails as:
+## Multi-worker isolation
 
-```text
-CONTEXT_NOT_FOUND
-```
+Concurrent workers must use distinct ChatGPT targets. They also require distinct writable Chromium profiles, loopback CDP endpoints, state files, and runtime listen ports.
+
+A shared host-local resource-lock directory prevents two processes on the same host from simultaneously claiming the same:
+
+- `worker_id`;
+- ChatGPT target;
+- browser profile;
+- state file;
+- CDP endpoint.
+
+This protects process isolation; it does not replace GitHub assignment authority.
+
+Each engineering prompt includes the current `worker_id` and cached assigned PR number and instructs ChatGPT to recover live GitHub before acting. ChatGPT must verify the PR's single `bke-worker:<worker_id>` label and that the worker owns no second open PR.
 
 ## Authentication and execution guardrails
 
-Both target modes preserve the same permanent rules:
-
 - Chat execution surface only;
 - human-only authentication;
-- `CHATGPT_AUTH_REQUIRED` stops before Notion reconciliation;
+- `CHATGPT_AUTH_REQUIRED` blocks execution;
 - live `chatgpt.com` uses operator-owned system Chromium + loopback CDP only;
 - no cookie/session export;
 - no OAuth/MFA/CAPTCHA automation;
-- composer idle state must be confirmed before continuation;
-- override routing must never become a fallback to Work.
+- composer idle state must be positively confirmed before continuation;
+- routing never falls back to Work.
 
-## Configuration/bootstrap mapping
+## Configuration
 
-The current VPS bootstrap supports either:
-
-```text
-BKE_WORKER_CHATGPT_PROJECT
-BKE_WORKER_CHATGPT_CONVERSATION
-```
-
-or:
+Each worker has its own environment file. Example:
 
 ```text
-BKE_WORKER_CHATGPT_OVERRIDE_URL
+BKE_WORKER_ID=worker-a
+BKE_WORKER_CHATGPT_PROJECT="BKE Worker"
+BKE_WORKER_CHATGPT_CONVERSATION="Worker Engineering A"
+BKE_WORKER_CHATGPT_OVERRIDE_URL=""
+BKE_WORKER_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
+BKE_WORKER_CHATGPT_PROFILE=/var/lib/bke-worker/profiles/worker-a
+BKE_WORKER_STATE_FILE=/var/lib/bke-worker/state/worker-a.json
 ```
 
-If both are configured, `BKE_WORKER_CHATGPT_OVERRIDE_URL` takes precedence.
+A second worker must not reuse that target/profile/CDP/state tuple.
 
-Environment configuration is a deployment/bootstrap input, not the intended long-term orchestration authority.
+## Authority boundary
 
-## Notion authority
-
-Canonical orchestration direction:
-
-```text
-NOTION TASK
-   |
-   +--> selected Project + Chat
-   |
-   `--> Override Link
-             |
-             | wins when present
-             v
-        BKE WORKER TARGET
-```
-
-The Core and ChatGPT adapters already support this target contract. Physical Notion target ingestion is a separate wiring gate because the current `NotionWorkSource` remains scaffold-only. Do not claim Notion-driven target selection as certified until that adapter is implemented and tested.
-
-## Live Phase 6A evidence
-
-A real authenticated non-mutating probe succeeded against the BKE Worker project / Worker Engineering conversation on 2026-09-03:
-
-```text
-compatible = true
-authenticated = true
-composerAvailable = true
-turnBusy = false
-canSendNextTurn = true
-failure = null
-```
-
-The probe sent no prompt.
-
-This proves the live Chat adapter surface. Full Phase 6 still requires a bounded real Notion + GitHub webhook + ChatGPT loop and a green automated regression candidate.
+GitHub owns engineering delegation and execution truth. Worker only routes/livens the assigned conversation. No Notion-backed target authority or secondary task database participates in canonical execution.

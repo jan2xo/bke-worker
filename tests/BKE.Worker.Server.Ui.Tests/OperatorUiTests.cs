@@ -17,7 +17,7 @@ public sealed class OperatorUiTests
         "http://127.0.0.1:5094";
 
     [Fact]
-    public async Task Operator_surface_exposes_GitHub_native_contract_and_manual_continue()
+    public async Task Operator_surface_exposes_assigned_multi_worker_contract_and_manual_continue()
     {
         using var playwright =
             await Playwright.CreateAsync();
@@ -57,13 +57,31 @@ public sealed class OperatorUiTests
         await Assertions
             .Expect(
                 page.GetByText(
+                    "worker-a",
+                    new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions
+            .Expect(
+                page.GetByText(
+                    "bke-worker:worker-a",
+                    new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions
+            .Expect(
+                page.GetByText(
+                    "#101 · feat/pr-a",
+                    new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions
+            .Expect(
+                page.GetByText(
                     "github",
                     new() { Exact = true }))
             .ToBeVisibleAsync();
         await Assertions
             .Expect(
                 page.GetByText(
-                    "One intent per PR; next wave from current main",
+                    "One worker ↔ one active PR; next wave from current main",
                     new() { Exact = true }))
             .ToBeVisibleAsync();
         await Assertions

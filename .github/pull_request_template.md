@@ -36,6 +36,21 @@ Fixes #<!-- issue number, if applicable -->
 
 ---
 
+## Worker Delegation
+
+<!--
+GitHub is the durable assignment authority.
+Use zero worker labels while unassigned, or exactly one label of the form:
+  bke-worker:<worker_id>
+Never apply two bke-worker: labels to one active PR.
+-->
+
+- **Assigned worker ID:** `<worker_id / UNASSIGNED>`
+- **Required PR label:** `bke-worker:<worker_id>`
+- **Expected ChatGPT target:** `<dedicated target / N/A>`
+
+---
+
 ## How Has This Been Tested?
 
 <!--
