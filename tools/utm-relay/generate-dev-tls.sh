@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 HOST="$1"
-OUT_DIR="\${BKE_UTM_RELAY_TLS_DIR:-.bke-worker-utm-relay/tls}"
+OUT_DIR="${BKE_UTM_RELAY_TLS_DIR:-.bke-worker-utm-relay/tls}"
 mkdir -p "$OUT_DIR"
 chmod 700 "$OUT_DIR"
 
