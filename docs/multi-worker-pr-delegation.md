@@ -44,7 +44,9 @@ Supported signed GitHub events are routed deterministically.
 
 Relevant `pull_request` events carry the PR number, head ref/SHA, state, and labels.
 
-- a valid single `bke-worker:<worker_id>` label routes only to that worker;
+- adding this worker's `bke-worker:<worker_id>` label establishes the assignment and may dispatch;
+- an `opened` or `reopened` event with one matching worker label may establish the assignment;
+- unrelated PR metadata actions do not redispatch an already assigned worker;
 - an assignment label for another worker is ignored by this worker;
 - multiple worker labels are rejected as ambiguous;
 - removing this worker's assignment label or closing the assigned PR revokes the cached assignment and stops automatic continuation.
@@ -54,6 +56,8 @@ Relevant `pull_request` events carry the PR number, head ref/SHA, state, and lab
 Push remains a wake source only when the pushed `refs/heads/<branch>` exactly matches the cached head ref of this worker's active assigned PR.
 
 A push to `main`, an unassigned branch, or another worker's branch MUST NOT wake this worker.
+
+Webhook delivery IDs are retained in a bounded durable recent-delivery window. Redelivery is suppressed even when another delivery arrived in between; dedupe is not limited to the immediately previous event.
 
 ## ChatGPT execution boundary
 
@@ -83,6 +87,10 @@ Each worker uses its own:
 - durable state file;
 - heartbeat/liveness state.
 
+Workers on the same host use a common resource-lock directory. Exclusive leases cover worker ID, ChatGPT target, profile, state file, and CDP endpoint so an accidental shared resource fails before dispatch.
+
+The lease is intentionally host-local. GitHub remains the cross-runtime ownership authority, and ChatGPT revalidates live PR ownership before acting.
+
 Authentication remains human-owned. OAuth, MFA, CAPTCHA, and security challenges are never automated.
 
 ## Crash and reassignment semantics
@@ -90,6 +98,8 @@ Authentication remains human-owned. OAuth, MFA, CAPTCHA, and security challenges
 A restart from an uncertain `DISPATCHING` or `CONTINUING` state remains fail closed.
 
 If a worker receives a different active PR assignment while it still owns one, it blocks instead of switching work.
+
+If a worker starts with no cached assignment while GitHub already contains an assignment label, it remains `WAITING_FOR_ASSIGNMENT` until an explicit assignment-establishing PR event is delivered. The operator may remove/re-add the label or redeliver the relevant assignment webhook; Worker does not query GitHub with its own token.
 
 Safe reassignment sequence:
 
