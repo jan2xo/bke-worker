@@ -7,13 +7,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
-import android.os.IBinder
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.text.InputType
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -64,47 +68,110 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 64)
+            setBackgroundColor(COLOR_BACKGROUND)
+            setPadding(dp(18), dp(18), dp(18), dp(20))
+            setOnApplyWindowInsetsListener { view, insets ->
+                val topInset = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    insets.getInsets(
+                        WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout(),
+                    ).top
+                } else {
+                    @Suppress("DEPRECATION")
+                    val statusBarInset = insets.systemWindowInsetTop
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        @Suppress("DEPRECATION")
+                        maxOf(statusBarInset, insets.displayCutout?.safeInsetTop ?: 0)
+                    } else {
+                        statusBarInset
+                    }
+                }
+
+                view.setPadding(
+                    view.paddingLeft,
+                    topInset + dp(12),
+                    view.paddingRight,
+                    view.paddingBottom,
+                )
+                insets
+            }
         }
 
-        root.addView(TextView(this).apply {
-            text = "BKE Worker"
-            textSize = 24f
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        header.addView(TextView(this).apply {
+            text = "BKE WORKER"
+            textSize = 12f
+            setTextColor(COLOR_ACCENT)
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
         })
+        header.addView(TextView(this).apply {
+            text = "Android Worker"
+            textSize = 25f
+            setTextColor(COLOR_TEXT_PRIMARY)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(3), 0, dp(3))
+        })
+        header.addView(TextView(this).apply {
+            text = "Relay + ChatGPT runtime"
+            textSize = 13f
+            setTextColor(COLOR_TEXT_SECONDARY)
+        })
+        root.addView(header)
 
+        val statusCard = cardContainer()
+        statusCard.addView(cardEyebrow("LIVE STATUS"))
         status = TextView(this).apply {
             text = "Browser: DETACHED\nChatGPT: STOPPED\nRelay: DISCONNECTED\nWorker ID: —"
+            textSize = 13f
+            setTextColor(COLOR_TEXT_SECONDARY)
+            typeface = Typeface.MONOSPACE
         }
-        root.addView(status)
+        statusCard.addView(status)
+        root.addView(statusCard)
 
         root.addView(TextView(this).apply {
-            text = "WORKER CONFIGURATION"
-            textSize = 18f
+            text = "Worker Configuration"
+            textSize = 21f
+            setTextColor(COLOR_TEXT_PRIMARY)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(2), dp(2), 0, dp(8))
         })
+
+        val configCard = cardContainer()
 
         workerIdInput = EditText(this).apply {
             hint = "Worker ID"
             setText("android-worker-a")
             isSingleLine = true
         }
-        root.addView(workerIdInput)
+        configCard.addView(workerIdInput, fieldLayoutParams())
 
         relayUrlInput = EditText(this).apply {
-            hint = "Relay URL (future wss://...) — blank = browser only"
+            hint = "Relay URL"
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        root.addView(relayUrlInput)
+        configCard.addView(relayUrlInput, fieldLayoutParams())
 
         relayTokenInput = EditText(this).apply {
-            hint = "Runtime relay token (not persisted)"
+            hint = "Runtime relay token"
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        root.addView(relayTokenInput)
+        configCard.addView(relayTokenInput, fieldLayoutParams(last = true))
+
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
 
         val start = Button(this).apply {
-            text = "START / APPLY WORKER"
+            text = "Start / Apply"
+            textSize = 12f
+            setAllCaps(false)
+            typeface = Typeface.DEFAULT_BOLD
             setOnClickListener {
                 requestNotificationPermissionIfNeeded()
                 AndroidGeckoWorkerService.ensureRunning(
@@ -116,10 +183,18 @@ class MainActivity : Activity() {
                 bindWorker()
             }
         }
-        root.addView(start)
+        controls.addView(
+            start,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(4)
+            },
+        )
 
         val stop = Button(this).apply {
-            text = "STOP WORKER"
+            text = "Stop"
+            textSize = 12f
+            setAllCaps(false)
+            typeface = Typeface.DEFAULT_BOLD
             setOnClickListener {
                 detachSession()
                 unbindWorker()
@@ -127,20 +202,14 @@ class MainActivity : Activity() {
                 renderWorkerStatus()
             }
         }
-        root.addView(stop)
-
-        val note = TextView(this).apply {
-            text = "ChatGPT authentication is manual. The relay token stays in service memory only. Backgrounding detaches this view without closing the service-owned GeckoSession."
-        }
-        root.addView(note)
-
-        root.addView(TextView(this).apply {
-            text = "EXECUTION TARGET"
-            textSize = 18f
-        })
-        root.addView(TextView(this).apply {
-            text = "CHATGPT"
-        })
+        controls.addView(
+            stop,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
+            },
+        )
+        configCard.addView(controls)
+        root.addView(configCard)
 
         geckoView = GeckoView(this)
         root.addView(
@@ -149,10 +218,13 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1f,
-            ),
+            ).apply {
+                topMargin = dp(2)
+            },
         )
 
         setContentView(root)
+        root.requestApplyInsets()
     }
 
     override fun onStart() {
@@ -240,6 +312,46 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun cardContainer(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(15), dp(13), dp(15), dp(13))
+        background = roundedBackground(COLOR_CARD, COLOR_CARD_STROKE, 16)
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            bottomMargin = dp(12)
+        }
+    }
+
+    private fun cardEyebrow(label: String): TextView = TextView(this).apply {
+        text = label
+        textSize = 11f
+        setTextColor(COLOR_ACCENT)
+        typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.08f
+        setPadding(0, 0, 0, dp(5))
+    }
+
+    private fun fieldLayoutParams(last: Boolean = false): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            bottomMargin = if (last) dp(10) else dp(8)
+        }
+
+    private fun roundedBackground(fillColor: Int, strokeColor: Int, radiusDp: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fillColor)
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1), strokeColor)
+        }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -249,5 +361,14 @@ class MainActivity : Activity() {
                 41802,
             )
         }
+    }
+
+    companion object {
+        private val COLOR_BACKGROUND = Color.rgb(17, 20, 23)
+        private val COLOR_CARD = Color.rgb(24, 29, 33)
+        private val COLOR_CARD_STROKE = Color.rgb(49, 58, 65)
+        private val COLOR_TEXT_PRIMARY = Color.rgb(242, 245, 247)
+        private val COLOR_TEXT_SECONDARY = Color.rgb(180, 190, 198)
+        private val COLOR_ACCENT = Color.rgb(121, 216, 196)
     }
 }
