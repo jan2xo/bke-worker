@@ -4,16 +4,6 @@ BKE Worker is a GitHub-native autonomous-engineering wake/orchestration service.
 
 GitHub is durable engineering truth. ChatGPT performs engineering. Worker provides liveness, deterministic PR routing, webhook dedupe, browser safety, and recovery heartbeat.
 
-## Canonical execution contract
-
-The authoritative BKE Worker operating and architecture instructions live in:
-
-`BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md`
-
-Every engineering Worker must recover that file from the current `main` branch of `jan2xo/bke-worker` before substantial action. A copy inside a ChatGPT Project, prompt, memory, or local workspace is only a convenience mirror and is not durable authority.
-
-This makes Worker accounts account-independent: Worker A/B/C/etc. may use different ChatGPT accounts and do not need to share the owner's ChatGPT Project or memory.
-
 ## Multi-worker invariant
 
 ```text
@@ -49,9 +39,8 @@ ASSIGNED BKE WORKER
         v
 CHATGPT ENGINEERING CONVERSATION
         |
-        +-- read canonical instructions from jan2xo/bke-worker current main
+        +-- read canonical Project Source
         +-- recover LIVE GitHub PR and worker label
-        +-- verify assigned head ref + exact SHA
         +-- verify this worker owns no second open PR
         +-- continue only the assigned PR
         +-- exact-head certify / SHA-lock merge when authorized
@@ -69,14 +58,11 @@ Worker does **not** maintain another engineering task database. Cached assignmen
 ## Authority model
 
 - **GitHub**: source, task delegation, PR assignment labels, PR ledger, CI proof, exact-head state, merge state, release/provenance truth.
-- **Canonical instruction file on current `main`**: BKE Worker operating and architecture contract.
-- **ChatGPT**: engineering executor that recovers the canonical instruction file from GitHub and then operates from live GitHub state.
+- **ChatGPT**: engineering executor operating from the canonical Project Source and live GitHub state.
 - **BKE Worker instance**: liveness, deterministic routing, webhook dedupe, browser safety, and heartbeat.
 - **Human operator**: task delegation, ChatGPT authentication/OAuth/MFA/CAPTCHA, ambiguous-state recovery, and production/security authorization.
 
 Worker stores no GitHub API token. ChatGPT uses its connected GitHub capability to recover repository truth.
-
-A configured ChatGPT Project/conversation is a browser-targeting choice only. It is not BKE Worker authority. An override-link or otherwise isolated authenticated ChatGPT account is valid when the canonical GitHub contract and live PR state can be recovered.
 
 ## Program direction: pre-execution architecture + Master Command Center
 
@@ -286,8 +272,6 @@ BKE_WORKER_MIN_DISPATCH_SECONDS=30
 ```
 
 Worker B needs its own ID, ChatGPT target, CDP port, profile, state file, and HTTP listen port.
-
-The `BKE_WORKER_CHATGPT_PROJECT` / `BKE_WORKER_CHATGPT_CONVERSATION` values select a browser target when project-chat mode is used; they do not supply the canonical BKE Worker instructions. Separate worker accounts may instead use an isolated override link or another certified target mode.
 
 For systemd multi-instance hosting use:
 

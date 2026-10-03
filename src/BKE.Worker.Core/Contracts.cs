@@ -98,22 +98,9 @@ public sealed record PullRequestAssignment(
 
 public static class WorkerPrompts
 {
-    public const string CanonicalInstructionsPath =
-        "BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md";
-
-    public const string CanonicalControlRepository =
-        "jan2xo/bke-worker";
-
     public const string ContinueAutonomousEngineering =
         "CONTINUE AUTONOMOUS ENGINEERING. " +
-        "This worker may run in a ChatGPT account with no BKE project, memory, or prior chat context. " +
-        "Before acting, read " + CanonicalInstructionsPath +
-        " from current main of " + CanonicalControlRepository +
-        " and treat that main-branch file as the canonical BKE Worker execution contract; " +
-        "if it cannot be recovered, stop fail-closed. " +
-        "Do not substitute ChatGPT project configuration, memory, prior chats, " +
-        "or unrelated external planning state for that contract. " +
-        "Then recover the live GitHub state before acting. " +
+        "Recover the canonical Project Source and live GitHub state before acting. " +
         "If an engineering PR is active, recover its intent and exact head, finish implementation, " +
         "run only its declared minimum complete certification graph, verify exact-head proof, " +
         "SHA-lock merge when good, and write the durable merge checkpoint. " +
@@ -130,13 +117,11 @@ public static class WorkerPrompts
             ContinueAutonomousEngineering) =>
         baseInstruction + " " +
         $"WORKER OWNERSHIP LOCK: worker_id={worker.Id}; assigned PR #{assignment.Number}; " +
-        $"expected assignment label={worker.AssignmentLabel}; " +
-        $"expected head ref={assignment.HeadRef}; expected head SHA={assignment.HeadSha}. " +
+        $"expected assignment label={worker.AssignmentLabel}. " +
         "Before any engineering action, recover live GitHub and verify the assigned PR is open, " +
         $"has exactly one {AssignmentLabelPrefixForPrompt()} label and it is {worker.AssignmentLabel}, " +
         $"and verify worker_id={worker.Id} owns no second open PR. " +
-        "Verify the live assigned PR head ref and SHA exactly match the ownership lock before acting. " +
-        "If ownership or the exact head is missing, duplicated, stale, or ambiguous, stop without changing code, " +
+        "If ownership is missing, duplicated, stale, or ambiguous, stop without changing code, " +
         "certifying, or merging. Never act on another worker's PR.";
 
     private static string AssignmentLabelPrefixForPrompt() =>

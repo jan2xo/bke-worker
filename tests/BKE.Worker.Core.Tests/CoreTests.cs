@@ -42,18 +42,6 @@ public sealed class CoreTests
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            WorkerPrompts.CanonicalInstructionsPath,
-            prompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "current main of jan2xo/bke-worker",
-            prompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "no BKE project, memory, or prior chat context",
-            prompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
             "worker_id=worker-a",
             prompt,
             StringComparison.Ordinal);
@@ -66,14 +54,6 @@ public sealed class CoreTests
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "expected head ref=feat/pr-a",
-            prompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            $"expected head SHA={Sha('a')}",
-            prompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
             "owns no second open PR",
             prompt,
             StringComparison.Ordinal);
@@ -81,10 +61,6 @@ public sealed class CoreTests
             "Do not invent unqueued work",
             prompt,
             StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            "Project Source",
-            prompt,
-            StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "Notion",
             prompt,
