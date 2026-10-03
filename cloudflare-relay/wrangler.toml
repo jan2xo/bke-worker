@@ -3,13 +3,19 @@ main = "src/index.js"
 compatibility_date = "2026-10-04"
 workers_dev = true
 
+[exports.WorkerSession]
+type = "durable-object"
+storage = "sqlite"
+
 [[durable_objects.bindings]]
 name = "WORKER_SESSIONS"
 class_name = "WorkerSession"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["WorkerSession"]
+[secrets]
+required = [
+  "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
+  "BKE_WORKER_RELAY_TOKEN",
+]
 
 [env.preproduction]
 name = "bke-worker-relay-preproduction"
@@ -18,3 +24,9 @@ workers_dev = true
 [[env.preproduction.durable_objects.bindings]]
 name = "WORKER_SESSIONS"
 class_name = "WorkerSession"
+
+[env.preproduction.secrets]
+required = [
+  "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
+  "BKE_WORKER_RELAY_TOKEN",
+]
