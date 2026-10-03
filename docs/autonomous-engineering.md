@@ -41,7 +41,7 @@ signed PR assignment
 -> ChatGPT safe to interrupt?
      no  -> defer
      yes -> send worker/pr ownership-locked continuation
--> ChatGPT reads canonical Project Source
+-> ChatGPT reads BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md from jan2xo/bke-worker current main
 -> recover live GitHub PR + exact head + assignment label
 -> ownership unambiguous?
      no  -> stop
