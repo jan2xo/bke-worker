@@ -10,8 +10,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.text.InputType
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.mozilla.geckoview.GeckoView
@@ -19,6 +21,9 @@ import org.mozilla.geckoview.GeckoView
 class MainActivity : Activity() {
     private lateinit var geckoView: GeckoView
     private lateinit var status: TextView
+    private lateinit var workerIdInput: EditText
+    private lateinit var relayUrlInput: EditText
+    private lateinit var relayTokenInput: EditText
 
     private var workerService: AndroidGeckoWorkerService? = null
     private var bound = false
@@ -54,11 +59,37 @@ class MainActivity : Activity() {
         }
         root.addView(status)
 
+        workerIdInput = EditText(this).apply {
+            hint = "Worker ID"
+            setText("android-worker-a")
+            isSingleLine = true
+        }
+        root.addView(workerIdInput)
+
+        relayUrlInput = EditText(this).apply {
+            hint = "Relay URL (future wss://...) — blank = browser only"
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        root.addView(relayUrlInput)
+
+        relayTokenInput = EditText(this).apply {
+            hint = "Runtime relay token (not persisted)"
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        root.addView(relayTokenInput)
+
         val start = Button(this).apply {
-            text = "START WORKER"
+            text = "START / APPLY WORKER"
             setOnClickListener {
                 requestNotificationPermissionIfNeeded()
-                AndroidGeckoWorkerService.ensureRunning(this@MainActivity)
+                AndroidGeckoWorkerService.ensureRunning(
+                    context = this@MainActivity,
+                    workerId = workerIdInput.text.toString().trim(),
+                    relayUrl = relayUrlInput.text.toString().trim(),
+                    relayToken = relayTokenInput.text.toString(),
+                )
                 bindWorker()
             }
         }
@@ -76,7 +107,7 @@ class MainActivity : Activity() {
         root.addView(stop)
 
         val note = TextView(this).apply {
-            text = "ChatGPT authentication is manual. Backgrounding detaches this view but must not close the service-owned GeckoSession."
+            text = "ChatGPT authentication is manual. The relay token stays in service memory only. Backgrounding detaches this view without closing the service-owned GeckoSession."
         }
         root.addView(note)
 
