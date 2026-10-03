@@ -26,6 +26,10 @@ for token in (
     "handleRelayWake",
     "dispatchWake",
     "RECENT_DELIVERY_LIMIT = 64",
+    "data class AndroidWorkerStatusSnapshot(",
+    "fun statusSnapshot(): AndroidWorkerStatusSnapshot",
+    "chatGptState = workerState",
+    "relayState = relayState",
 ):
     assert token in service, token
 
@@ -41,6 +45,13 @@ for token in (
     "relayUrlInput",
     "relayTokenInput",
     "Runtime relay token (not persisted)",
+    "Browser: ",
+    "ChatGPT: ",
+    "Relay: ",
+    "Worker ID: ",
+    "statusSnapshot()",
+    "startStatusUpdates()",
+    "renderWorkerStatus()",
 ):
     assert token in activity, token
 
