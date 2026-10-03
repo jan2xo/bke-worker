@@ -1,0 +1,252 @@
+export const PROTOCOL = 1;
+export const CONTROL_REPOSITORY = "jan2xo/bke-worker";
+export const ASSIGNMENT_LABEL_PREFIX = "bke-worker:";
+export const MAX_WEBHOOK_BYTES = 1024 * 1024;
+
+const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const SHA = /^[0-9a-f]{40}$/;
+const DELIVERY = /^[A-Za-z0-9._:-]{1,128}$/;
+const ACK_STATES = new Set(["accepted", "deferred", "rejected", "completed"]);
+const ROUTING_ACTIONS = new Set(["opened", "reopened", "labeled", "synchronize"]);
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value, expected) {
+  if (!isObject(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length &&
+    actual.every((key, index) => key === wanted[index]);
+}
+
+function jsonResult(kind, extra = {}) {
+  return { kind, ...extra };
+}
+
+export function isValidWorkerId(value) {
+  return typeof value === "string" && WORKER_ID.test(value);
+}
+
+export function isValidDeliveryId(value) {
+  return typeof value === "string" && DELIVERY.test(value);
+}
+
+export function constantTimeEqualString(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const length = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let index = 0; index < length; index += 1) {
+    diff |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+  return diff === 0;
+}
+
+export function bearerMatches(headerValue, expectedToken) {
+  if (typeof expectedToken !== "string" || expectedToken.length === 0) return false;
+  return constantTimeEqualString(
+    typeof headerValue === "string" ? headerValue : "",
+    `Bearer ${expectedToken}`,
+  );
+}
+
+function hexToBytes(hex) {
+  if (!/^[0-9a-f]{64}$/i.test(hex)) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+export async function verifyGitHubSignature(bodyBytes, signatureHeader, secret) {
+  if (!(bodyBytes instanceof Uint8Array) || !secret || !signatureHeader) return false;
+  const match = /^sha256=([0-9a-f]{64})$/i.exec(signatureHeader);
+  if (!match) return false;
+  const supplied = hexToBytes(match[1]);
+  if (!supplied) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return crypto.subtle.verify("HMAC", key, supplied, bodyBytes);
+}
+
+function readWorkerLabels(pullRequest) {
+  if (!Array.isArray(pullRequest?.labels)) return [];
+  const labels = [];
+  for (const item of pullRequest.labels) {
+    const name = typeof item?.name === "string" ? item.name : "";
+    if (name.toLowerCase().startsWith(ASSIGNMENT_LABEL_PREFIX)) {
+      labels.push(name);
+    }
+  }
+  return [...new Map(labels.map((label) => [label.toLowerCase(), label])).values()];
+}
+
+function workerIdFromLabel(label) {
+  const prefixLength = ASSIGNMENT_LABEL_PREFIX.length;
+  if (typeof label !== "string" ||
+      !label.toLowerCase().startsWith(ASSIGNMENT_LABEL_PREFIX)) {
+    return null;
+  }
+  const workerId = label.slice(prefixLength);
+  return isValidWorkerId(workerId) ? workerId : null;
+}
+
+export function routeGitHubPullRequest(payload, deliveryId) {
+  if (!isValidDeliveryId(deliveryId)) {
+    return jsonResult("error", { status: 400, error: "GITHUB_DELIVERY_INVALID" });
+  }
+  if (!isObject(payload)) {
+    return jsonResult("error", { status: 400, error: "GITHUB_PAYLOAD_INVALID" });
+  }
+  if (payload?.repository?.full_name !== CONTROL_REPOSITORY) {
+    return jsonResult("ignore", { reason: "NON_CONTROL_REPOSITORY" });
+  }
+
+  const pullRequest = payload.pull_request;
+  if (!isObject(pullRequest)) {
+    return jsonResult("error", { status: 400, error: "GITHUB_PULL_REQUEST_REQUIRED" });
+  }
+
+  const prNumber = Number.isInteger(payload.number)
+    ? payload.number
+    : Number.isInteger(pullRequest.number)
+      ? pullRequest.number
+      : -1;
+  if (prNumber <= 0) {
+    return jsonResult("error", {
+      status: 400,
+      error: "GITHUB_PULL_REQUEST_NUMBER_REQUIRED",
+    });
+  }
+
+  const workerLabels = readWorkerLabels(pullRequest);
+  if (workerLabels.length > 1) {
+    return jsonResult("error", {
+      status: 409,
+      error: "AMBIGUOUS_PR_ASSIGNMENT",
+      pullRequest: prNumber,
+      labels: workerLabels,
+    });
+  }
+  if (workerLabels.length === 0) {
+    return jsonResult("ignore", {
+      reason: "UNASSIGNED_PULL_REQUEST",
+      pullRequest: prNumber,
+    });
+  }
+
+  const workerId = workerIdFromLabel(workerLabels[0]);
+  if (!workerId) {
+    return jsonResult("error", {
+      status: 409,
+      error: "WORKER_ID_INVALID",
+      pullRequest: prNumber,
+    });
+  }
+
+  if (pullRequest.state !== "open") {
+    return jsonResult("ignore", {
+      reason: "PULL_REQUEST_NOT_OPEN",
+      pullRequest: prNumber,
+    });
+  }
+
+  const action = typeof payload.action === "string" ? payload.action : "";
+  if (!ROUTING_ACTIONS.has(action)) {
+    return jsonResult("ignore", {
+      reason: "PULL_REQUEST_EVENT_NOT_ROUTING_TRIGGER",
+      pullRequest: prNumber,
+    });
+  }
+
+  if (action === "labeled") {
+    const added = typeof payload?.label?.name === "string" ? payload.label.name : "";
+    if (added.toLowerCase() !== workerLabels[0].toLowerCase()) {
+      return jsonResult("ignore", {
+        reason: "NON_ASSIGNMENT_LABEL_EVENT",
+        pullRequest: prNumber,
+      });
+    }
+  }
+
+  const headSha = typeof pullRequest?.head?.sha === "string"
+    ? pullRequest.head.sha
+    : "";
+  if (!SHA.test(headSha)) {
+    return jsonResult("error", {
+      status: 400,
+      error: "GITHUB_PULL_REQUEST_HEAD_INVALID",
+    });
+  }
+
+  const wake = {
+    protocol: PROTOCOL,
+    type: "wake",
+    worker_id: workerId,
+    repo: CONTROL_REPOSITORY,
+    pr_number: prNumber,
+    expected_head_sha: headSha,
+    reason: `github_pull_request_${action}`,
+    delivery_id: deliveryId,
+  };
+
+  return jsonResult("route", { workerId, wake });
+}
+
+export function validateWake(value, expectedWorkerId = null) {
+  const keys = [
+    "protocol",
+    "type",
+    "worker_id",
+    "repo",
+    "pr_number",
+    "expected_head_sha",
+    "reason",
+    "delivery_id",
+  ];
+  if (!exactKeys(value, keys)) return false;
+  if (value.protocol !== PROTOCOL || value.type !== "wake") return false;
+  if (!isValidWorkerId(value.worker_id)) return false;
+  if (expectedWorkerId !== null && value.worker_id !== expectedWorkerId) return false;
+  if (value.repo !== CONTROL_REPOSITORY) return false;
+  if (!Number.isInteger(value.pr_number) || value.pr_number <= 0) return false;
+  if (typeof value.expected_head_sha !== "string" || !SHA.test(value.expected_head_sha)) {
+    return false;
+  }
+  if (typeof value.reason !== "string" ||
+      !/^[a-z0-9._:-]{1,64}$/.test(value.reason)) {
+    return false;
+  }
+  return isValidDeliveryId(value.delivery_id);
+}
+
+export function validateRegister(value, expectedWorkerId) {
+  if (!exactKeys(value, ["protocol", "type", "worker_id", "session_id"])) return false;
+  return value.protocol === PROTOCOL &&
+    value.type === "register" &&
+    value.worker_id === expectedWorkerId &&
+    isValidWorkerId(value.worker_id) &&
+    typeof value.session_id === "string" &&
+    value.session_id.length >= 1 &&
+    value.session_id.length <= 128;
+}
+
+export function validateAck(value, expectedWorkerId) {
+  if (!exactKeys(value, ["protocol", "type", "worker_id", "delivery_id", "state"])) {
+    return false;
+  }
+  return value.protocol === PROTOCOL &&
+    value.type === "ack" &&
+    value.worker_id === expectedWorkerId &&
+    isValidWorkerId(value.worker_id) &&
+    isValidDeliveryId(value.delivery_id) &&
+    ACK_STATES.has(value.state);
+}
