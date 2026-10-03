@@ -17,6 +17,12 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.WebExtension
 import java.net.URI
 
+data class AndroidWorkerStatusSnapshot(
+    val workerId: String,
+    val chatGptState: String,
+    val relayState: String,
+)
+
 class AndroidGeckoWorkerService : Service() {
     companion object {
         private const val TAG = "BkeWorkerGecko"
@@ -85,8 +91,11 @@ class AndroidGeckoWorkerService : Service() {
     private val runtime by lazy { GeckoRuntimeProvider.get(applicationContext) }
     private val workerSession = GeckoSession()
 
+    @Volatile
     private var activeWorkerId = DEFAULT_WORKER_ID
+    @Volatile
     private var workerState = STATE_STARTING
+    @Volatile
     private var relayState = "UNPAIRED"
 
     private var workerPort: WebExtension.Port? = null
@@ -98,6 +107,13 @@ class AndroidGeckoWorkerService : Service() {
     private var pendingWake: RelayWake? = null
 
     fun session(): GeckoSession = workerSession
+
+    fun statusSnapshot(): AndroidWorkerStatusSnapshot =
+        AndroidWorkerStatusSnapshot(
+            workerId = activeWorkerId,
+            chatGptState = workerState,
+            relayState = relayState,
+        )
 
     private val portDelegate = object : WebExtension.PortDelegate {
         override fun onPortMessage(message: Any, port: WebExtension.Port) {
