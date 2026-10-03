@@ -177,12 +177,14 @@ public sealed class WorkerLoop(
         {
             var snapshot = await stateStore.Load(cancellationToken);
 
+            var recentDeliveries =
+                snapshot.RecentGitHubDeliveryIds ??
+                [];
             if (!string.IsNullOrWhiteSpace(
                     wakeEvent.DeliveryId) &&
-                string.Equals(
-                    snapshot.LastGitHubDeliveryId,
+                recentDeliveries.Contains(
                     wakeEvent.DeliveryId,
-                    StringComparison.Ordinal))
+                    StringComparer.Ordinal))
             {
                 return new(
                     snapshot.State,
@@ -199,6 +201,10 @@ public sealed class WorkerLoop(
                         ? snapshot.LastGitHubDeliveryId
                         : wakeEvent.DeliveryId,
                 LastWakeAt = wakeEvent.ReceivedAt,
+                RecentGitHubDeliveryIds =
+                    RememberDelivery(
+                        recentDeliveries,
+                        wakeEvent.DeliveryId),
             };
 
             if (wakeEvent.Reason ==
@@ -512,6 +518,25 @@ public sealed class WorkerLoop(
                 ex,
                 cancellationToken);
         }
+    }
+
+    private static string[] RememberDelivery(
+        IReadOnlyList<string> recent,
+        string? deliveryId)
+    {
+        if (string.IsNullOrWhiteSpace(deliveryId))
+            return [.. recent];
+
+        const int maxRememberedDeliveries = 64;
+        return recent
+            .Where(item =>
+                !string.Equals(
+                    item,
+                    deliveryId,
+                    StringComparison.Ordinal))
+            .Append(deliveryId)
+            .TakeLast(maxRememberedDeliveries)
+            .ToArray();
     }
 
     private static WorkerSnapshot EnsureWaitingForAssignment(
