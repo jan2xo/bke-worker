@@ -19,6 +19,12 @@ WORKER_ID = "android-worker-a"
 WORKER_LABEL = f"bke-worker:{WORKER_ID}"
 TASK_BRANCH_PREFIX = "bke/task-"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+CONTROL_LABELS = {
+    MASTER_LABEL: ("5319e7", "BKE serial Master Queue"),
+    READY_LABEL: ("0e8a16", "Authorized runnable BKE task"),
+    BLOCKED_LABEL: ("d73a4a", "BKE task is blocked and not runnable"),
+    WORKER_LABEL: ("1d76db", "Assigned to android-worker-a"),
+}
 
 _CHECKLIST_RE = re.compile(r"^(?P<prefix>\s*[-*]\s+)\[(?P<checked>[ xX])\](?P<rest>.*)$")
 _ISSUE_URL_RE = re.compile(
@@ -232,6 +238,29 @@ class GitHubApi:
             raise DispatchError("Repository metadata invalid")
         return payload
 
+    def ensure_control_labels(self) -> None:
+        for name, (color, description) in CONTROL_LABELS.items():
+            encoded = urllib.parse.quote(name, safe="")
+            existing = self.request(
+                "GET",
+                f"/repos/{self.repository}/labels/{encoded}",
+                allow_404=True,
+            )
+            if existing is not None:
+                continue
+
+            created = self.request(
+                "POST",
+                f"/repos/{self.repository}/labels",
+                {
+                    "name": name,
+                    "color": color,
+                    "description": description,
+                },
+            )
+            if not isinstance(created, dict) or created.get("name") != name:
+                raise DispatchError(f"CONTROL_LABEL_BOOTSTRAP_FAILED: {name}")
+
     def open_master_issues(self) -> list[dict[str, Any]]:
         encoded = urllib.parse.quote(MASTER_LABEL)
         issues = self.paginate(
@@ -371,6 +400,7 @@ def _worker_labels(payload: dict[str, Any]) -> list[str]:
 
 
 def reconcile(api: GitHubApi) -> dict[str, Any]:
+    api.ensure_control_labels()
     masters = api.open_master_issues()
     if len(masters) == 0:
         return {"state": "WAITING", "reason": "NO_MASTER_QUEUE"}
