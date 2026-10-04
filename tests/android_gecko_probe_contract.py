@@ -157,7 +157,8 @@ assert "if (!composer || !sendButton || sendButton.disabled)" not in probe
 
 for token in (
     'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
-    'repo != CONTROL_REPOSITORY',
+    '"jan2xo/bke-demo-app"',
+    'repo !in CONTROL_REPOSITORIES',
     'keys != expectedKeys',
     'expectedWorkerId',
     'shaPattern',
