@@ -17,6 +17,11 @@ const QUEUED_WAKE_KEY = "queued_wake";
 const RECENT_DELIVERIES_KEY = "recent_deliveries";
 const WORKER_ID_KEY = "worker_id";
 const ACTIVE_CONNECTION_KEY = "active_connection_id";
+const SESSION_OBJECT_GENERATION = "v2";
+
+function workerSessionObjectId(env, workerId) {
+  return env.WORKER_SESSIONS.idFromName(`${SESSION_OBJECT_GENERATION}:${workerId}`);
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -105,7 +110,7 @@ async function handleGitHubWebhook(request, env) {
     );
   }
 
-  const objectId = env.WORKER_SESSIONS.idFromName(routing.workerId);
+  const objectId = workerSessionObjectId(env, routing.workerId);
   const stub = env.WORKER_SESSIONS.get(objectId);
   const response = await stub.fetch("https://worker-session.internal/dispatch", {
     method: "POST",
@@ -142,7 +147,7 @@ async function handleRelayUpgrade(request, env, workerId) {
     return json({ error: "WEBSOCKET_UPGRADE_REQUIRED" }, 426);
   }
 
-  const objectId = env.WORKER_SESSIONS.idFromName(workerId);
+  const objectId = workerSessionObjectId(env, workerId);
   const stub = env.WORKER_SESSIONS.get(objectId);
   const headers = new Headers(request.headers);
   headers.set("x-bke-worker-id", workerId);
