@@ -97,7 +97,7 @@ GitHub Projects may be used as a human-facing program dashboard or visualization
 
 Before parallel workers are introduced, the first executable queue is single-worker and GitHub-native:
 
-- exactly one open Issue labeled `bke-queue:master` and owned by a trusted GitHub association (`OWNER`, `MEMBER`, or `COLLABORATOR`) is the ordered human-facing checklist;
+- the dispatcher idempotently ensures the bounded labels `bke-queue:master`, `bke-task:ready`, `bke-task:blocked`, and `bke-worker:android-worker-a` exist before reconciliation;\n- exactly one open Issue labeled `bke-queue:master` and owned by a trusted GitHub association (`OWNER`, `MEMBER`, or `COLLABORATOR`) is the ordered human-facing checklist;
 - checklist entries reference task Issues;
 - an open task Issue is runnable only when its `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`, with `bke-task:ready`, and without `bke-task:blocked`;
 - queued task Issues do not own a worker;
