@@ -15,47 +15,35 @@ cd cloudflare-relay
 npx --yes wrangler@4.147.0 whoami
 ```
 
-## 2. Generate PREPRODUCTION secrets locally
+## 2. Create the PREPRODUCTION Worker
 
-Generate two independent random values:
+After `wrangler whoami` succeeds:
 
 ```bash
-export BKE_WORKER_GITHUB_WEBHOOK_SECRET="$(
-  python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
-)"
-
-export BKE_WORKER_RELAY_TOKEN_KEY="$(
-  python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
-)"
+bash scripts/create-preproduction-worker.sh
 ```
+
+The creator:
+
+1. generates the two PREPRODUCTION master secrets if they do not already exist;
+2. stores them locally under `~/.bke-secrets` with mode `0600`;
+3. creates a fail-closed PREPRODUCTION Worker shell;
+4. binds both secrets through Wrangler;
+5. deploys the certified PREPRODUCTION configuration;
+6. prints the worker-bound Android token and relay URL;
+7. prints a GitHub webhook **dry-run** only.
 
 Do not paste either master secret into Android, GitHub comments, CI logs, or source control.
 
-## 3. Store only encrypted Cloudflare secrets
+## 3. Deploy result
 
-```bash
-printf '%s' "$BKE_WORKER_GITHUB_WEBHOOK_SECRET" \
-  | npx --yes wrangler@4.147.0 secret put \
-      BKE_WORKER_GITHUB_WEBHOOK_SECRET \
-      --env preproduction
-
-printf '%s' "$BKE_WORKER_RELAY_TOKEN_KEY" \
-  | npx --yes wrangler@4.147.0 secret put \
-      BKE_WORKER_RELAY_TOKEN_KEY \
-      --env preproduction
-```
-
-## 4. Deploy PREPRODUCTION only
-
-```bash
-npx --yes wrangler@4.147.0 deploy --env preproduction
-```
+The final Wrangler output contains the PREPRODUCTION `*.workers.dev` hostname.
 
 The top-level Worker configuration is deliberately non-public. The named PREPRODUCTION environment is the only configuration in this repository that enables a workers.dev endpoint.
 
 Record the exact resulting PREPRODUCTION hostname.
 
-## 5. Derive the Android worker token
+## 4. Derive the Android worker token
 
 For `android-worker-a`:
 
@@ -83,7 +71,7 @@ RELAY: CONNECTED
 WORKER ID: android-worker-a
 ```
 
-## 6. Prepare the GitHub webhook without mutating GitHub
+## 5. Prepare the GitHub webhook without mutating GitHub
 
 Set the exact PREPRODUCTION endpoint:
 
@@ -104,7 +92,7 @@ This is a dry run and must print:
 GITHUB WEBHOOK PLAN — NO MUTATION
 ```
 
-## 7. Owner-authorized GitHub activation
+## 6. Owner-authorized GitHub activation
 
 Only after the relay is certified and the owner authorizes the GitHub mutation:
 
@@ -116,7 +104,7 @@ BKE_WORKER_GITHUB_WEBHOOK_SECRET="$BKE_WORKER_GITHUB_WEBHOOK_SECRET" \
 
 The webhook subscribes only to `pull_request` events and keeps TLS verification enabled.
 
-## 8. Assignment-label smoke
+## 7. Assignment-label smoke
 
 GitHub remains assignment authority. A PR becomes routable only when it has exactly one label:
 
@@ -150,7 +138,7 @@ GitHub pull_request event
   -> ACK completed
 ```
 
-## 9. Fail-closed recovery
+## 8. Fail-closed recovery
 
 If a connection is lost after a wake is `sent`, `deferred`, or `accepted`, the relay deliberately does not auto-redeliver it. The ChatGPT dispatch outcome may be ambiguous.
 
