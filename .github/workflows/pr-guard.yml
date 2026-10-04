@@ -152,3 +152,6 @@ jobs:
               )
 
           print("BKE Worker PR Guard: PASS")
+
+      - name: Execute serial Master Queue dispatcher contract
+        run: python3 tests/serial_dispatcher_contract.py
