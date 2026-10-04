@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       modules:
-        description: "Space-separated modules: core server chatgpt android relay"
+        description: "Space-separated modules: core server chatgpt android android-release relay"
         required: true
         default: core
         type: string
@@ -37,6 +37,7 @@ jobs:
       server: ${{ steps.plan.outputs.server }}
       chatgpt: ${{ steps.plan.outputs.chatgpt }}
       android: ${{ steps.plan.outputs.android }}
+      android_release: ${{ steps.plan.outputs.android_release }}
       relay: ${{ steps.plan.outputs.relay }}
     steps:
       - id: plan
@@ -80,18 +81,19 @@ jobs:
             const requested = new Set(
               rawModules.split(/\s+/).filter(Boolean)
             );
-            const allowedModules = new Set(["core", "server", "chatgpt", "android", "relay"]);
+            const allowedModules = new Set(["core", "server", "chatgpt", "android", "android-release", "relay"]);
             const unknown = [...requested].filter(module => !allowedModules.has(module));
             if (requested.size === 0 || unknown.length > 0) {
               core.setFailed(
-                `Certification modules must be one or more of core server chatgpt android relay. Unknown: ${unknown.join(", ")}`
+                `Certification modules must be one or more of core server chatgpt android android-release relay. Unknown: ${unknown.join(", ")}`
               );
               return;
             }
 
             core.setOutput("source_sha", sourceSha);
             for (const module of allowedModules) {
-              core.setOutput(module, requested.has(module) ? "true" : "false");
+              const outputName = module.replace("-", "_");
+              core.setOutput(outputName, requested.has(module) ? "true" : "false");
             }
 
   core:
@@ -377,6 +379,142 @@ jobs:
         run: git diff --check
 
 
+  android-release:
+    name: Android production release
+    needs: plan
+    if: needs.plan.outputs.android_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+      BKE_ANDROID_KEYSTORE_B64: ${{ secrets.BKE_ANDROID_SIGNING_KEYSTORE_B64 }}
+      BKE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.BKE_ANDROID_SIGNING_STORE_PASSWORD }}
+      BKE_ANDROID_KEY_ALIAS: ${{ secrets.BKE_ANDROID_SIGNING_KEY_ALIAS }}
+      BKE_ANDROID_KEY_PASSWORD: ${{ secrets.BKE_ANDROID_SIGNING_KEY_PASSWORD }}
+      BKE_ANDROID_SIGNING_CERT_SHA256: ${{ secrets.BKE_ANDROID_SIGNING_CERT_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 37.1
+        run: sdkmanager "platforms;android-37.1" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Require durable production signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            BKE_ANDROID_KEYSTORE_B64
+            BKE_ANDROID_KEYSTORE_PASSWORD
+            BKE_ANDROID_KEY_ALIAS
+            BKE_ANDROID_KEY_PASSWORD
+            BKE_ANDROID_SIGNING_CERT_SHA256
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required GitHub production-signing secret: $name"
+              exit 1
+            fi
+          done
+
+          KEYSTORE_PATH="$RUNNER_TEMP/bke-worker-production.jks"
+          printf '%s' "$BKE_ANDROID_KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "BKE_ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Verify Android production contract
+        run: |
+          python3 tests/android_gecko_probe_contract.py
+          grep -q 'versionName = "0.0.1"' android-gecko/app/build.gradle.kts
+          grep -q 'isDebuggable = false' android-gecko/app/build.gradle.kts
+          grep -q 'signingConfig = signingConfigs.getByName("production")' android-gecko/app/build.gradle.kts
+
+      - name: Build signed Android release APK
+        run: gradle -p android-gecko :app:assembleRelease --stacktrace
+
+      - name: Verify release signature, identity, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android-gecko/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/apksigner.txt"
+
+          SIGNER_SHA256="$(
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt"               | head -n 1               | tr '[:upper:]' '[:lower:]'               | tr -d ':[:space:]'
+          )"
+          EXPECTED_SIGNER="$(
+            printf '%s' "$BKE_ANDROID_SIGNING_CERT_SHA256"               | tr '[:upper:]' '[:lower:]'               | tr -d ':[:space:]'
+          )"
+
+          [[ "$SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$SIGNER_SHA256" = "$EXPECTED_SIGNER"
+
+          DEBUGGABLE="$(apkanalyzer manifest debuggable "$APK" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          test "$DEBUGGABLE" = "false"
+
+          VERSION_NAME="$(apkanalyzer manifest version-name "$APK" | tr -d '[:space:]')"
+          VERSION_CODE="$(apkanalyzer manifest version-code "$APK" | tr -d '[:space:]')"
+          test "$VERSION_NAME" = "0.0.1"
+          test "$VERSION_CODE" = "1"
+
+          mkdir -p artifacts/android-production
+          OUTPUT_APK="artifacts/android-production/BKE.Worker.Android.arm64-v${VERSION_NAME}.apk"
+          cp "$APK" "$OUTPUT_APK"
+          APK_SHA256="$(sha256sum "$OUTPUT_APK" | awk '{print $1}')"
+
+          SOURCE_SHA="$SOURCE_SHA"           APK_SHA256="$APK_SHA256"           SIGNER_SHA256="$SIGNER_SHA256"           VERSION_NAME="$VERSION_NAME"           VERSION_CODE="$VERSION_CODE"           python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "source_sha": os.environ["SOURCE_SHA"],
+              "component": "BKE Worker Android Gecko",
+              "architecture": "arm64-v8a",
+              "version_name": os.environ["VERSION_NAME"],
+              "version_code": int(os.environ["VERSION_CODE"]),
+              "sha256": os.environ["APK_SHA256"],
+              "signer_certificate_sha256": os.environ["SIGNER_SHA256"],
+              "certification_state": "production-candidate",
+          }
+          Path("artifacts/android-production/manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload signed production candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-android-production-candidate
+          path: artifacts/android-production
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Diff hygiene
+        run: git diff --check
+
+
   relay:
     name: Cloudflare durable relay
     needs: plan
@@ -441,13 +579,48 @@ jobs:
 
           npm run runtime-smoke
 
+      - name: Execute production Worker + Durable Object smoke
+        working-directory: cloudflare-relay
+        shell: bash
+        env:
+          BKE_WORKER_GITHUB_WEBHOOK_SECRET: relay-ci-webhook-secret
+          BKE_WORKER_RELAY_TOKEN_KEY: relay-ci-master-key-0123456789abcdef
+          BKE_RELAY_SMOKE_URL: http://127.0.0.1:8791
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.147.0 dev \
+            --local \
+            --env production \
+            --ip 127.0.0.1 \
+            --port 8791 \
+            --log-level warn \
+            > /tmp/bke-worker-relay-production-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          trap 'kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in {1..60}; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8791/ || true)"
+            if [[ "$status" != "000" ]]; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "1" ]]; then
+            cat /tmp/bke-worker-relay-production-wrangler.log
+            exit 1
+          fi
+
+          npm run runtime-smoke
+
       - name: Diff hygiene
         run: git diff --check
 
   required-certification:
     name: Required certification
     if: always() && needs.plan.result == 'success'
-    needs: [plan, core, server, chatgpt, android, relay]
+    needs: [plan, core, server, chatgpt, android, android-release, relay]
     runs-on: ubuntu-latest
     steps:
       - name: Require requested exact-head proof
@@ -457,11 +630,13 @@ jobs:
           SERVER_REQUIRED: ${{ needs.plan.outputs.server }}
           CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
           ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
+          ANDROID_RELEASE_REQUIRED: ${{ needs.plan.outputs.android_release }}
           RELAY_REQUIRED: ${{ needs.plan.outputs.relay }}
           CORE_RESULT: ${{ needs.core.result }}
           SERVER_RESULT: ${{ needs.server.result }}
           CHATGPT_RESULT: ${{ needs.chatgpt.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          ANDROID_RELEASE_RESULT: ${{ needs.android-release.result }}
           RELAY_RESULT: ${{ needs.relay.result }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: |
@@ -470,5 +645,6 @@ jobs:
           [[ "$SERVER_REQUIRED" != "true" || "$SERVER_RESULT" == "success" ]]
           [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
           [[ "$ANDROID_REQUIRED" != "true" || "$ANDROID_RESULT" == "success" ]]
+          [[ "$ANDROID_RELEASE_REQUIRED" != "true" || "$ANDROID_RELEASE_RESULT" == "success" ]]
           [[ "$RELAY_REQUIRED" != "true" || "$RELAY_RESULT" == "success" ]]
           echo "Required certification PASS on exact head $SOURCE_SHA"
