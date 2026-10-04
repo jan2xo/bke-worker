@@ -24,10 +24,16 @@ The canonical autonomous runtime is:
 
 The Android Accessibility implementation remains historical prototype evidence. It is not the canonical autonomous runtime unless an intent explicitly targets it.
 
-Active CI is intentionally limited to:
+Active substantial CI is intentionally limited to:
 
 - `.github/workflows/pr-guard.yml`
 - `.github/workflows/certify.yml`
+
+GitHub-native control-plane automation additionally includes:
+
+- `.github/workflows/serial-dispatcher.yml` for deterministic single-worker Master Queue reconciliation.
+
+The dispatcher is orchestration, not substantial certification. It must execute trusted default-branch code and must not become a second task database.
 
 Historical Phase 3–6 workflows remain archived under `.github/legacy-workflows/2026-10-02/`.
 
@@ -86,6 +92,28 @@ GitHub owns:
 BKE Worker must not create a second task database.
 
 GitHub Projects may be used as a human-facing program dashboard or visualization, but Worker execution must not depend on GitHub Projects API availability. Issues, PRs, labels, comments, Actions, commits, and `main` remain sufficient durable execution truth.
+
+### Serial Master Queue v1
+
+Before parallel workers are introduced, the first executable queue is single-worker and GitHub-native:
+
+- exactly one open Issue labeled `bke-queue:master` is the ordered human-facing checklist;
+- checklist entries reference task Issues;
+- an open task Issue is runnable only with `bke-task:ready` and without `bke-task:blocked`;
+- queued task Issues do not own a worker;
+- a materialized draft PR becomes the active execution contract;
+- `bke-worker:android-worker-a` is the only dispatcher-owned worker assignment in v1;
+- zero open PRs carrying that worker label means FREE;
+- one means BUSY;
+- two or more means ambiguous ownership and must fail closed;
+- worker availability is derived across the owner's GitHub repositories, not from Android/Cloudflare liveness;
+- when FREE, the dispatcher selects the first runnable task in Master Issue order, materializes/assigns exactly one PR, then stops;
+- when BUSY, it assigns nothing;
+- when no runnable task exists, it waits;
+- task PR merge closes the task Issue via GitHub linkage, and the next reconciliation selects the next task;
+- Cloudflare and Android remain wake/executor layers and do not store queue authority.
+
+Serial dispatcher implementation details and recovery rules live in `docs/github-master-queue-serial-dispatcher.md`.
 
 ## 4. PR = TASK DELEGATION + EXECUTION LEDGER
 
