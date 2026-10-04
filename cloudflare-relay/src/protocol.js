@@ -1,5 +1,9 @@
 export const PROTOCOL = 1;
 export const CONTROL_REPOSITORY = "jan2xo/bke-worker";
+export const CONTROL_REPOSITORIES = new Set([
+  CONTROL_REPOSITORY,
+  "jan2xo/bke-demo-app",
+]);
 export const ASSIGNMENT_LABEL_PREFIX = "bke-worker:";
 export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
@@ -156,7 +160,10 @@ export function routeGitHubPullRequest(payload, deliveryId) {
   if (!isObject(payload)) {
     return jsonResult("error", { status: 400, error: "GITHUB_PAYLOAD_INVALID" });
   }
-  if (payload?.repository?.full_name !== CONTROL_REPOSITORY) {
+  const repository = typeof payload?.repository?.full_name === "string"
+    ? payload.repository.full_name
+    : "";
+  if (!CONTROL_REPOSITORIES.has(repository)) {
     return jsonResult("ignore", { reason: "NON_CONTROL_REPOSITORY" });
   }
 
@@ -241,7 +248,7 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     protocol: PROTOCOL,
     type: "wake",
     worker_id: workerId,
-    repo: CONTROL_REPOSITORY,
+    repo: repository,
     pr_number: prNumber,
     expected_head_sha: headSha,
     reason: `github_pull_request_${action}`,
@@ -266,7 +273,7 @@ export function validateWake(value, expectedWorkerId = null) {
   if (value.protocol !== PROTOCOL || value.type !== "wake") return false;
   if (!isValidWorkerId(value.worker_id)) return false;
   if (expectedWorkerId !== null && value.worker_id !== expectedWorkerId) return false;
-  if (value.repo !== CONTROL_REPOSITORY) return false;
+  if (!CONTROL_REPOSITORIES.has(value.repo)) return false;
   if (!Number.isInteger(value.pr_number) || value.pr_number <= 0) return false;
   if (typeof value.expected_head_sha !== "string" || !SHA.test(value.expected_head_sha)) {
     return false;
