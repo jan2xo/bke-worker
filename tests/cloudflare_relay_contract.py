@@ -20,11 +20,13 @@ android = (
 
 for token in (
     'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
+    'CONTROL_REPOSITORIES = new Set([',
+    '"jan2xo/bke-demo-app"',
     'ASSIGNMENT_LABEL_PREFIX = "bke-worker:"',
     'verifyGitHubSignature',
     '"opened", "reopened", "labeled", "synchronize"',
     'type: "wake"',
-    'repo: CONTROL_REPOSITORY',
+    'repo: repository',
     'deriveRelayToken',
     'relayBearerMatches',
     'RELAY_TOKEN_CONTEXT + workerId',

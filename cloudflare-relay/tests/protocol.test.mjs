@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CONTROL_REPOSITORY,
+  CONTROL_REPOSITORIES,
   PROTOCOL,
   deriveRelayToken,
   relayBearerMatches,
@@ -121,6 +122,21 @@ test("labeled event only routes when the added label is the assignment label", (
   );
   assert.equal(result.kind, "ignore");
   assert.equal(result.reason, "NON_ASSIGNMENT_LABEL_EVENT");
+});
+
+test("explicitly allowed demo repository routes with its own canonical repo identity", () => {
+  const demoRepo = "jan2xo/bke-demo-app";
+  assert.equal(CONTROL_REPOSITORIES.has(demoRepo), true);
+
+  const result = routeGitHubPullRequest(
+    payload({ repository: { full_name: demoRepo } }),
+    "delivery-demo-001",
+  );
+
+  assert.equal(result.kind, "route");
+  assert.equal(result.workerId, "android-worker-a");
+  assert.equal(result.wake.repo, demoRepo);
+  assert.equal(validateWake(result.wake, "android-worker-a"), true);
 });
 
 test("non-control repository is ignored", () => {
