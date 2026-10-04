@@ -1,0 +1,48 @@
+name: Serial Master Queue Dispatcher
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled, closed, reopened]
+  pull_request_target:
+    types: [closed, unlabeled]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: bke-worker-serial-dispatcher
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile GitHub Master Queue
+    if: github.repository == 'jan2xo/bke-worker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted default-branch dispatcher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify dispatcher source is default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --abbrev-ref HEAD)" = "$DEFAULT_BRANCH"
+
+      - name: Reconcile serial queue
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          BKE_WORKER_ID: android-worker-a
+        run: python3 scripts/github_serial_dispatcher.py
