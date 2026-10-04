@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
 }
 
+val releaseKeystorePath = System.getenv("BKE_ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = System.getenv("BKE_ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("BKE_ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("BKE_ANDROID_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.bke.worker.gecko"
     compileSdk {
@@ -15,16 +26,35 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.0.1-probe"
+        versionName = "0.0.1"
 
         ndk {
             abiFilters += "arm64-v8a"
         }
     }
 
+    signingConfigs {
+        create("production") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             isDebuggable = true
+        }
+
+        getByName("release") {
+            isDebuggable = false
+            isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("production")
+            }
         }
     }
 
