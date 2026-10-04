@@ -34,7 +34,7 @@ jobs:
               raise SystemExit("Intent certification is not explicitly invokable.")
 
           for token in [
-              'new Set(["core", "server", "chatgpt", "android"])',
+              'new Set(["core", "server", "chatgpt", "android", "relay"])',
               "name: Android Gecko Worker probe",
               "python3 tests/android_gecko_probe_contract.py",
               "python3 tests/utm_relay_contract.py",
@@ -42,6 +42,12 @@ jobs:
               "bke-worker-android-gecko-probe",
               "ANDROID_REQUIRED:",
               "ANDROID_RESULT:",
+              "name: Cloudflare durable relay",
+              "python3 tests/cloudflare_relay_contract.py",
+              "npm run check",
+              "npm run runtime-smoke",
+              "RELAY_REQUIRED:",
+              "RELAY_RESULT:",
           ]:
               if token not in certify:
                   raise SystemExit(f"Android certification module lost: {token}")
