@@ -321,6 +321,47 @@ try {
     state: "completed",
   }));
 
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const rejected = await postWebhook({
+    deliveryId: "cloudflare-smoke-003",
+    action: "synchronize",
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+  assert.equal(rejected.status, 202);
+
+  const wake3 = JSON.parse(await ws.nextText());
+  assert.equal(wake3.delivery_id, "cloudflare-smoke-003");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake3.delivery_id,
+    state: "rejected",
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const afterReject = await postWebhook({
+    deliveryId: "cloudflare-smoke-004",
+    action: "synchronize",
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+  });
+  assert.equal(afterReject.status, 202);
+  assert.notEqual(afterReject.body.relay.state, "queued_behind_active");
+
+  const wake4 = JSON.parse(await ws.nextText());
+  assert.equal(wake4.delivery_id, "cloudflare-smoke-004");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake4.delivery_id,
+    state: "completed",
+  }));
+
   console.log("BKE Worker Cloudflare local runtime smoke: PASS");
 } finally {
   ws.close();

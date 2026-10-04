@@ -51,6 +51,7 @@ class MainActivity : Activity() {
             val local = binder as? AndroidGeckoWorkerService.LocalBinder ?: return
             workerService = local.service()
             bound = true
+            hydrateAppliedConfig()
             attachSession()
             startStatusUpdates()
         }
@@ -113,12 +114,53 @@ class MainActivity : Activity() {
         val statusCard = compactCardContainer()
         statusCard.addView(cardEyebrow("LIVE STATUS"))
         status = TextView(this).apply {
-            text = "BROWSER: DETACHED\nCHAT: STOPPED\nRELAY: DISCONNECTED\nWORKER ID: —"
+            text = "BROWSER: DETACHED\nCHAT: STARTING\nRELAY: STOPPED\nWORKER ID: android-worker-a"
             textSize = 12f
             setTextColor(COLOR_TEXT_SECONDARY)
             typeface = Typeface.MONOSPACE
         }
         statusCard.addView(status)
+
+        val runtimeControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+
+        val startRelay = Button(this).apply {
+            text = "Start"
+            textSize = 12f
+            setAllCaps(false)
+            typeface = Typeface.DEFAULT_BOLD
+            setOnClickListener {
+                requestNotificationPermissionIfNeeded()
+                AndroidGeckoWorkerService.startRelay(this@MainActivity)
+                bindWorker()
+            }
+        }
+        runtimeControls.addView(
+            startRelay,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(4)
+            },
+        )
+
+        val stopRelay = Button(this).apply {
+            text = "Stop"
+            textSize = 12f
+            setAllCaps(false)
+            typeface = Typeface.DEFAULT_BOLD
+            setOnClickListener {
+                AndroidGeckoWorkerService.stopRelay(this@MainActivity)
+                renderWorkerStatus()
+            }
+        }
+        runtimeControls.addView(
+            stopRelay,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
+            },
+        )
+        statusCard.addView(runtimeControls)
         root.addView(statusCard)
 
         val configCard = compactCardContainer()
@@ -158,20 +200,16 @@ class MainActivity : Activity() {
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        configCard.addView(relayTokenInput, fieldLayoutParams(last = true))
+        configCard.addView(relayTokenInput, fieldLayoutParams())
 
-        val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-
-        val start = Button(this).apply {
-            text = "Start / Apply"
+        val apply = Button(this).apply {
+            text = "Apply"
             textSize = 12f
             setAllCaps(false)
             typeface = Typeface.DEFAULT_BOLD
             setOnClickListener {
                 requestNotificationPermissionIfNeeded()
-                AndroidGeckoWorkerService.ensureRunning(
+                AndroidGeckoWorkerService.applyRelayConfig(
                     context = this@MainActivity,
                     workerId = workerIdInput.text.toString().trim(),
                     relayUrl = relayUrlInput.text.toString().trim(),
@@ -180,32 +218,7 @@ class MainActivity : Activity() {
                 bindWorker()
             }
         }
-        controls.addView(
-            start,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(4)
-            },
-        )
-
-        val stop = Button(this).apply {
-            text = "Stop"
-            textSize = 12f
-            setAllCaps(false)
-            typeface = Typeface.DEFAULT_BOLD
-            setOnClickListener {
-                detachSession()
-                unbindWorker()
-                AndroidGeckoWorkerService.stop(this@MainActivity)
-                renderWorkerStatus()
-            }
-        }
-        controls.addView(
-            stop,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(4)
-            },
-        )
-        configCard.addView(controls)
+        configCard.addView(apply, fieldLayoutParams(last = true))
         root.addView(configCard)
 
         geckoView = GeckoView(this)
@@ -226,9 +239,9 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        if (AndroidGeckoWorkerService.isRunning) {
-            bindWorker()
-        }
+        requestNotificationPermissionIfNeeded()
+        AndroidGeckoWorkerService.ensureBrowserRunning(this)
+        bindWorker()
     }
 
     override fun onStop() {
@@ -240,6 +253,7 @@ class MainActivity : Activity() {
 
     private fun bindWorker() {
         if (bound) {
+            hydrateAppliedConfig()
             attachSession()
             startStatusUpdates()
             return
@@ -257,6 +271,13 @@ class MainActivity : Activity() {
         unbindService(connection)
         bound = false
         workerService = null
+    }
+
+    private fun hydrateAppliedConfig() {
+        val config = workerService?.appliedRelayConfig() ?: return
+        workerIdInput.setText(config.workerId)
+        relayUrlInput.setText(config.relayUrl)
+        relayTokenInput.setText(config.bearerToken)
     }
 
     private fun attachSession() {
@@ -294,9 +315,9 @@ class MainActivity : Activity() {
         if (snapshot == null) {
             status.text = buildString {
                 appendLine("BROWSER: " + if (browserAttached) "ATTACHED" else "DETACHED")
-                appendLine("CHAT: STOPPED")
-                appendLine("RELAY: DISCONNECTED")
-                append("WORKER ID: —")
+                appendLine("CHAT: STARTING")
+                appendLine("RELAY: STOPPED")
+                append("WORKER ID: android-worker-a")
             }
             return
         }

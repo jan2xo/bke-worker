@@ -104,6 +104,18 @@ object RelayProtocol {
         )
     }
 
+    fun identifiableRejectedDeliveryId(text: String, expectedWorkerId: String): String? {
+        val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        if (json.optInt("protocol", -1) != VERSION) return null
+        if (json.optString("type") != "wake") return null
+
+        val workerId = json.optString("worker_id")
+        val deliveryId = json.optString("delivery_id")
+        if (workerId != expectedWorkerId || !workerIdPattern.matches(workerId)) return null
+        if (!deliveryPattern.matches(deliveryId)) return null
+        return deliveryId
+    }
+
     fun register(workerId: String, sessionId: String): String =
         JSONObject()
             .put("protocol", VERSION)

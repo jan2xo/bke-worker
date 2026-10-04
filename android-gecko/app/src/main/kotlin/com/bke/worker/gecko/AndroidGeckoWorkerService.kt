@@ -35,6 +35,11 @@ class AndroidGeckoWorkerService : Service() {
         private const val EXTENSION_ID = "bke-worker-gecko-probe@jl-bke.com"
         private const val NATIVE_APP = "bke.worker.gecko"
 
+        private const val ACTION_ENSURE_BROWSER = "bke.worker.ensure_browser"
+        private const val ACTION_APPLY_RELAY_CONFIG = "bke.worker.apply_relay_config"
+        private const val ACTION_START_RELAY = "bke.worker.start_relay"
+        private const val ACTION_STOP_RELAY = "bke.worker.stop_relay"
+
         private const val EXTRA_WORKER_ID = "bke.worker.worker_id"
         private const val EXTRA_RELAY_URL = "bke.worker.relay_url"
         private const val EXTRA_RELAY_TOKEN = "bke.worker.relay_token"
@@ -51,28 +56,53 @@ class AndroidGeckoWorkerService : Service() {
         var isRunning: Boolean = false
             private set
 
-        fun ensureRunning(
+        fun ensureBrowserRunning(context: Context) {
+            startServiceAction(
+                context,
+                Intent(context.applicationContext, AndroidGeckoWorkerService::class.java)
+                    .setAction(ACTION_ENSURE_BROWSER),
+            )
+        }
+
+        fun applyRelayConfig(
             context: Context,
-            workerId: String = DEFAULT_WORKER_ID,
-            relayUrl: String = "",
-            relayToken: String = "",
+            workerId: String,
+            relayUrl: String,
+            relayToken: String,
         ) {
+            startServiceAction(
+                context,
+                Intent(context.applicationContext, AndroidGeckoWorkerService::class.java)
+                    .setAction(ACTION_APPLY_RELAY_CONFIG)
+                    .putExtra(EXTRA_WORKER_ID, workerId)
+                    .putExtra(EXTRA_RELAY_URL, relayUrl)
+                    .putExtra(EXTRA_RELAY_TOKEN, relayToken),
+            )
+        }
+
+        fun startRelay(context: Context) {
+            startServiceAction(
+                context,
+                Intent(context.applicationContext, AndroidGeckoWorkerService::class.java)
+                    .setAction(ACTION_START_RELAY),
+            )
+        }
+
+        fun stopRelay(context: Context) {
+            startServiceAction(
+                context,
+                Intent(context.applicationContext, AndroidGeckoWorkerService::class.java)
+                    .setAction(ACTION_STOP_RELAY),
+            )
+        }
+
+        private fun startServiceAction(context: Context, intent: Intent) {
             val app = context.applicationContext
-            val intent = Intent(app, AndroidGeckoWorkerService::class.java)
-                .putExtra(EXTRA_WORKER_ID, workerId)
-                .putExtra(EXTRA_RELAY_URL, relayUrl)
-                .putExtra(EXTRA_RELAY_TOKEN, relayToken)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 app.startForegroundService(intent)
             } else {
                 app.startService(intent)
             }
-        }
-
-        fun stop(context: Context) {
-            context.applicationContext.stopService(
-                Intent(context.applicationContext, AndroidGeckoWorkerService::class.java),
-            )
         }
 
         private fun isChatGptUrl(value: String): Boolean {
@@ -96,8 +126,14 @@ class AndroidGeckoWorkerService : Service() {
     @Volatile
     private var workerState = STATE_STARTING
     @Volatile
-    private var relayState = "UNPAIRED"
+    private var relayState = "STOPPED"
 
+    private var appliedRelayConfig = RelayConfig(
+        workerId = DEFAULT_WORKER_ID,
+        relayUrl = "",
+        bearerToken = "",
+    )
+    private var relayRequested = false
     private var workerPort: WebExtension.Port? = null
     private var relayClient: RelayWebSocketClient? = null
 
@@ -107,6 +143,8 @@ class AndroidGeckoWorkerService : Service() {
     private var pendingWake: RelayWake? = null
 
     fun session(): GeckoSession = workerSession
+
+    fun appliedRelayConfig(): RelayConfig = appliedRelayConfig
 
     fun statusSnapshot(): AndroidWorkerStatusSnapshot =
         AndroidWorkerStatusSnapshot(
@@ -206,13 +244,19 @@ class AndroidGeckoWorkerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        if (intent != null && intent.hasExtra(EXTRA_WORKER_ID)) {
-            val config = RelayConfig(
-                workerId = intent.getStringExtra(EXTRA_WORKER_ID)?.trim().orEmpty(),
-                relayUrl = intent.getStringExtra(EXTRA_RELAY_URL)?.trim().orEmpty(),
-                bearerToken = intent.getStringExtra(EXTRA_RELAY_TOKEN).orEmpty(),
-            )
-            configureRelay(config)
+        when (intent?.action) {
+            ACTION_APPLY_RELAY_CONFIG -> {
+                applyRelayConfig(
+                    RelayConfig(
+                        workerId = intent.getStringExtra(EXTRA_WORKER_ID)?.trim().orEmpty(),
+                        relayUrl = intent.getStringExtra(EXTRA_RELAY_URL)?.trim().orEmpty(),
+                        bearerToken = intent.getStringExtra(EXTRA_RELAY_TOKEN).orEmpty(),
+                    ),
+                )
+            }
+            ACTION_START_RELAY -> startRelay()
+            ACTION_STOP_RELAY -> stopRelay()
+            ACTION_ENSURE_BROWSER, null -> updateNotification()
         }
 
         return START_STICKY
@@ -222,6 +266,7 @@ class AndroidGeckoWorkerService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        relayRequested = false
         relayClient?.stop()
         relayClient = null
         workerPort?.disconnect()
@@ -231,10 +276,45 @@ class AndroidGeckoWorkerService : Service() {
         super.onDestroy()
     }
 
-    private fun configureRelay(config: RelayConfig) {
+    private fun applyRelayConfig(config: RelayConfig) {
+        val error = RelayProtocol.validateConfig(config)
+        if (error != null) {
+            relayClient?.stop()
+            relayClient = null
+            relayState = error
+            updateNotification()
+            return
+        }
+
+        appliedRelayConfig = config
+        activeWorkerId = config.workerId
+
+        if (relayRequested) {
+            connectRelay()
+        } else {
+            relayState = if (config.relayUrl.isBlank()) "UNPAIRED" else "STOPPED"
+            updateNotification()
+        }
+    }
+
+    private fun startRelay() {
+        relayRequested = true
+        connectRelay()
+    }
+
+    private fun stopRelay() {
+        relayRequested = false
+        relayClient?.stop()
+        relayClient = null
+        relayState = if (appliedRelayConfig.relayUrl.isBlank()) "UNPAIRED" else "STOPPED"
+        updateNotification()
+    }
+
+    private fun connectRelay() {
         relayClient?.stop()
         relayClient = null
 
+        val config = appliedRelayConfig
         val error = RelayProtocol.validateConfig(config)
         if (error != null) {
             relayState = error
@@ -345,11 +425,16 @@ class AndroidGeckoWorkerService : Service() {
     private fun handleRelayWake(wake: RelayWake) {
         if (wake.workerId != activeWorkerId) return
 
-        if (wake.deliveryId in recentDeliveryIds ||
-            activeWake?.deliveryId == wake.deliveryId ||
-            pendingWake?.deliveryId == wake.deliveryId
-        ) {
-            relayClient?.sendAck(wake.deliveryId, "duplicate")
+        if (wake.deliveryId in recentDeliveryIds) {
+            relayClient?.sendAck(wake.deliveryId, "accepted")
+            return
+        }
+        if (activeWake?.deliveryId == wake.deliveryId) {
+            relayClient?.sendAck(wake.deliveryId, "accepted")
+            return
+        }
+        if (pendingWake?.deliveryId == wake.deliveryId) {
+            relayClient?.sendAck(wake.deliveryId, "deferred")
             return
         }
 
@@ -381,9 +466,10 @@ class AndroidGeckoWorkerService : Service() {
 
         runCatching { port.postMessage(command) }
             .onFailure {
-                relayClient?.sendAck(wake.deliveryId, "bridge_failed")
+                relayClient?.sendAck(wake.deliveryId, "rejected")
                 activeWake = null
                 activeSawBusy = false
+                maybeDispatchPendingWake()
             }
     }
 
