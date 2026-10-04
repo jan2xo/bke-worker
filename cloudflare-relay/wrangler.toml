@@ -32,3 +32,18 @@ required = [
   "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
   "BKE_WORKER_RELAY_TOKEN_KEY",
 ]
+
+[env.production]
+name = "bke-worker-relay"
+workers_dev = true
+preview_urls = false
+
+[[env.production.durable_objects.bindings]]
+name = "WORKER_SESSIONS"
+class_name = "WorkerSession"
+
+[env.production.secrets]
+required = [
+  "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
+  "BKE_WORKER_RELAY_TOKEN_KEY",
+]

@@ -34,7 +34,7 @@ jobs:
               raise SystemExit("Intent certification is not explicitly invokable.")
 
           for token in [
-              'new Set(["core", "server", "chatgpt", "android", "relay"])',
+              'new Set(["core", "server", "chatgpt", "android", "android-release", "relay"])',
               "name: Android Gecko Worker probe",
               "python3 tests/android_gecko_probe_contract.py",
               "python3 tests/utm_relay_contract.py",
@@ -42,10 +42,18 @@ jobs:
               "bke-worker-android-gecko-probe",
               "ANDROID_REQUIRED:",
               "ANDROID_RESULT:",
+              "name: Android production release",
+              "BKE_ANDROID_SIGNING_KEYSTORE_B64",
+              "BKE_ANDROID_SIGNING_CERT_SHA256",
+              ":app:assembleRelease",
+              "bke-worker-android-production-candidate",
+              "ANDROID_RELEASE_REQUIRED:",
+              "ANDROID_RELEASE_RESULT:",
               "name: Cloudflare durable relay",
               "python3 tests/cloudflare_relay_contract.py",
               "npm run check",
               "npm run runtime-smoke",
+              "--env production",
               "RELAY_REQUIRED:",
               "RELAY_RESULT:",
           ]:
