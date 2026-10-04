@@ -14,7 +14,7 @@ Parallel workers are out of scope.
 
 ## Durable model
 
-- one issue labeled `bke-queue:master` is the ordered human-facing checklist;
+- the dispatcher idempotently bootstraps its bounded control labels before reconciliation;\n- one issue labeled `bke-queue:master` is the ordered human-facing checklist;
 - task issues referenced by that checklist are queued work;
 - a task issue becomes runnable only when it is open, authored by a trusted GitHub association (`OWNER`, `MEMBER`, or `COLLABORATOR`), and labeled `bke-task:ready`;
 - `bke-task:blocked` makes a task non-runnable;
