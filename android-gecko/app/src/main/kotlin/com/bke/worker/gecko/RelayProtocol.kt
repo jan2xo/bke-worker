@@ -21,6 +21,10 @@ data class RelayWake(
 object RelayProtocol {
     const val VERSION = 1
     const val CONTROL_REPOSITORY = "jan2xo/bke-worker"
+    private val CONTROL_REPOSITORIES = setOf(
+        CONTROL_REPOSITORY,
+        "jan2xo/bke-demo-app",
+    )
 
     private val workerIdPattern = Regex("^[a-z0-9][a-z0-9-]{0,62}$")
     private val shaPattern = Regex("^[0-9a-f]{40}$")
@@ -84,7 +88,7 @@ object RelayProtocol {
         val deliveryId = json.optString("delivery_id")
 
         if (workerId != expectedWorkerId || !workerIdPattern.matches(workerId)) return null
-        if (repo != CONTROL_REPOSITORY) return null
+        if (repo !in CONTROL_REPOSITORIES) return null
         if (prNumber <= 0) return null
         if (!shaPattern.matches(expectedHeadSha)) return null
         if (!reasonPattern.matches(reason)) return null
