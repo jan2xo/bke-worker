@@ -65,16 +65,21 @@ npm run check
 python3 ../tests/cloudflare_relay_contract.py
 ```
 
-## Preproduction configuration
+## Preproduction creation
 
-When the owner is ready to certify/deploy preproduction:
+After Cloudflare authentication, create the PREPRODUCTION Worker, generate/store its
+two master secrets, deploy the Durable Object relay, and print the worker-bound
+Android token with one command:
 
 ```bash
 cd cloudflare-relay
-wrangler secret put BKE_WORKER_GITHUB_WEBHOOK_SECRET --env preproduction
-wrangler secret put BKE_WORKER_RELAY_TOKEN_KEY --env preproduction
-wrangler deploy --env preproduction
+bash scripts/create-preproduction-worker.sh
 ```
+
+The creator stores master secrets only in `~/.bke-secrets` with mode `0600`,
+writes them to Cloudflare through Wrangler secret bindings, and never copies the
+relay master key to Android. It also performs only a dry-run GitHub webhook plan;
+GitHub mutation remains a separate explicit action.
 
 Then configure the Android relay URL as:
 
