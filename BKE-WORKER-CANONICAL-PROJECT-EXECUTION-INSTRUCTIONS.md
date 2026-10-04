@@ -238,11 +238,12 @@ For the current GitHub-native runtime, the normal modules are:
 
 - `core` for orchestration/contracts/state/webhook logic;
 - `server` for published server/runtime behavior;
-- `chatgpt` for controlled Playwright/ChatGPT adapter behavior.
+- `chatgpt` for controlled Playwright/ChatGPT adapter behavior;
+- `relay` for Cloudflare webhook verification, per-worker Durable Object routing, WSS delivery semantics, and the declared Android relay protocol boundary.
 
 Only run the minimum complete graph required by the actual change.
 
-Android APK certification is not part of the canonical Linux/Playwright runtime unless the intent explicitly touches the legacy Android path.
+Android APK certification is not part of the canonical Linux/Playwright runtime unless the intent explicitly touches the Android path. A relay-only change should prove Android compatibility through the relay-owned cross-boundary contract and does not automatically require rebuilding the Android APK.
 
 Notion certification is not valid or required because Notion is not part of canonical runtime authority.
 

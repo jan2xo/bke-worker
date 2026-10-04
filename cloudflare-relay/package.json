@@ -1,0 +1,14 @@
+{
+  "name": "@bke/worker-cloudflare-relay",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check src/protocol.js && node --check src/index.js && node scripts/validate-config.mjs && npm test",
+    "runtime-smoke": "node tests/runtime-smoke.mjs"
+  }
+}

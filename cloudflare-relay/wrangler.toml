@@ -1,0 +1,34 @@
+name = "bke-worker-relay"
+main = "src/index.js"
+compatibility_date = "2026-10-04"
+workers_dev = false
+preview_urls = false
+
+[exports.WorkerSession]
+type = "durable-object"
+storage = "sqlite"
+
+[[durable_objects.bindings]]
+name = "WORKER_SESSIONS"
+class_name = "WorkerSession"
+
+[secrets]
+required = [
+  "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
+  "BKE_WORKER_RELAY_TOKEN_KEY",
+]
+
+[env.preproduction]
+name = "bke-worker-relay-preproduction"
+workers_dev = true
+preview_urls = false
+
+[[env.preproduction.durable_objects.bindings]]
+name = "WORKER_SESSIONS"
+class_name = "WorkerSession"
+
+[env.preproduction.secrets]
+required = [
+  "BKE_WORKER_GITHUB_WEBHOOK_SECRET",
+  "BKE_WORKER_RELAY_TOKEN_KEY",
+]
