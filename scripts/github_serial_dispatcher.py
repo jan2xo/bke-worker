@@ -262,7 +262,7 @@ class GitHubApi:
         return [item for item in payload.get("items") or [] if isinstance(item, dict)]
 
     def get_branch_ref(self, branch: str) -> dict[str, Any] | None:
-        encoded = urllib.parse.quote(branch, safe="")
+        encoded = urllib.parse.quote(branch, safe="/")
         payload = self.request(
             "GET",
             f"/repos/{self.repository}/git/ref/heads/{encoded}",
