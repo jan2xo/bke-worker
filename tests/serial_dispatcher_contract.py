@@ -16,13 +16,21 @@ sys.modules[SPEC.name] = dispatcher
 SPEC.loader.exec_module(dispatcher)
 
 
-def issue(number, title, state="open", labels=(), body="task body"):
+def issue(
+    number,
+    title,
+    state="open",
+    labels=(),
+    body="task body",
+    author_association="OWNER",
+):
     return {
         "number": number,
         "title": title,
         "state": state,
         "body": body,
         "labels": [{"name": label} for label in labels],
+        "author_association": author_association,
     }
 
 
@@ -151,6 +159,45 @@ class SerialDispatcherTests(unittest.TestCase):
         selected = dispatcher.choose_first_runnable([1, 2, 3, 4], tasks)
         self.assertIsNotNone(selected)
         self.assertEqual(selected.number, 4)
+
+    def test_untrusted_master_fails_closed(self):
+        api = FakeApi(
+            masters=[
+                issue(
+                    100,
+                    "master",
+                    body="- [ ] #1",
+                    author_association="NONE",
+                )
+            ],
+            issues={
+                1: issue(1, "ready", labels=[dispatcher.READY_LABEL])
+            },
+        )
+        with self.assertRaisesRegex(
+            dispatcher.DispatchError,
+            "UNTRUSTED_MASTER_QUEUE",
+        ):
+            dispatcher.reconcile(api)
+
+    def test_untrusted_ready_task_is_not_runnable(self):
+        master = issue(100, "master", body="- [ ] #1")
+        api = FakeApi(
+            masters=[master],
+            issues={
+                1: issue(
+                    1,
+                    "ready but untrusted",
+                    labels=[dispatcher.READY_LABEL],
+                    author_association="NONE",
+                )
+            },
+        )
+        result = dispatcher.reconcile(api)
+        self.assertEqual(
+            result,
+            {"state": "WAITING", "reason": "NO_RUNNABLE_TASK"},
+        )
 
     def test_zero_master_waits(self):
         api = FakeApi()
