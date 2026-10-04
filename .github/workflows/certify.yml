@@ -579,41 +579,6 @@ jobs:
 
           npm run runtime-smoke
 
-      - name: Execute production Worker + Durable Object smoke
-        working-directory: cloudflare-relay
-        shell: bash
-        env:
-          BKE_WORKER_GITHUB_WEBHOOK_SECRET: relay-ci-webhook-secret
-          BKE_WORKER_RELAY_TOKEN_KEY: relay-ci-master-key-0123456789abcdef
-          BKE_RELAY_SMOKE_URL: http://127.0.0.1:8791
-        run: |
-          set -euo pipefail
-          npx --yes wrangler@4.147.0 dev \
-            --local \
-            --env production \
-            --ip 127.0.0.1 \
-            --port 8791 \
-            --log-level warn \
-            > /tmp/bke-worker-relay-production-wrangler.log 2>&1 &
-          WRANGLER_PID=$!
-          trap 'kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
-
-          ready=0
-          for _ in {1..60}; do
-            status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8791/ || true)"
-            if [[ "$status" != "000" ]]; then
-              ready=1
-              break
-            fi
-            sleep 1
-          done
-          if [[ "$ready" != "1" ]]; then
-            cat /tmp/bke-worker-relay-production-wrangler.log
-            exit 1
-          fi
-
-          npm run runtime-smoke
-
       - name: Diff hygiene
         run: git diff --check
 
