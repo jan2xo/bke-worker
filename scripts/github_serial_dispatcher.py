@@ -17,7 +17,8 @@ READY_LABEL = "bke-task:ready"
 BLOCKED_LABEL = "bke-task:blocked"
 WORKER_ID = "android-worker-a"
 WORKER_LABEL = f"bke-worker:{WORKER_ID}"
-TASK_BRANCH_PREFIX = "bke/task-"\nTRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+TASK_BRANCH_PREFIX = "bke/task-"
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 _CHECKLIST_RE = re.compile(r"^(?P<prefix>\s*[-*]\s+)\[(?P<checked>[ xX])\](?P<rest>.*)$")
 _ISSUE_URL_RE = re.compile(
