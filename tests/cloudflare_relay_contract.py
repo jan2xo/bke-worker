@@ -94,6 +94,8 @@ for token in (
     '[secrets]',
     '[env.preproduction]',
     '[env.preproduction.secrets]',
+    '[env.production]',
+    '[env.production.secrets]',
 ):
     assert token in wrangler, token
 
