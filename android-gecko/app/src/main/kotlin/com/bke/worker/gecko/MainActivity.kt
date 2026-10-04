@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.text.InputType
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.Button
@@ -120,16 +121,23 @@ class MainActivity : Activity() {
         statusCard.addView(status)
         root.addView(statusCard)
 
-        root.addView(TextView(this).apply {
-            text = "WORKER CONFIGURATION"
+        val configCard = compactCardContainer()
+        configCard.visibility = View.GONE
+
+        val configToggle = TextView(this).apply {
+            text = "WORKER CONFIGURATION ▾"
             textSize = 12f
             setTextColor(COLOR_ACCENT)
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = 0.08f
-            setPadding(dp(2), 0, 0, dp(6))
-        })
-
-        val configCard = compactCardContainer()
+            setPadding(dp(2), dp(2), 0, dp(8))
+            setOnClickListener {
+                val expanded = configCard.visibility == View.VISIBLE
+                configCard.visibility = if (expanded) View.GONE else View.VISIBLE
+                text = if (expanded) "WORKER CONFIGURATION ▾" else "WORKER CONFIGURATION ▴"
+            }
+        }
+        root.addView(configToggle)
 
         workerIdInput = EditText(this).apply {
             hint = "Worker ID"
