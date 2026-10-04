@@ -129,7 +129,7 @@ assert 'echo "$SECRET"' not in webhook_configurator
 
 for token in (
     'wrangler whoami',
-    'wrangler deploy \\',
+    'wrangler deploy',
     '--env "$ENVIRONMENT"',
     'BKE_WORKER_GITHUB_WEBHOOK_SECRET',
     'BKE_WORKER_RELAY_TOKEN_KEY',
