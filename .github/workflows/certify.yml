@@ -134,6 +134,9 @@ jobs:
       - name: Execute signed GitHub webhook tests
         run: dotnet test tests/BKE.Worker.GitHub.Tests/BKE.Worker.GitHub.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
 
+      - name: Execute serial Master Queue dispatcher contract
+        run: python3 tests/serial_dispatcher_contract.py
+
       - name: Verify GitHub-native authority boundary
         shell: python
         run: |

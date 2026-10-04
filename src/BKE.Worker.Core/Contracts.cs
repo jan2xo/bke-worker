@@ -108,7 +108,7 @@ public static class WorkerPrompts
         "CONTINUE AUTONOMOUS ENGINEERING. " +
         "This worker may run in a ChatGPT account with no BKE project, memory, or prior chat context. " +
         "Before acting, read " + CanonicalInstructionsPath +
-        " from current main of " + CanonicalControlRepository +
+        " from current main of jan2xo/bke-worker" +
         " and treat that main-branch file as the canonical BKE Worker execution contract; " +
         "if it cannot be recovered, stop fail-closed. " +
         "Do not substitute ChatGPT project configuration, memory, prior chats, " +

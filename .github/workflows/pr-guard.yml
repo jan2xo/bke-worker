@@ -23,7 +23,7 @@ jobs:
           root = Path(".")
           workflows = root / ".github/workflows"
           active = sorted(path.name for path in workflows.glob("*.yml"))
-          expected = ["certify.yml", "pr-guard.yml"]
+          expected = ["certify.yml", "pr-guard.yml", "serial-dispatcher.yml"]
           if active != expected:
               raise SystemExit(
                   f"Active workflows drifted: expected {expected}, got {active}"
@@ -58,6 +58,37 @@ jobs:
           ]:
               if token not in certify:
                   raise SystemExit(f"Android certification module lost: {token}")
+
+          dispatcher = (workflows / "serial-dispatcher.yml").read_text(encoding="utf-8")
+          for token in [
+              "issues:",
+              "pull_request_target:",
+              "workflow_dispatch:",
+              "group: bke-worker-serial-dispatcher",
+              "cancel-in-progress: false",
+              "contents: write",
+              "pull-requests: write",
+              "issues: write",
+              "github.event.repository.default_branch",
+              "persist-credentials: false",
+              "python3 scripts/github_serial_dispatcher.py",
+              "BKE_WORKER_ID: android-worker-a",
+          ]:
+              if token not in dispatcher:
+                  raise SystemExit(
+                      "Serial dispatcher workflow lost required boundary: " + token
+                  )
+
+          for forbidden in [
+              "worker-b",
+              "worker-c",
+              "github.event.pull_request.head.sha",
+          ]:
+              if forbidden in dispatcher:
+                  raise SystemExit(
+                      "Serial dispatcher gained forbidden parallel/untrusted-head behavior: "
+                      + forbidden
+                  )
 
           automatic = re.findall(
               r"(?m)^  (push|pull_request|schedule|workflow_run):",
@@ -121,3 +152,6 @@ jobs:
               )
 
           print("BKE Worker PR Guard: PASS")
+
+      - name: Execute serial Master Queue dispatcher contract
+        run: python3 tests/serial_dispatcher_contract.py

@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Iterable
+
+MASTER_LABEL = "bke-queue:master"
+READY_LABEL = "bke-task:ready"
+BLOCKED_LABEL = "bke-task:blocked"
+WORKER_ID = "android-worker-a"
+WORKER_LABEL = f"bke-worker:{WORKER_ID}"
+TASK_BRANCH_PREFIX = "bke/task-"
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+_CHECKLIST_RE = re.compile(r"^(?P<prefix>\s*[-*]\s+)\[(?P<checked>[ xX])\](?P<rest>.*)$")
+_ISSUE_URL_RE = re.compile(
+    r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/issues/(?P<number>\d+)"
+)
+_HASH_REF_RE = re.compile(r"(?<![A-Za-z0-9_/])#(?P<number>\d+)\b")
+
+
+class DispatchError(RuntimeError):
+    pass
+
+
+class WorkerState(str, Enum):
+    FREE = "FREE"
+    BUSY = "BUSY"
+    CONFLICT = "CONFLICT"
+
+
+@dataclass(frozen=True)
+class TaskSnapshot:
+    number: int
+    title: str
+    body: str
+    state: str
+    labels: frozenset[str]
+    author_association: str
+
+    @property
+    def is_runnable(self) -> bool:
+        return (
+            self.state.lower() == "open"
+            and self.author_association in TRUSTED_ASSOCIATIONS
+            and READY_LABEL in self.labels
+            and BLOCKED_LABEL not in self.labels
+        )
+
+
+def _labels(payload: dict[str, Any]) -> frozenset[str]:
+    names: set[str] = set()
+    for item in payload.get("labels") or []:
+        value = item.get("name") if isinstance(item, dict) else item
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return frozenset(names)
+
+
+def issue_number_from_checklist_line(line: str, owner: str, repo: str) -> int | None:
+    match = _CHECKLIST_RE.match(line)
+    if not match:
+        return None
+
+    rest = match.group("rest")
+    for url_match in _ISSUE_URL_RE.finditer(rest):
+        if (
+            url_match.group("owner").lower() == owner.lower()
+            and url_match.group("repo").lower() == repo.lower()
+        ):
+            return int(url_match.group("number"))
+
+    hash_match = _HASH_REF_RE.search(rest)
+    if hash_match:
+        return int(hash_match.group("number"))
+    return None
+
+
+def parse_master_checklist(body: str, owner: str, repo: str) -> list[int]:
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for line in body.splitlines():
+        number = issue_number_from_checklist_line(line, owner, repo)
+        if number is None or number in seen:
+            continue
+        seen.add(number)
+        ordered.append(number)
+    return ordered
+
+
+def reconcile_master_checklist(
+    body: str,
+    owner: str,
+    repo: str,
+    states: dict[int, str],
+) -> str:
+    output: list[str] = []
+    for line in body.splitlines():
+        number = issue_number_from_checklist_line(line, owner, repo)
+        if number is None or number not in states:
+            output.append(line)
+            continue
+
+        match = _CHECKLIST_RE.match(line)
+        if not match:
+            output.append(line)
+            continue
+
+        desired = "x" if states[number].lower() == "closed" else " "
+        output.append(f"{match.group('prefix')}[{desired}]{match.group('rest')}")
+    suffix = "\n" if body.endswith("\n") else ""
+    return "\n".join(output) + suffix
+
+
+def classify_worker(open_assigned_prs: Iterable[int]) -> WorkerState:
+    count = len(list(open_assigned_prs))
+    if count == 0:
+        return WorkerState.FREE
+    if count == 1:
+        return WorkerState.BUSY
+    return WorkerState.CONFLICT
+
+
+def choose_first_runnable(
+    order: Iterable[int],
+    tasks: dict[int, TaskSnapshot],
+) -> TaskSnapshot | None:
+    for number in order:
+        task = tasks.get(number)
+        if task is not None and task.is_runnable:
+            return task
+    return None
+
+
+def task_branch(task_number: int) -> str:
+    if task_number <= 0:
+        raise ValueError("task number must be positive")
+    return f"{TASK_BRANCH_PREFIX}{task_number}"
+
+
+def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
+    return (
+        "## BKE queued task\n\n"
+        f"Materialized deterministically from task issue #{task.number} by the GitHub-native serial dispatcher.\n\n"
+        f"Closes #{task.number}\n\n"
+        "## Worker Delegation\n\n"
+        f"- **Assigned worker ID:** \`{worker_id}\`\n"
+        f"- **Required PR label:** \`bke-worker:{worker_id}\`\n\n"
+        "Before engineering action, recover the canonical execution contract from current \`main\`, "
+        "recover this PR from live GitHub, verify exact ownership/head, and continue only this task intent.\n\n"
+        "## Task contract\n\n"
+        f"{task.body.rstrip()}\n\n"
+        "## Dispatcher boundary\n\n"
+        "- GitHub is task authority.\n"
+        "- This PR is the active execution ledger.\n"
+        "- Cloudflare/Android are wake/executor layers only.\n"
+        "- Do not invent unrelated work.\n"
+        "- Production remains locked unless separately authorized.\n"
+    )
+
+
+class GitHubApi:
+    def __init__(self, token: str, api_url: str, repository: str):
+        if "/" not in repository:
+            raise DispatchError("GITHUB_REPOSITORY must be owner/repo")
+        self.token = token
+        self.api_url = api_url.rstrip("/")
+        self.repository = repository
+        self.owner, self.repo = repository.split("/", 1)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: Any | None = None,
+        *,
+        allow_404: bool = False,
+    ) -> Any:
+        data = None
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": "bke-worker-serial-dispatcher",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(
+            f"{self.api_url}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read()
+                return json.loads(raw.decode("utf-8")) if raw else None
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8", errors="replace")
+            if allow_404 and error.code == 404:
+                return None
+            raise DispatchError(
+                f"GitHub API {method} {path} failed with {error.code}: {raw}"
+            ) from error
+
+    def paginate(self, path: str) -> list[dict[str, Any]]:
+        separator = "&" if "?" in path else "?"
+        page = 1
+        results: list[dict[str, Any]] = []
+        while True:
+            batch = self.request("GET", f"{path}{separator}per_page=100&page={page}")
+            if not isinstance(batch, list):
+                raise DispatchError(f"Expected list response for {path}")
+            results.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < 100:
+                return results
+            page += 1
+
+    def repo_metadata(self) -> dict[str, Any]:
+        payload = self.request("GET", f"/repos/{self.repository}")
+        if not isinstance(payload, dict):
+            raise DispatchError("Repository metadata invalid")
+        return payload
+
+    def open_master_issues(self) -> list[dict[str, Any]]:
+        encoded = urllib.parse.quote(MASTER_LABEL)
+        issues = self.paginate(
+            f"/repos/{self.repository}/issues?state=open&labels={encoded}"
+        )
+        return [issue for issue in issues if "pull_request" not in issue]
+
+    def get_issue(self, number: int) -> dict[str, Any]:
+        payload = self.request("GET", f"/repos/{self.repository}/issues/{number}")
+        if not isinstance(payload, dict):
+            raise DispatchError(f"Issue #{number} payload invalid")
+        if "pull_request" in payload:
+            raise DispatchError(
+                f"Master checklist reference #{number} is a pull request, not a task issue"
+            )
+        return payload
+
+    def update_issue_body(self, number: int, body: str) -> None:
+        self.request(
+            "PATCH",
+            f"/repos/{self.repository}/issues/{number}",
+            {"body": body},
+        )
+
+    def search_open_worker_prs(self) -> list[dict[str, Any]]:
+        query = f'is:pr is:open label:"{WORKER_LABEL}" user:{self.owner}'
+        encoded = urllib.parse.quote(query)
+        payload = self.request("GET", f"/search/issues?q={encoded}&per_page=100")
+        if not isinstance(payload, dict):
+            raise DispatchError("Worker PR search payload invalid")
+        return [item for item in payload.get("items") or [] if isinstance(item, dict)]
+
+    def get_branch_ref(self, branch: str) -> dict[str, Any] | None:
+        encoded = urllib.parse.quote(branch, safe="/")
+        payload = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/ref/heads/{encoded}",
+            allow_404=True,
+        )
+        if payload is not None and not isinstance(payload, dict):
+            raise DispatchError(f"Branch ref payload invalid for {branch}")
+        return payload
+
+    def open_task_prs(self, branch: str) -> list[dict[str, Any]]:
+        head = urllib.parse.quote(f"{self.owner}:{branch}")
+        return self.paginate(
+            f"/repos/{self.repository}/pulls?state=open&head={head}"
+        )
+
+    def materialize_branch(
+        self,
+        branch: str,
+        base_branch: str,
+        task_number: int,
+    ) -> None:
+        base_ref = self.get_branch_ref(base_branch)
+        if base_ref is None:
+            raise DispatchError(f"Default branch {base_branch} not found")
+        base_sha = ((base_ref.get("object") or {}).get("sha"))
+        if not isinstance(base_sha, str) or len(base_sha) != 40:
+            raise DispatchError("Default branch SHA invalid")
+
+        commit = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/commits/{base_sha}",
+        )
+        tree_sha = ((commit or {}).get("tree") or {}).get("sha")
+        if not isinstance(tree_sha, str) or len(tree_sha) != 40:
+            raise DispatchError("Default branch tree SHA invalid")
+
+        created = self.request(
+            "POST",
+            f"/repos/{self.repository}/git/commits",
+            {
+                "message": f"chore(queue): materialize task #{task_number}",
+                "tree": tree_sha,
+                "parents": [base_sha],
+            },
+        )
+        commit_sha = (created or {}).get("sha")
+        if not isinstance(commit_sha, str) or len(commit_sha) != 40:
+            raise DispatchError("Materialization commit SHA invalid")
+
+        self.request(
+            "POST",
+            f"/repos/{self.repository}/git/refs",
+            {"ref": f"refs/heads/{branch}", "sha": commit_sha},
+        )
+
+    def create_draft_pr(
+        self,
+        task: TaskSnapshot,
+        branch: str,
+        base_branch: str,
+    ) -> dict[str, Any]:
+        payload = self.request(
+            "POST",
+            f"/repos/{self.repository}/pulls",
+            {
+                "title": f"task #{task.number}: {task.title}",
+                "head": branch,
+                "base": base_branch,
+                "body": build_task_pr_body(task),
+                "draft": True,
+                "maintainer_can_modify": True,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise DispatchError("Created PR payload invalid")
+        return payload
+
+    def add_worker_label(self, pr_number: int) -> None:
+        self.request(
+            "POST",
+            f"/repos/{self.repository}/issues/{pr_number}/labels",
+            {"labels": [WORKER_LABEL]},
+        )
+
+
+def task_snapshot(payload: dict[str, Any]) -> TaskSnapshot:
+    return TaskSnapshot(
+        number=int(payload["number"]),
+        title=str(payload.get("title") or "").strip(),
+        body=str(payload.get("body") or ""),
+        state=str(payload.get("state") or ""),
+        labels=_labels(payload),
+        author_association=str(payload.get("author_association") or "NONE").upper(),
+    )
+
+
+def _worker_labels(payload: dict[str, Any]) -> list[str]:
+    return sorted(
+        label
+        for label in _labels(payload)
+        if label.lower().startswith("bke-worker:")
+    )
+
+
+def reconcile(api: GitHubApi) -> dict[str, Any]:
+    masters = api.open_master_issues()
+    if len(masters) == 0:
+        return {"state": "WAITING", "reason": "NO_MASTER_QUEUE"}
+    if len(masters) > 1:
+        raise DispatchError(
+            "AMBIGUOUS_MASTER_QUEUE: expected exactly one open issue labeled "
+            f"{MASTER_LABEL}, found {len(masters)}"
+        )
+
+    master = masters[0]
+    master_association = str(master.get("author_association") or "NONE").upper()
+    if master_association not in TRUSTED_ASSOCIATIONS:
+        raise DispatchError(
+            f"UNTRUSTED_MASTER_QUEUE: author_association={master_association}"
+        )
+    master_number = int(master["number"])
+    master_body = str(master.get("body") or "")
+    order = parse_master_checklist(master_body, api.owner, api.repo)
+
+    tasks: dict[int, TaskSnapshot] = {}
+    states: dict[int, str] = {}
+    for number in order:
+        if number == master_number:
+            raise DispatchError("Master queue cannot reference itself as a task")
+        snapshot = task_snapshot(api.get_issue(number))
+        tasks[number] = snapshot
+        states[number] = snapshot.state
+
+    reconciled_body = reconcile_master_checklist(
+        master_body,
+        api.owner,
+        api.repo,
+        states,
+    )
+    if reconciled_body != master_body:
+        api.update_issue_body(master_number, reconciled_body)
+
+    assigned = api.search_open_worker_prs()
+    worker_state = classify_worker(int(item["number"]) for item in assigned)
+    if worker_state == WorkerState.CONFLICT:
+        refs = [
+            str(item.get("html_url") or item.get("url") or item.get("number"))
+            for item in assigned
+        ]
+        raise DispatchError(
+            "WORKER_OWNERSHIP_CONFLICT: "
+            f"{WORKER_LABEL} owns {len(assigned)} open PRs: {', '.join(refs)}"
+        )
+    if worker_state == WorkerState.BUSY:
+        current = assigned[0]
+        return {
+            "state": "BUSY",
+            "reason": "WORKER_ALREADY_ASSIGNED",
+            "worker": WORKER_ID,
+            "active_pr": current.get("html_url") or current.get("url"),
+        }
+
+    task = choose_first_runnable(order, tasks)
+    if task is None:
+        return {"state": "WAITING", "reason": "NO_RUNNABLE_TASK"}
+
+    branch = task_branch(task.number)
+    existing_prs = api.open_task_prs(branch)
+    if len(existing_prs) > 1:
+        raise DispatchError(
+            f"TASK_MATERIALIZATION_CONFLICT: branch {branch} has {len(existing_prs)} open PRs"
+        )
+    if len(existing_prs) == 1:
+        pr = existing_prs[0]
+        labels = _worker_labels(pr)
+        if len(labels) > 1:
+            raise DispatchError(
+                f"TASK_ASSIGNMENT_CONFLICT: PR #{pr.get('number')} has multiple worker labels"
+            )
+        if len(labels) == 1 and labels[0].lower() != WORKER_LABEL.lower():
+            raise DispatchError(
+                f"TASK_ASSIGNMENT_CONFLICT: PR #{pr.get('number')} belongs to {labels[0]}"
+            )
+        if len(labels) == 0:
+            api.add_worker_label(int(pr["number"]))
+        return {
+            "state": "DISPATCHED",
+            "reason": "ASSIGNED_EXISTING_TASK_PR",
+            "task": task.number,
+            "pr": pr.get("html_url") or pr.get("url"),
+            "worker": WORKER_ID,
+        }
+
+    if api.get_branch_ref(branch) is not None:
+        raise DispatchError(
+            f"ORPHANED_TASK_BRANCH: {branch} exists but has no open PR"
+        )
+
+    repository = api.repo_metadata()
+    base_branch = str(repository.get("default_branch") or "").strip()
+    if not base_branch:
+        raise DispatchError("Repository default branch missing")
+
+    api.materialize_branch(branch, base_branch, task.number)
+    pr = api.create_draft_pr(task, branch, base_branch)
+    pr_number = int(pr["number"])
+    api.add_worker_label(pr_number)
+
+    return {
+        "state": "DISPATCHED",
+        "reason": "MATERIALIZED_NEW_TASK_PR",
+        "task": task.number,
+        "pr": pr.get("html_url") or pr.get("url"),
+        "worker": WORKER_ID,
+    }
+
+
+def main() -> int:
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").strip()
+    requested_worker = os.environ.get("BKE_WORKER_ID", WORKER_ID).strip()
+
+    if requested_worker != WORKER_ID:
+        print(
+            f"BKE serial dispatcher: unsupported worker_id {requested_worker}; v1 is {WORKER_ID} only",
+            file=sys.stderr,
+        )
+        return 2
+    if not token:
+        print("BKE serial dispatcher: GITHUB_TOKEN is required", file=sys.stderr)
+        return 2
+    if not repository:
+        print("BKE serial dispatcher: GITHUB_REPOSITORY is required", file=sys.stderr)
+        return 2
+
+    try:
+        result = reconcile(GitHubApi(token, api_url, repository))
+    except DispatchError as error:
+        print(f"BKE serial dispatcher FAIL-CLOSED: {error}", file=sys.stderr)
+        return 3
+
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
