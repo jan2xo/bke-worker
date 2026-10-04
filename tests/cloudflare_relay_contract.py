@@ -10,6 +10,9 @@ readme = (relay / "README.md").read_text(encoding="utf-8")
 webhook_configurator = (
     relay / "scripts/configure-github-webhook.sh"
 ).read_text(encoding="utf-8")
+preproduction_creator = (
+    relay / "scripts/create-preproduction-worker.sh"
+).read_text(encoding="utf-8")
 android = (
     root
     / "android-gecko/app/src/main/kotlin/com/bke/worker/gecko/RelayProtocol.kt"
@@ -123,5 +126,28 @@ for token in (
     assert token in webhook_configurator, token
 
 assert 'echo "$SECRET"' not in webhook_configurator
+
+for token in (
+    'wrangler whoami',
+    'wrangler deploy \\',
+    '--env "$ENVIRONMENT"',
+    'BKE_WORKER_GITHUB_WEBHOOK_SECRET',
+    'BKE_WORKER_RELAY_TOKEN_KEY',
+    'chmod 700 "$SECRET_DIR"',
+    'chmod 600 "$SECRET_FILE"',
+    'mktemp "$ROOT_DIR/.wrangler-bootstrap.',
+    'targets = {"[secrets]", "[env.preproduction.secrets]"}',
+    'node scripts/derive-worker-token.mjs "$WORKER_ID"',
+    'GitHub webhook mutation was NOT performed.',
+    'Production remains LOCKED.',
+):
+    assert token in preproduction_creator, token
+
+for forbidden in (
+    'echo "$BKE_WORKER_GITHUB_WEBHOOK_SECRET"',
+    'echo "$BKE_WORKER_RELAY_TOKEN_KEY"',
+    'configure-github-webhook.sh --apply',
+):
+    assert forbidden not in preproduction_creator, forbidden
 
 print("BKE Worker Cloudflare durable relay contract: PASS")
