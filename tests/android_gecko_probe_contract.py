@@ -29,6 +29,16 @@ for token in (
     "handleRelayWake",
     "dispatchWake",
     "RECENT_DELIVERY_LIMIT = 64",
+    "ACTION_ENSURE_BROWSER",
+    "ACTION_APPLY_RELAY_CONFIG",
+    "ACTION_START_RELAY",
+    "ACTION_STOP_RELAY",
+    "fun ensureBrowserRunning(",
+    "fun applyRelayConfig(",
+    "fun startRelay(",
+    "fun stopRelay(",
+    "relayRequested = false",
+    "private var appliedRelayConfig = RelayConfig(",
     "data class AndroidWorkerStatusSnapshot(",
     "fun statusSnapshot(): AndroidWorkerStatusSnapshot",
     "chatGptState = workerState",
@@ -44,7 +54,11 @@ for token in (
     "geckoView.setSession(session)",
     "geckoView.releaseSession()",
     "override fun onStop()",
-    "AndroidGeckoWorkerService.ensureRunning(",
+    "AndroidGeckoWorkerService.ensureBrowserRunning(this)",
+    "AndroidGeckoWorkerService.startRelay(",
+    "AndroidGeckoWorkerService.stopRelay(",
+    "AndroidGeckoWorkerService.applyRelayConfig(",
+    "hydrateAppliedConfig()",
     "relayUrlInput",
     "relayTokenInput",
     "Runtime relay token",
@@ -61,8 +75,9 @@ for token in (
     "WORKER CONFIGURATION ▴",
     "configCard.visibility = View.GONE",
     "configCard.visibility == View.VISIBLE",
-    'text = "Start / Apply"',
+    'text = "Start"',
     'text = "Stop"',
+    'text = "Apply"',
     "setBackgroundColor(COLOR_BACKGROUND)",
     "compactCardContainer()",
     "cardEyebrow(",
@@ -166,6 +181,7 @@ for token in (
     'continuationPrompt',
     'appendLine("CONTINUE FROM PR")',
     "Recover the canonical execution contract from current main",
+    "identifiableRejectedDeliveryId",
 ):
     assert token in relay_protocol, token
 
@@ -177,6 +193,10 @@ for token in (
     "RelayProtocol.register",
     "RelayProtocol.ack",
     "scheduleReconnect",
+    "reconnectScheduled",
+    "reconnectRunnable",
+    "webSocket !== socket",
+    'sendAck(rejectedDeliveryId, "rejected")',
 ):
     assert token in relay_client, token
 
@@ -195,6 +215,14 @@ for forbidden in (
     "sessionStorage",
 ):
     assert forbidden not in relay_protocol + probe, forbidden
+
+# Relay protocol recovery must use server-valid ACK states only.
+assert '"duplicate"' not in service
+assert '"bridge_failed"' not in service
+
+# Browser lifetime is independent from relay START / STOP.
+assert "AndroidGeckoWorkerService.stop(this@MainActivity)" not in activity
+assert 'text = "Start / Apply"' not in activity
 
 # Runtime relay credential must not be written to logs or persistent preferences.
 assert "SharedPreferences" not in activity + service
