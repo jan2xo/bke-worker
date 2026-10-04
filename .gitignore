@@ -23,3 +23,5 @@ cloudflare-relay/.wrangler/
 cloudflare-relay/node_modules/
 cloudflare-relay/.dev.vars*
 cloudflare-relay/.env*
+
+cloudflare-relay/.wrangler-bootstrap.*.toml
