@@ -56,6 +56,10 @@ class FakeApi:
         self.materialized = []
         self.created = []
         self.labeled = []
+        self.label_bootstrap_calls = 0
+
+    def ensure_control_labels(self):
+        self.label_bootstrap_calls += 1
 
     def open_master_issues(self):
         return self._masters
@@ -95,7 +99,49 @@ class FakeApi:
         self.labeled.append(pr_number)
 
 
+class RecordingLabelApi(dispatcher.GitHubApi):
+    def __init__(self, existing=()):
+        super().__init__("token", "https://api.example.test", "jan2xo/bke-worker")
+        self.existing = set(existing)
+        self.created = []
+
+    def request(self, method, path, payload=None, *, allow_404=False):
+        if method == "GET" and "/labels/" in path:
+            name = path.rsplit("/", 1)[-1]
+            import urllib.parse
+            decoded = urllib.parse.unquote(name)
+            return {"name": decoded} if decoded in self.existing else None
+        if method == "POST" and path.endswith("/labels"):
+            self.created.append(dict(payload))
+            self.existing.add(payload["name"])
+            return {"name": payload["name"]}
+        raise AssertionError(f"Unexpected request: {method} {path}")
+
+
 class SerialDispatcherTests(unittest.TestCase):
+    def test_control_label_contract_is_bounded(self):
+        self.assertEqual(
+            set(dispatcher.CONTROL_LABELS),
+            {
+                dispatcher.MASTER_LABEL,
+                dispatcher.READY_LABEL,
+                dispatcher.BLOCKED_LABEL,
+                dispatcher.WORKER_LABEL,
+            },
+        )
+
+    def test_control_label_bootstrap_is_idempotent(self):
+        api = RecordingLabelApi(
+            existing=[dispatcher.MASTER_LABEL, dispatcher.WORKER_LABEL]
+        )
+        api.ensure_control_labels()
+        self.assertEqual(
+            {item["name"] for item in api.created},
+            {dispatcher.READY_LABEL, dispatcher.BLOCKED_LABEL},
+        )
+        api.ensure_control_labels()
+        self.assertEqual(len(api.created), 2)
+
     def test_master_checklist_preserves_order_and_deduplicates(self):
         body = """# Queue
 - [ ] First #12
@@ -204,6 +250,7 @@ class SerialDispatcherTests(unittest.TestCase):
         result = dispatcher.reconcile(api)
         self.assertEqual(result["state"], "WAITING")
         self.assertEqual(result["reason"], "NO_MASTER_QUEUE")
+        self.assertEqual(api.label_bootstrap_calls, 1)
 
     def test_multiple_masters_fail_closed(self):
         api = FakeApi(masters=[issue(100, "m1"), issue(101, "m2")])
