@@ -17,7 +17,7 @@ READY_LABEL = "bke-task:ready"
 BLOCKED_LABEL = "bke-task:blocked"
 WORKER_ID = "android-worker-a"
 WORKER_LABEL = f"bke-worker:{WORKER_ID}"
-TASK_BRANCH_PREFIX = "bke/task-"
+TASK_BRANCH_PREFIX = "bke/task-"\nTRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 _CHECKLIST_RE = re.compile(r"^(?P<prefix>\s*[-*]\s+)\[(?P<checked>[ xX])\](?P<rest>.*)$")
 _ISSUE_URL_RE = re.compile(
@@ -43,11 +43,13 @@ class TaskSnapshot:
     body: str
     state: str
     labels: frozenset[str]
+    author_association: str
 
     @property
     def is_runnable(self) -> bool:
         return (
             self.state.lower() == "open"
+            and self.author_association in TRUSTED_ASSOCIATIONS
             and READY_LABEL in self.labels
             and BLOCKED_LABEL not in self.labels
         )
@@ -355,6 +357,7 @@ def task_snapshot(payload: dict[str, Any]) -> TaskSnapshot:
         body=str(payload.get("body") or ""),
         state=str(payload.get("state") or ""),
         labels=_labels(payload),
+        author_association=str(payload.get("author_association") or "NONE").upper(),
     )
 
 
@@ -377,6 +380,11 @@ def reconcile(api: GitHubApi) -> dict[str, Any]:
         )
 
     master = masters[0]
+    master_association = str(master.get("author_association") or "NONE").upper()
+    if master_association not in TRUSTED_ASSOCIATIONS:
+        raise DispatchError(
+            f"UNTRUSTED_MASTER_QUEUE: author_association={master_association}"
+        )
     master_number = int(master["number"])
     master_body = str(master.get("body") or "")
     order = parse_master_checklist(master_body, api.owner, api.repo)
