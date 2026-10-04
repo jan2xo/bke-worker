@@ -16,7 +16,7 @@ Parallel workers are out of scope.
 
 - one issue labeled `bke-queue:master` is the ordered human-facing checklist;
 - task issues referenced by that checklist are queued work;
-- a task issue becomes runnable only when it is open and labeled `bke-task:ready`;
+- a task issue becomes runnable only when it is open, authored by a trusted GitHub association (`OWNER`, `MEMBER`, or `COLLABORATOR`), and labeled `bke-task:ready`;
 - `bke-task:blocked` makes a task non-runnable;
 - a materialized PR is the active execution contract and ledger;
 - `bke-worker:android-worker-a` is the worker ownership lock;
@@ -67,7 +67,7 @@ The control-plane workflow must execute trusted default-branch dispatcher code, 
 - no auth automation;
 - no secret material in queue/task/PR content;
 - no task authority in Cloudflare/Android;
-- public issue content alone is insufficient authority: READY/master labels are maintainer-controlled gates;
+- public issue content alone is insufficient authority: Master/task Issues must also have a trusted GitHub author association, and READY/master labels remain maintainer-controlled gates;
 - ambiguous master queue or worker ownership fails closed.
 
 ## Certification
