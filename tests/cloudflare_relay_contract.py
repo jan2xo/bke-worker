@@ -14,6 +14,9 @@ webhook_configurator = (
 preproduction_creator = (
     relay / "scripts/create-preproduction-worker.sh"
 ).read_text(encoding="utf-8")
+github_app_configurator = (
+    relay / "scripts/configure-github-app-actuator.sh"
+).read_text(encoding="utf-8")
 android = (
     root
     / "android-gecko/app/src/main/kotlin/com/bke/worker/gecko/RelayProtocol.kt"
@@ -184,6 +187,30 @@ for token in (
     'Production remains LOCKED.',
 ):
     assert token in preproduction_creator, token
+
+for token in (
+    'BKE WORKER GITHUB APP ACTUATOR — PREPRODUCTION',
+    'Metadata: read',
+    'Contents: read & write',
+    'Issues: read & write',
+    'Pull requests: read & write',
+    'BKE_WORKER_GITHUB_APP_ID',
+    'BKE_WORKER_GITHUB_APP_INSTALLATION_ID',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    'wrangler secret put BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    'gh variable set BKE_WORKER_GITHUB_APP_BROKER_URL',
+    'Production remains LOCKED.',
+):
+    assert token in github_app_configurator, token
+
+for forbidden in (
+    'echo "$PRIVATE_KEY_FILE"',
+    'cat "$PRIVATE_KEY_FILE" | tee',
+    'gh secret set',
+    'Administration: write',
+):
+    assert forbidden not in github_app_configurator, forbidden
 
 for forbidden in (
     'echo "$BKE_WORKER_GITHUB_WEBHOOK_SECRET"',
