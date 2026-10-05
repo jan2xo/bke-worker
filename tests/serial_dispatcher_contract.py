@@ -440,7 +440,7 @@ class SerialDispatcherTests(unittest.TestCase):
 
     def test_dispatcher_source_has_no_invalid_markdown_escape(self):
         source = SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn("\\\`", source)
+        self.assertNotIn(r"\\`", source)
 
     def test_pr_body_carries_issue_contract_and_worker_lock(self):
         task = dispatcher.task_snapshot(
