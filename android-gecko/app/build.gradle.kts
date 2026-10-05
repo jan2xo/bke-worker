@@ -45,6 +45,9 @@ android {
 
     buildTypes {
         getByName("debug") {
+            applicationIdSuffix = ".recoverycert"
+            versionNameSuffix = "-recoverycert"
+            manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"
             isDebuggable = true
         }
 
