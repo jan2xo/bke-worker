@@ -499,7 +499,7 @@ class SerialDispatcherTests(unittest.TestCase):
         ]:
             self.assertIn(token, body)
 
-    def test_workflow_is_serial_trusted_main_and_write_bounded(self):
+    def test_workflow_is_serial_trusted_main_and_github_app_bounded(self):
         workflow = (
             ROOT / ".github/workflows/serial-dispatcher.yml"
         ).read_text(encoding="utf-8")
@@ -509,17 +509,28 @@ class SerialDispatcherTests(unittest.TestCase):
             "workflow_dispatch:",
             "group: bke-worker-serial-dispatcher",
             "cancel-in-progress: false",
-            "contents: write",
-            "pull-requests: write",
-            "issues: write",
+            "contents: read",
+            "id-token: write",
             "ref: ${{ github.event.repository.default_branch }}",
             "persist-credentials: false",
+            "BKE_WORKER_GITHUB_APP_BROKER_URL",
+            "bke-worker-github-app-broker",
+            "/github/app/install-token",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            'echo "::add-mask::$app_token"',
+            "BKE_GITHUB_APP_TOKEN=$app_token",
+            'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
             "python3 scripts/github_serial_dispatcher.py",
             "BKE_WORKER_ID: android-worker-a",
         ]
         for token in required:
             self.assertIn(token, workflow)
         forbidden = [
+            "contents: write",
+            "pull-requests: write",
+            "issues: write",
+            "GITHUB_TOKEN: ${{ github.token }}",
             "worker-b",
             "worker-c",
             "github.event.pull_request.head.sha",

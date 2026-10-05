@@ -74,10 +74,13 @@ jobs:
               "workflow_dispatch:",
               "group: bke-worker-serial-dispatcher",
               "cancel-in-progress: false",
-              "contents: write",
-              "pull-requests: write",
-              "issues: write",
+              "contents: read",
+              "id-token: write",
               "github.event.repository.default_branch",
+              "BKE_WORKER_GITHUB_APP_BROKER_URL",
+              "bke-worker-github-app-broker",
+              "/github/app/install-token",
+              'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
               "persist-credentials: false",
               "python3 scripts/github_serial_dispatcher.py",
               "BKE_WORKER_ID: android-worker-a",
@@ -88,6 +91,10 @@ jobs:
                   )
 
           for forbidden in [
+              "contents: write",
+              "pull-requests: write",
+              "issues: write",
+              "GITHUB_TOKEN: ${{ github.token }}",
               "worker-b",
               "worker-c",
               "github.event.pull_request.head.sha",
