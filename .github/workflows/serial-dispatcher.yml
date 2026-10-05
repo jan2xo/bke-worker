@@ -8,9 +8,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
+  id-token: write
 
 concurrency:
   group: bke-worker-serial-dispatcher
@@ -38,10 +37,78 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse --abbrev-ref HEAD)" = "$DEFAULT_BRANCH"
 
+      - name: Mint scoped BKE GitHub App installation token
+        shell: bash
+        env:
+          BKE_GITHUB_APP_BROKER_URL: ${{ vars.BKE_WORKER_GITHUB_APP_BROKER_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BKE_GITHUB_APP_BROKER_URL:-}" ]]; then
+            echo "BKE dispatcher FAIL-CLOSED: BKE_WORKER_GITHUB_APP_BROKER_URL repository variable is required" >&2
+            exit 3
+          fi
+
+          audience="bke-worker-github-app-broker"
+          encoded_audience="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$audience")"
+          separator="?"
+          if [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *"?"* ]]; then
+            separator="&"
+          fi
+
+          oidc_json="$(
+            curl --fail --silent --show-error               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${encoded_audience}"
+          )"
+          oidc_token="$(
+            OIDC_JSON="$oidc_json" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["OIDC_JSON"])
+token = payload.get("value")
+if not isinstance(token, str) or not token:
+    raise SystemExit("GitHub Actions OIDC response missing value")
+print(token)
+PY
+          )"
+
+          broker_url="${BKE_GITHUB_APP_BROKER_URL%/}/github/app/install-token"
+          broker_json="$(
+            curl --fail --silent --show-error               --request POST               -H "Authorization: Bearer $oidc_token"               -H "Accept: application/json"               "$broker_url"
+          )"
+
+          readarray -t broker_fields < <(
+            BROKER_JSON="$broker_json" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["BROKER_JSON"])
+token = payload.get("token")
+expires_at = payload.get("expires_at")
+repository = payload.get("repository")
+if not isinstance(token, str) or not token:
+    raise SystemExit("BKE GitHub App broker response missing token")
+if repository != "jan2xo/bke-worker":
+    raise SystemExit("BKE GitHub App broker returned unexpected repository")
+if not isinstance(expires_at, str) or not expires_at:
+    raise SystemExit("BKE GitHub App broker response missing expiry")
+print(token)
+print(expires_at)
+PY
+          )
+
+          app_token="${broker_fields[0]}"
+          expires_at="${broker_fields[1]}"
+          echo "::add-mask::$app_token"
+          echo "BKE_GITHUB_APP_TOKEN=$app_token" >> "$GITHUB_ENV"
+          echo "BKE GitHub App installation token minted; expires_at=$expires_at"
+
       - name: Reconcile serial queue
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ env.BKE_GITHUB_APP_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_API_URL: ${{ github.api_url }}
           BKE_WORKER_ID: android-worker-a
