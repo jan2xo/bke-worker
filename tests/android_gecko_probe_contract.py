@@ -63,7 +63,8 @@ for token in (
     "workerSession.open(runtime)",
     "workerSession.loadUri(CHATGPT_URL)",
     "activeWakeUncertain = true",
-    "workerState = STATE_BLOCKED_UNCERTAIN",
+    "workerState = if (activeWakeUncertain)",
+    "STATE_BLOCKED_UNCERTAIN",
 ):
     assert token in service, token
 
@@ -292,7 +293,8 @@ assert "previousState != STATE_NO_COMPOSER" in service
 assert "activeWake != null" in service
 assert "activeWakeUncertain = true" in service
 assert "active != null && !activeWakeUncertain" in service
-assert "workerState == STATE_BLOCKED_UNCERTAIN" in service
+assert "workerState = if (activeWakeUncertain)" in service
+assert "STATE_BLOCKED_UNCERTAIN" in service
 assert "mainHandler.removeCallbacksAndMessages(null)" in service
 
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
