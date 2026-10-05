@@ -126,7 +126,7 @@ for token in (
     'android:foregroundServiceType="specialUse"',
     'android:stopWithTask="false"',
     "android.permission.POST_NOTIFICATIONS",
-    'android:label="BKE Worker"',
+    'android:label="${appLabel}"',
     'android:theme="@style/BkeWorkerTheme"',
 ):
     assert token in manifest, token
@@ -223,6 +223,16 @@ for token in (
     assert token in relay_client, token
 
 assert 'implementation("com.squareup.okhttp3:okhttp:4.12.0")' in build
+
+for token in (
+    'manifestPlaceholders["appLabel"] = "BKE Worker"',
+    'create("recovery")',
+    'applicationIdSuffix = ".recoverycert"',
+    'versionNameSuffix = "-recoverycert"',
+    'manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"',
+    "isDebuggable = true",
+):
+    assert token in build, token
 
 # Remote relay wake is metadata-only; it cannot carry arbitrary prompt/JS/shell commands.
 for forbidden in (
