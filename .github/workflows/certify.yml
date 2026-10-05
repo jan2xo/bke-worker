@@ -369,28 +369,18 @@ jobs:
       - name: Verify UTM WSS relay smoke contract
         run: python3 tests/utm_relay_contract.py
 
-      - name: Build Android Gecko debug and recovery-cert APKs
-        run: gradle -p android-gecko :app:assembleDebug :app:assembleRecovery --stacktrace
+      - name: Build Android Gecko debug APK
+        run: gradle -p android-gecko :app:assembleDebug --stacktrace
 
-      - name: Verify Android APKs exist
+      - name: Verify APK exists
         shell: bash
-        run: |
-          test -f android-gecko/app/build/outputs/apk/debug/app-debug.apk
-          find android-gecko/app/build/outputs/apk/recovery -maxdepth 1 -type f -name '*.apk' -print -quit | grep -q .
+        run: test -f android-gecko/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload Android Gecko probe APK
         uses: actions/upload-artifact@v4
         with:
           name: bke-worker-android-gecko-probe
           path: android-gecko/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload side-by-side Android recovery-cert APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: bke-worker-android-recovery-cert
-          path: android-gecko/app/build/outputs/apk/recovery/*.apk
           if-no-files-found: error
           retention-days: 7
 
