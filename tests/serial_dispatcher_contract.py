@@ -520,7 +520,7 @@ class SerialDispatcherTests(unittest.TestCase):
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
             'echo "::add-mask::$app_token"',
             "BKE_GITHUB_APP_TOKEN=$app_token",
-            "GITHUB_TOKEN: ${{ env.BKE_GITHUB_APP_TOKEN }}",
+            'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
             "python3 scripts/github_serial_dispatcher.py",
             "BKE_WORKER_ID: android-worker-a",
         ]
