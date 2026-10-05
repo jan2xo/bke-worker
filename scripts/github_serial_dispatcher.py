@@ -152,6 +152,47 @@ def task_branch(task_number: int) -> str:
     return f"{TASK_BRANCH_PREFIX}{task_number}"
 
 
+def materialization_commit_message(task_number: int) -> str:
+    return f"chore(queue): materialize task #{task_number}"
+
+
+def validate_orphan_materialization(
+    branch_commit: dict[str, Any],
+    parent_commit: dict[str, Any],
+    task_number: int,
+) -> str:
+    expected_message = materialization_commit_message(task_number)
+    message = str(branch_commit.get("message") or "")
+    parents = branch_commit.get("parents") or []
+    branch_tree = ((branch_commit.get("tree") or {}).get("sha"))
+    parent_tree = ((parent_commit.get("tree") or {}).get("sha"))
+
+    if message != expected_message:
+        raise DispatchError(
+            "ORPHANED_TASK_BRANCH_UNSAFE: materialization commit message mismatch"
+        )
+    if len(parents) != 1:
+        raise DispatchError(
+            "ORPHANED_TASK_BRANCH_UNSAFE: expected exactly one materialization parent"
+        )
+    parent_sha = (parents[0] or {}).get("sha")
+    if not isinstance(parent_sha, str) or len(parent_sha) != 40:
+        raise DispatchError(
+            "ORPHANED_TASK_BRANCH_UNSAFE: materialization parent SHA invalid"
+        )
+    if (
+        not isinstance(branch_tree, str)
+        or len(branch_tree) != 40
+        or not isinstance(parent_tree, str)
+        or len(parent_tree) != 40
+        or branch_tree != parent_tree
+    ):
+        raise DispatchError(
+            "ORPHANED_TASK_BRANCH_UNSAFE: orphan branch contains file changes"
+        )
+    return parent_sha
+
+
 def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
     return (
         "## BKE queued task\n\n"
@@ -335,7 +376,7 @@ class GitHubApi:
             "POST",
             f"/repos/{self.repository}/git/commits",
             {
-                "message": f"chore(queue): materialize task #{task_number}",
+                "message": materialization_commit_message(task_number),
                 "tree": tree_sha,
                 "parents": [base_sha],
             },
@@ -348,6 +389,99 @@ class GitHubApi:
             "POST",
             f"/repos/{self.repository}/git/refs",
             {"ref": f"refs/heads/{branch}", "sha": commit_sha},
+        )
+
+    def recover_orphaned_task_branch(
+        self,
+        branch: str,
+        base_branch: str,
+        task_number: int,
+    ) -> None:
+        branch_ref = self.get_branch_ref(branch)
+        if branch_ref is None:
+            raise DispatchError(f"Orphan branch {branch} disappeared during recovery")
+        branch_sha = ((branch_ref.get("object") or {}).get("sha"))
+        if not isinstance(branch_sha, str) or len(branch_sha) != 40:
+            raise DispatchError("ORPHANED_TASK_BRANCH_UNSAFE: branch SHA invalid")
+
+        branch_commit = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/commits/{branch_sha}",
+        )
+        if not isinstance(branch_commit, dict):
+            raise DispatchError(
+                "ORPHANED_TASK_BRANCH_UNSAFE: branch commit payload invalid"
+            )
+        parents = branch_commit.get("parents") or []
+        if len(parents) != 1:
+            raise DispatchError(
+                "ORPHANED_TASK_BRANCH_UNSAFE: expected one branch parent"
+            )
+        original_parent_sha = (parents[0] or {}).get("sha")
+        if not isinstance(original_parent_sha, str) or len(original_parent_sha) != 40:
+            raise DispatchError(
+                "ORPHANED_TASK_BRANCH_UNSAFE: original parent SHA invalid"
+            )
+        original_parent = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/commits/{original_parent_sha}",
+        )
+        if not isinstance(original_parent, dict):
+            raise DispatchError(
+                "ORPHANED_TASK_BRANCH_UNSAFE: parent commit payload invalid"
+            )
+        validate_orphan_materialization(
+            branch_commit,
+            original_parent,
+            task_number,
+        )
+
+        base_ref = self.get_branch_ref(base_branch)
+        if base_ref is None:
+            raise DispatchError(f"Default branch {base_branch} not found")
+        base_sha = ((base_ref.get("object") or {}).get("sha"))
+        if not isinstance(base_sha, str) or len(base_sha) != 40:
+            raise DispatchError("Default branch SHA invalid")
+
+        if original_parent_sha == base_sha:
+            return
+
+        base_commit = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/commits/{base_sha}",
+        )
+        base_tree_sha = ((base_commit or {}).get("tree") or {}).get("sha")
+        if not isinstance(base_tree_sha, str) or len(base_tree_sha) != 40:
+            raise DispatchError("Default branch tree SHA invalid")
+
+        refreshed = self.request(
+            "GET",
+            f"/repos/{self.repository}/git/ref/heads/{urllib.parse.quote(branch, safe='/')}",
+        )
+        refreshed_sha = ((refreshed or {}).get("object") or {}).get("sha")
+        if refreshed_sha != branch_sha:
+            raise DispatchError(
+                "ORPHANED_TASK_BRANCH_UNSAFE: branch changed during recovery"
+            )
+
+        created = self.request(
+            "POST",
+            f"/repos/{self.repository}/git/commits",
+            {
+                "message": materialization_commit_message(task_number),
+                "tree": base_tree_sha,
+                "parents": [base_sha],
+            },
+        )
+        new_sha = (created or {}).get("sha")
+        if not isinstance(new_sha, str) or len(new_sha) != 40:
+            raise DispatchError("Recovered materialization commit SHA invalid")
+
+        encoded = urllib.parse.quote(branch, safe="/")
+        self.request(
+            "PATCH",
+            f"/repos/{self.repository}/git/refs/heads/{encoded}",
+            {"sha": new_sha, "force": True},
         )
 
     def create_draft_pr(
@@ -489,24 +623,28 @@ def reconcile(api: GitHubApi) -> dict[str, Any]:
             "worker": WORKER_ID,
         }
 
-    if api.get_branch_ref(branch) is not None:
-        raise DispatchError(
-            f"ORPHANED_TASK_BRANCH: {branch} exists but has no open PR"
-        )
-
     repository = api.repo_metadata()
     base_branch = str(repository.get("default_branch") or "").strip()
     if not base_branch:
         raise DispatchError("Repository default branch missing")
 
-    api.materialize_branch(branch, base_branch, task.number)
+    orphaned = api.get_branch_ref(branch) is not None
+    if orphaned:
+        api.recover_orphaned_task_branch(branch, base_branch, task.number)
+    else:
+        api.materialize_branch(branch, base_branch, task.number)
+
     pr = api.create_draft_pr(task, branch, base_branch)
     pr_number = int(pr["number"])
     api.add_worker_label(pr_number)
 
     return {
         "state": "DISPATCHED",
-        "reason": "MATERIALIZED_NEW_TASK_PR",
+        "reason": (
+            "RECOVERED_ORPHANED_TASK_BRANCH"
+            if orphaned
+            else "MATERIALIZED_NEW_TASK_PR"
+        ),
         "task": task.number,
         "pr": pr.get("html_url") or pr.get("url"),
         "worker": WORKER_ID,
