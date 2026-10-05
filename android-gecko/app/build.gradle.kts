@@ -25,6 +25,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.0.1-probe"
+        manifestPlaceholders["appLabel"] = "BKE Worker"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -44,6 +45,14 @@ android {
 
     buildTypes {
         getByName("debug") {
+            isDebuggable = true
+        }
+
+        create("recovery") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".recoverycert"
+            versionNameSuffix = "-recoverycert"
+            manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"
             isDebuggable = true
         }
 
