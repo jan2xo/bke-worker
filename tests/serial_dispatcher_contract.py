@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/github_serial_dispatcher.py"
+PR_CREATION_BOOTSTRAP = ROOT / "scripts/enable-serial-dispatcher-pr-creation.sh"
 SPEC = importlib.util.spec_from_file_location("bke_serial_dispatcher", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 dispatcher = importlib.util.module_from_spec(SPEC)
@@ -441,6 +442,41 @@ class SerialDispatcherTests(unittest.TestCase):
     def test_dispatcher_source_has_no_invalid_markdown_escape(self):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn(r"\\`", source)
+
+    def test_actions_pr_creation_gate_is_named(self):
+        error = dispatcher.DispatchError(
+            "GitHub API POST /repos/jan2xo/bke-worker/pulls failed with 403: "
+            '{"message":"GitHub Actions is not permitted to create or approve pull requests."}'
+        )
+        self.assertTrue(dispatcher.is_actions_pr_creation_denied(error))
+        self.assertFalse(
+            dispatcher.is_actions_pr_creation_denied(
+                dispatcher.DispatchError("GitHub API failed with 500")
+            )
+        )
+
+    def test_human_authenticated_pr_creation_bootstrap_is_bounded(self):
+        source = PR_CREATION_BOOTSTRAP.read_text(encoding="utf-8")
+        for token in [
+            'REPOSITORY="${BKE_WORKER_REPOSITORY:-jan2xo/bke-worker}"'.replace("\\", ""),
+            'if [[ "$REPOSITORY" != "jan2xo/bke-worker" ]]',
+            "gh auth status --hostname github.com",
+            '/actions/permissions/workflow',
+            "default_workflow_permissions",
+            "can_approve_pull_request_reviews=true",
+            'if [[ "$verified" != "true" ]]',
+            "BKE serial dispatcher PR-creation permission: ENABLED",
+        ]:
+            self.assertIn(token, source)
+
+        for forbidden in [
+            "GITHUB_TOKEN=",
+            "GH_TOKEN=",
+            "PRIVATE_KEY",
+            "PERSONAL_ACCESS_TOKEN",
+            "gh auth login",
+        ]:
+            self.assertNotIn(forbidden, source)
 
     def test_pr_body_carries_issue_contract_and_worker_lock(self):
         task = dispatcher.task_snapshot(
