@@ -257,6 +257,9 @@ for token in (
     "KEY_RELAY_REQUESTED",
     "fun saveRelayRequested(requested: Boolean)",
     "fun loadRelayRequested(): Boolean",
+    ".commit()",
+    'IllegalStateException("RELAY_CONFIG_STORE_FAILED")',
+    'IllegalStateException("RELAY_REQUESTED_STORE_FAILED")',
 ): 
     assert token in relay_store, token
 
