@@ -2,6 +2,15 @@ plugins {
     id("com.android.application")
 }
 
+val preproductionKeystorePath =
+    providers.environmentVariable("BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH").orNull
+val preproductionStorePassword =
+    providers.environmentVariable("BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD").orNull
+val preproductionKeyAlias =
+    providers.environmentVariable("BKE_ANDROID_PREPRODUCTION_KEY_ALIAS").orNull
+val preproductionKeyPassword =
+    providers.environmentVariable("BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD").orNull
+
 android {
     namespace = "com.bke.worker.gecko"
     compileSdk {
@@ -22,9 +31,27 @@ android {
         }
     }
 
+    signingConfigs {
+        create("preproduction") {
+            if (!preproductionKeystorePath.isNullOrBlank()) {
+                storeFile = file(preproductionKeystorePath)
+            }
+            storePassword = preproductionStorePassword
+            keyAlias = preproductionKeyAlias
+            keyPassword = preproductionKeyPassword
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             isDebuggable = true
+        }
+
+        create("preproduction") {
+            initWith(getByName("debug"))
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("preproduction")
+            matchingFallbacks += listOf("release", "debug")
         }
     }
 
