@@ -55,6 +55,14 @@ The dispatcher creates a deterministic task branch from current main and opens a
 
 The initial branch commit must be metadata-only/no product behavior; actual engineering is performed by the assigned Worker.
 
+If a dispatcher run stops after creating the deterministic task branch but before opening the PR, a later reconciliation may recover that orphan branch only when the branch head proves all of the following:
+
+- exact materialization commit message for the same task;
+- exactly one parent;
+- branch tree equals the parent tree, proving zero file changes.
+
+If current main advanced after the safe orphan was created, the dispatcher may rematerialize that zero-change commit on current main before opening the PR. Any unexpected commit message, parent shape, file-tree difference, or concurrent branch movement fails closed.
+
 ## Triggers
 
 Serial reconciliation is GitHub-native and should run on bounded queue/PR events plus manual dispatch for recovery.
