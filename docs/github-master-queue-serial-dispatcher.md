@@ -69,6 +69,37 @@ Serial reconciliation is GitHub-native and should run on bounded queue/PR events
 
 The control-plane workflow must execute trusted default-branch dispatcher code, not arbitrary PR-head code.
 
+## Repository PR-creation owner gate
+
+GitHub repositories may disallow the workflow `GITHUB_TOKEN` from creating pull
+requests even when the workflow itself requests `pull-requests: write`.
+
+That repository policy is an owner/admin configuration boundary, not queue
+authority and not Android/Cloudflare state.
+
+When GitHub returns the specific Actions PR-creation denial, the dispatcher fails
+closed as:
+
+`OWNER_GATE_ACTIONS_PR_CREATION_DISABLED`
+
+The bounded operator bootstrap is:
+
+`scripts/enable-serial-dispatcher-pr-creation.sh`
+
+The helper:
+
+- requires an already human-authenticated GitHub CLI session;
+- is hard-locked to `jan2xo/bke-worker`;
+- reads the repository's current workflow-permission configuration;
+- preserves the existing `default_workflow_permissions` value;
+- enables only `can_approve_pull_request_reviews`, which is the repository API
+  control behind allowing Actions to create/approve pull requests;
+- verifies the setting after mutation;
+- stores no PAT, app key, password, or other credential in source or GitHub task
+  state.
+
+Authentication/SSO/MFA/security challenges remain human-owned.
+
 ## Security
 
 - no production deployment;
