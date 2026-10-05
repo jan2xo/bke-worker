@@ -119,6 +119,7 @@ class AndroidGeckoWorkerService : Service() {
 
     private val binder = LocalBinder()
     private val runtime by lazy { GeckoRuntimeProvider.get(applicationContext) }
+    private val relayConfigStore by lazy { RelayConfigStore(applicationContext) }
     private val workerSession = GeckoSession()
 
     @Volatile
@@ -212,6 +213,8 @@ class AndroidGeckoWorkerService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
+        restoreRelayState()
+
         workerSession.setContentDelegate(contentDelegate)
         workerSession.open(runtime)
 
@@ -239,6 +242,10 @@ class AndroidGeckoWorkerService : Service() {
                     Log.e(TAG, "Unable to install Worker WebExtension", error)
                 },
             )
+
+        if (relayRequested) {
+            connectRelay()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -286,6 +293,15 @@ class AndroidGeckoWorkerService : Service() {
             return
         }
 
+        runCatching { relayConfigStore.saveConfig(config) }
+            .onFailure {
+                relayClient?.stop()
+                relayClient = null
+                relayState = "PAIRING_STORE_FAILED"
+                updateNotification()
+                return
+            }
+
         appliedRelayConfig = config
         activeWorkerId = config.workerId
 
@@ -299,14 +315,30 @@ class AndroidGeckoWorkerService : Service() {
 
     private fun startRelay() {
         relayRequested = true
+        relayConfigStore.saveRelayRequested(true)
         connectRelay()
     }
 
     private fun stopRelay() {
         relayRequested = false
+        relayConfigStore.saveRelayRequested(false)
         relayClient?.stop()
         relayClient = null
         relayState = if (appliedRelayConfig.relayUrl.isBlank()) "UNPAIRED" else "STOPPED"
+        updateNotification()
+    }
+
+    private fun restoreRelayState() {
+        val restored = relayConfigStore.loadConfig()
+        if (restored != null && RelayProtocol.validateConfig(restored) == null) {
+            appliedRelayConfig = restored
+            activeWorkerId = restored.workerId
+            relayRequested = relayConfigStore.loadRelayRequested()
+            relayState = if (relayRequested) "CONNECTING" else "STOPPED"
+        } else {
+            relayRequested = false
+            relayState = "UNPAIRED"
+        }
         updateNotification()
     }
 

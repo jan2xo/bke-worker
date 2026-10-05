@@ -8,6 +8,7 @@ activity = (base / "kotlin/com/bke/worker/gecko/MainActivity.kt").read_text(enco
 runtime = (base / "kotlin/com/bke/worker/gecko/GeckoRuntimeProvider.kt").read_text(encoding="utf-8")
 relay_protocol = (base / "kotlin/com/bke/worker/gecko/RelayProtocol.kt").read_text(encoding="utf-8")
 relay_client = (base / "kotlin/com/bke/worker/gecko/RelayWebSocketClient.kt").read_text(encoding="utf-8")
+relay_store = (base / "kotlin/com/bke/worker/gecko/RelayConfigStore.kt").read_text(encoding="utf-8")
 manifest = (base / "AndroidManifest.xml").read_text(encoding="utf-8")
 ext_manifest = (base / "assets/worker-extension/manifest.json").read_text(encoding="utf-8")
 probe = (base / "assets/worker-extension/worker-probe.js").read_text(encoding="utf-8")
@@ -43,6 +44,12 @@ for token in (
     "fun statusSnapshot(): AndroidWorkerStatusSnapshot",
     "chatGptState = workerState",
     "relayState = relayState",
+    "RelayConfigStore(applicationContext)",
+    "restoreRelayState()",
+    "relayConfigStore.saveConfig(config)",
+    "relayConfigStore.saveRelayRequested(true)",
+    "relayConfigStore.saveRelayRequested(false)",
+    "relayRequested = relayConfigStore.loadRelayRequested()",
 ):
     assert token in service, token
 
@@ -224,9 +231,42 @@ assert '"bridge_failed"' not in service
 assert "AndroidGeckoWorkerService.stop(this@MainActivity)" not in activity
 assert 'text = "Start / Apply"' not in activity
 
-# Runtime relay credential must not be written to logs or persistent preferences.
+# Relay pairing is device-persistent but the bearer token is encrypted with a
+# device-bound Android Keystore AES-GCM key. Activity/service code must not write
+# raw credentials directly to preferences or logs.
 assert "SharedPreferences" not in activity + service
 assert "bearerToken)" not in service
 assert "Log." not in relay_client
+
+for token in (
+    "class RelayConfigStore(context: Context)",
+    'PREFS = "bke.worker.relay.config.v1"',
+    'KEY_ALIAS = "bke.worker.relay.token.v1"',
+    'KEYSTORE = "AndroidKeyStore"',
+    'TRANSFORMATION = "AES/GCM/NoPadding"',
+    "Context.MODE_PRIVATE",
+    "KeyGenParameterSpec.Builder(",
+    "KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT",
+    "KeyProperties.BLOCK_MODE_GCM",
+    "KeyProperties.ENCRYPTION_PADDING_NONE",
+    "Cipher.ENCRYPT_MODE",
+    "Cipher.DECRYPT_MODE",
+    "GCMParameterSpec(GCM_TAG_BITS, iv)",
+    "KEY_TOKEN_CIPHERTEXT",
+    "KEY_TOKEN_IV",
+    "KEY_RELAY_REQUESTED",
+    "fun saveRelayRequested(requested: Boolean)",
+    "fun loadRelayRequested(): Boolean",
+    ".commit()",
+    'IllegalStateException("RELAY_CONFIG_STORE_FAILED")',
+    'IllegalStateException("RELAY_REQUESTED_STORE_FAILED")',
+): 
+    assert token in relay_store, token
+
+assert ".setUserAuthenticationRequired(" not in relay_store
+assert "Log." not in relay_store
+assert ".putString(KEY_TOKEN_CIPHERTEXT, config.bearerToken)" not in relay_store
+assert ".putString(KEY_TOKEN_IV, config.bearerToken)" not in relay_store
+assert "bearerToken = plaintext.toString(Charsets.UTF_8)" in relay_store
 
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
