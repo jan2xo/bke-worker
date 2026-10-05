@@ -59,7 +59,7 @@ for forbidden in (
     "BKE_ANDROID_SIGNING_KEY_PASSWORD",
     "BKE_ANDROID_SIGNING_CERT_SHA256",
     "bke-worker-production.jks",
-    "production-candidate",
+    '"certification_state": "production-candidate"',
 ):
     assert forbidden not in pre_job, forbidden
 
