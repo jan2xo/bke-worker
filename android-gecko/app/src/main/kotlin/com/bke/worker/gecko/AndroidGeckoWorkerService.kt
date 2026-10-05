@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoResult
@@ -48,9 +50,15 @@ class AndroidGeckoWorkerService : Service() {
         private const val STATE_READY = "READY"
         private const val STATE_BUSY = "BUSY"
         private const val STATE_NO_COMPOSER = "NO_COMPOSER"
+        private const val STATE_RECOVERING = "RECOVERING"
+        private const val STATE_BLOCKED_UNCERTAIN = "BLOCKED_UNCERTAIN_TURN"
         private const val STATE_FAILED = "FAILED"
 
         private const val RECENT_DELIVERY_LIMIT = 64
+        private const val CHAT_RECOVERY_MAX_ATTEMPTS = 3
+        private const val CHAT_RECOVERY_RETRY_DELAY_MS = 2_000L
+        private const val CHAT_READY_TIMEOUT_MS = 15_000L
+        private const val NATIVE_PORT_RECOVERY_TIMEOUT_MS = 10_000L
 
         @Volatile
         var isRunning: Boolean = false
@@ -121,6 +129,7 @@ class AndroidGeckoWorkerService : Service() {
     private val runtime by lazy { GeckoRuntimeProvider.get(applicationContext) }
     private val relayConfigStore by lazy { RelayConfigStore(applicationContext) }
     private val workerSession = GeckoSession()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var activeWorkerId = DEFAULT_WORKER_ID
@@ -135,12 +144,17 @@ class AndroidGeckoWorkerService : Service() {
         bearerToken = "",
     )
     private var relayRequested = false
+    private var workerExtension: WebExtension? = null
     private var workerPort: WebExtension.Port? = null
     private var relayClient: RelayWebSocketClient? = null
+    private var chatRecoveryAttempt = 0
+    private var chatRecoveryGeneration = 0
+    private var readinessWatchGeneration = 0
 
     private val recentDeliveryIds = LinkedHashSet<String>()
     private var activeWake: RelayWake? = null
     private var activeSawBusy = false
+    private var activeWakeUncertain = false
     private var pendingWake: RelayWake? = null
 
     fun session(): GeckoSession = workerSession
@@ -161,9 +175,23 @@ class AndroidGeckoWorkerService : Service() {
         }
 
         override fun onDisconnect(port: WebExtension.Port) {
-            if (port === workerPort) {
-                workerPort = null
-            }
+            if (port !== workerPort) return
+            workerPort = null
+
+            val generation = ++readinessWatchGeneration
+            mainHandler.postDelayed(
+                {
+                    if (!isRunning ||
+                        generation != readinessWatchGeneration ||
+                        workerPort != null ||
+                        activeWakeUncertain
+                    ) {
+                        return@postDelayed
+                    }
+                    scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")
+                },
+                NATIVE_PORT_RECOVERY_TIMEOUT_MS,
+            )
         }
     }
 
@@ -177,6 +205,7 @@ class AndroidGeckoWorkerService : Service() {
             workerPort?.disconnect()
             workerPort = port
             port.setDelegate(portDelegate)
+            readinessWatchGeneration += 1
             maybeDispatchPendingWake()
         }
 
@@ -195,15 +224,13 @@ class AndroidGeckoWorkerService : Service() {
 
     private val contentDelegate = object : GeckoSession.ContentDelegate {
         override fun onCrash(session: GeckoSession) {
-            workerState = STATE_FAILED
-            updateNotification()
-            Log.e(TAG, "Worker GeckoSession crashed")
+            Log.e(TAG, "Worker GeckoSession crashed; scheduling bounded recovery")
+            scheduleChatRecovery("SESSION_CRASHED")
         }
 
         override fun onKill(session: GeckoSession) {
-            workerState = STATE_FAILED
-            updateNotification()
-            Log.e(TAG, "Worker GeckoSession was killed")
+            Log.e(TAG, "Worker GeckoSession was killed; scheduling bounded recovery")
+            scheduleChatRecovery("SESSION_KILLED")
         }
     }
 
@@ -229,12 +256,10 @@ class AndroidGeckoWorkerService : Service() {
                         return@accept
                     }
 
-                    workerSession.getWebExtensionController().setMessageDelegate(
-                        extension,
-                        messageDelegate,
-                        NATIVE_APP,
-                    )
+                    workerExtension = extension
+                    bindWorkerExtension(extension)
                     workerSession.loadUri(CHATGPT_URL)
+                    scheduleChatReadyTimeout("INITIAL_LOAD")
                 },
                 { error ->
                     workerState = STATE_FAILED
@@ -276,6 +301,9 @@ class AndroidGeckoWorkerService : Service() {
         relayRequested = false
         relayClient?.stop()
         relayClient = null
+        chatRecoveryGeneration += 1
+        readinessWatchGeneration += 1
+        mainHandler.removeCallbacksAndMessages(null)
         workerPort?.disconnect()
         workerPort = null
         runCatching { workerSession.close() }
@@ -373,6 +401,105 @@ class AndroidGeckoWorkerService : Service() {
         updateNotification()
     }
 
+    private fun bindWorkerExtension(extension: WebExtension) {
+        workerSession.getWebExtensionController().setMessageDelegate(
+            extension,
+            messageDelegate,
+            NATIVE_APP,
+        )
+    }
+
+    private fun scheduleChatRecovery(reason: String) {
+        if (!isRunning) return
+
+        if (activeWake != null) {
+            activeWakeUncertain = true
+            activeSawBusy = false
+        }
+
+        workerPort?.disconnect()
+        workerPort = null
+        readinessWatchGeneration += 1
+
+        if (chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS) {
+            workerState = if (activeWakeUncertain) {
+                STATE_BLOCKED_UNCERTAIN
+            } else {
+                STATE_FAILED
+            }
+            updateNotification()
+            Log.e(
+                TAG,
+                "Chat target recovery exhausted after $chatRecoveryAttempt attempts: $reason",
+            )
+            return
+        }
+
+        workerState = if (activeWakeUncertain) {
+            STATE_BLOCKED_UNCERTAIN
+        } else {
+            STATE_RECOVERING
+        }
+        updateNotification()
+
+        val generation = ++chatRecoveryGeneration
+        val delayMs = CHAT_RECOVERY_RETRY_DELAY_MS * chatRecoveryAttempt
+        mainHandler.postDelayed(
+            {
+                if (!isRunning || generation != chatRecoveryGeneration) {
+                    return@postDelayed
+                }
+                chatRecoveryAttempt += 1
+                recoverChatTarget(generation, reason)
+            },
+            delayMs,
+        )
+    }
+
+    private fun recoverChatTarget(generation: Int, reason: String) {
+        runCatching {
+            if (!workerSession.isOpen) {
+                workerSession.open(runtime)
+            }
+            workerExtension?.let(::bindWorkerExtension)
+            workerSession.loadUri(CHATGPT_URL)
+        }.onFailure { error ->
+            Log.e(TAG, "Unable to recover ChatGPT target: $reason", error)
+            scheduleChatRecovery("RECOVERY_OPEN_FAILED")
+            return
+        }
+
+        scheduleChatReadyTimeout("RECOVERY_ATTEMPT_$chatRecoveryAttempt", generation)
+    }
+
+    private fun scheduleChatReadyTimeout(
+        reason: String,
+        recoveryGeneration: Int = chatRecoveryGeneration,
+    ) {
+        val readinessGeneration = ++readinessWatchGeneration
+        mainHandler.postDelayed(
+            {
+                if (!isRunning ||
+                    recoveryGeneration != chatRecoveryGeneration ||
+                    readinessGeneration != readinessWatchGeneration ||
+                    workerState == STATE_READY ||
+                    workerState == STATE_BUSY ||
+                    workerState == STATE_BLOCKED_UNCERTAIN
+                ) {
+                    return@postDelayed
+                }
+                scheduleChatRecovery("CHAT_READY_TIMEOUT:$reason")
+            },
+            CHAT_READY_TIMEOUT_MS,
+        )
+    }
+
+    private fun markChatSurfaceResponsive() {
+        chatRecoveryAttempt = 0
+        chatRecoveryGeneration += 1
+        readinessWatchGeneration += 1
+    }
+
     private fun handleExtensionMessage(message: JSONObject) {
         when (message.optString("type")) {
             "worker_status" -> handleWorkerStatus(message)
@@ -402,23 +529,36 @@ class AndroidGeckoWorkerService : Service() {
 
         val composerAvailable = message.optBoolean("composerAvailable")
         val turnBusy = message.optBoolean("turnBusy")
-        workerState = when {
+        val observedState = when {
             turnBusy -> STATE_BUSY
             composerAvailable -> STATE_READY
             else -> STATE_NO_COMPOSER
         }
 
+        workerState = if (activeWakeUncertain && observedState == STATE_READY) {
+            STATE_BLOCKED_UNCERTAIN
+        } else {
+            observedState
+        }
+
+        if (observedState == STATE_READY || observedState == STATE_BUSY) {
+            markChatSurfaceResponsive()
+        } else if (!activeWakeUncertain) {
+            scheduleChatReadyTimeout("NO_COMPOSER")
+        }
+
         val active = activeWake
-        if (active != null) {
+        if (active != null && !activeWakeUncertain) {
             if (turnBusy) {
                 activeSawBusy = true
             } else if (activeSawBusy && workerState == STATE_READY) {
                 relayClient?.sendAck(active.deliveryId, "completed")
                 activeWake = null
                 activeSawBusy = false
+                activeWakeUncertain = false
                 maybeDispatchPendingWake()
             }
-        } else if (workerState == STATE_READY) {
+        } else if (active == null && workerState == STATE_READY) {
             maybeDispatchPendingWake()
         }
 
@@ -451,6 +591,7 @@ class AndroidGeckoWorkerService : Service() {
         relayClient?.sendAck(active.deliveryId, "rejected")
         activeWake = null
         activeSawBusy = false
+        activeWakeUncertain = false
         maybeDispatchPendingWake()
     }
 
@@ -495,12 +636,14 @@ class AndroidGeckoWorkerService : Service() {
 
         activeWake = wake
         activeSawBusy = false
+        activeWakeUncertain = false
 
         runCatching { port.postMessage(command) }
             .onFailure {
                 relayClient?.sendAck(wake.deliveryId, "rejected")
                 activeWake = null
                 activeSawBusy = false
+                activeWakeUncertain = false
                 maybeDispatchPendingWake()
             }
     }
