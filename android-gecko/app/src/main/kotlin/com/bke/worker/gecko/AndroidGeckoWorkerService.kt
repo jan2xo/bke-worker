@@ -206,6 +206,7 @@ class AndroidGeckoWorkerService : Service() {
             workerPort = port
             port.setDelegate(portDelegate)
             readinessWatchGeneration += 1
+            scheduleChatReadyTimeout("NATIVE_PORT_CONNECTED")
             maybeDispatchPendingWake()
         }
 
@@ -527,6 +528,7 @@ class AndroidGeckoWorkerService : Service() {
             return
         }
 
+        val previousState = workerState
         val composerAvailable = message.optBoolean("composerAvailable")
         val turnBusy = message.optBoolean("turnBusy")
         val observedState = when {
@@ -543,7 +545,7 @@ class AndroidGeckoWorkerService : Service() {
 
         if (observedState == STATE_READY || observedState == STATE_BUSY) {
             markChatSurfaceResponsive()
-        } else if (!activeWakeUncertain) {
+        } else if (!activeWakeUncertain && previousState != STATE_NO_COMPOSER) {
             scheduleChatReadyTimeout("NO_COMPOSER")
         }
 
