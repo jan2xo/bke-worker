@@ -286,7 +286,7 @@ Unless explicitly authorized:
 - no production browser-profile migration;
 - no force push;
 - no weakening of human-auth boundaries;
-- no secret material in GitHub, logs, PR comments, artifacts, or ChatGPT prompts.
+- no raw secret material in GitHub source/history, logs, PR comments, artifacts, or ChatGPT prompts;\n- encrypted GitHub Actions/Environment secrets are an authorized storage boundary only for explicitly owner-authorized PREPRODUCTION Android signing material; production signing remains separately locked.
 
 Preproduction certification must not be represented as production deployment.
 

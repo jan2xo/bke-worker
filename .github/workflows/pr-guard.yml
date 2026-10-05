@@ -34,7 +34,7 @@ jobs:
               raise SystemExit("Intent certification is not explicitly invokable.")
 
           for token in [
-              'new Set(["core", "server", "chatgpt", "android", "android-release", "relay"])',
+              'new Set(["core", "server", "chatgpt", "android", "android-preproduction", "android-release", "relay"])',
               "name: Android Gecko Worker probe",
               "python3 tests/android_gecko_probe_contract.py",
               "python3 tests/utm_relay_contract.py",
@@ -42,6 +42,14 @@ jobs:
               "bke-worker-android-gecko-probe",
               "ANDROID_REQUIRED:",
               "ANDROID_RESULT:",
+              "name: Android PREPRODUCTION signed build",
+              "BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64",
+              "BKE_ANDROID_PREPRODUCTION_CERT_SHA256",
+              ":app:assemblePreproduction",
+              "bke-worker-android-preproduction-candidate",
+              "ANDROID_PREPRODUCTION_REQUIRED:",
+              "ANDROID_PREPRODUCTION_RESULT:",
+              "Publish Android PREPRODUCTION prerelease",
               "name: Android production release",
               "BKE_ANDROID_SIGNING_KEYSTORE_B64",
               "BKE_ANDROID_SIGNING_CERT_SHA256",
@@ -155,3 +163,6 @@ jobs:
 
       - name: Execute serial Master Queue dispatcher contract
         run: python3 tests/serial_dispatcher_contract.py
+
+      - name: Execute Android PREPRODUCTION signing contract
+        run: python3 tests/android_preproduction_signing_contract.py
