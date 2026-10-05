@@ -286,7 +286,11 @@ Unless explicitly authorized:
 - no production browser-profile migration;
 - no force push;
 - no weakening of human-auth boundaries;
-- no raw secret material in GitHub source/history, logs, PR comments, artifacts, or ChatGPT prompts;\n- encrypted GitHub Actions/Environment secrets are an authorized storage boundary only for explicitly owner-authorized PREPRODUCTION Android signing material; production signing remains separately locked.
+- no raw secret material in GitHub source/history, logs, PR comments, artifacts, or ChatGPT prompts;
+- encrypted GitHub Actions/Environment secrets are an authorized storage boundary only for explicitly owner-authorized PREPRODUCTION Android signing material; production signing remains separately locked;
+- encrypted Cloudflare Worker secrets are an authorized storage boundary for the explicitly owner-authorized PREPRODUCTION BKE Worker GitHub App identity/private key used by the bounded dispatcher token broker;
+- GitHub Actions may receive only the short-lived GitHub App installation token minted for the trusted default-branch serial dispatcher; the App private key must never enter GitHub Actions;
+- the GitHub App actuator must remain repository-scoped, minimum-permission, fail-closed, and must not become a parallel task database or planner.
 
 Preproduction certification must not be represented as production deployment.
 
