@@ -80,7 +80,7 @@ jobs:
               "BKE_WORKER_GITHUB_APP_BROKER_URL",
               "bke-worker-github-app-broker",
               "/github/app/install-token",
-              "GITHUB_TOKEN: ${{ env.BKE_GITHUB_APP_TOKEN }}",
+              'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
               "persist-credentials: false",
               "python3 scripts/github_serial_dispatcher.py",
               "BKE_WORKER_ID: android-worker-a",
