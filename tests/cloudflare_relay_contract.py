@@ -5,6 +5,7 @@ root = Path(__file__).resolve().parents[1]
 relay = root / "cloudflare-relay"
 protocol = (relay / "src/protocol.js").read_text(encoding="utf-8")
 runtime = (relay / "src/index.js").read_text(encoding="utf-8")
+github_app = (relay / "src/github-app.js").read_text(encoding="utf-8")
 wrangler = (relay / "wrangler.toml").read_text(encoding="utf-8")
 readme = (relay / "README.md").read_text(encoding="utf-8")
 webhook_configurator = (
@@ -75,8 +76,38 @@ for token in (
     'ack.state === "completed"',
     'BKE_WORKER_GITHUB_WEBHOOK_SECRET',
     'BKE_WORKER_RELAY_TOKEN_KEY',
+    '"/github/app/install-token"',
+    "verifyActionsOidcToken",
+    "mintInstallationToken",
 ):
+
     assert token in runtime, token
+
+for token in (
+    'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
+    'CONTROL_REPOSITORY_ID = "1354026486"',
+    'SERIAL_WORKFLOW_REF =',
+    '"jan2xo/bke-worker/.github/workflows/serial-dispatcher.yml@refs/heads/main"',
+    'BROKER_AUDIENCE = "bke-worker-github-app-broker"',
+    'ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"',
+    '"https://token.actions.githubusercontent.com/.well-known/jwks"',
+    '"RS256"',
+    'repositories: ["bke-worker"]',
+    'contents: "write"',
+    'issues: "write"',
+    'pull_requests: "write"',
+    'BKE_WORKER_GITHUB_APP_ID',
+    'BKE_WORKER_GITHUB_APP_INSTALLATION_ID',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+):
+    assert token in github_app, token
+
+for forbidden in (
+    "administration",
+    "organization_",
+    "secrets: \"write\"",
+):
+    assert forbidden not in github_app.lower(), forbidden
 
 for forbidden in (
     'json.optString("prompt")',
@@ -98,12 +129,19 @@ for token in (
     '[secrets]',
     '[env.preproduction]',
     '[env.preproduction.secrets]',
+    '"BKE_WORKER_GITHUB_APP_ID"',
+    '"BKE_WORKER_GITHUB_APP_INSTALLATION_ID"',
+    '"BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM"',
 ):
+
     assert token in wrangler, token
 
 for forbidden in (
     "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
     "BKE_WORKER_RELAY_TOKEN_KEY =",
+    "BKE_WORKER_GITHUB_APP_ID =",
+    "BKE_WORKER_GITHUB_APP_INSTALLATION_ID =",
+    "BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM =",
     "route =",
     "routes =",
     "[[migrations]]",
