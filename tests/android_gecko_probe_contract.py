@@ -50,6 +50,20 @@ for token in (
     "relayConfigStore.saveRelayRequested(true)",
     "relayConfigStore.saveRelayRequested(false)",
     "relayRequested = relayConfigStore.loadRelayRequested()",
+    'STATE_RECOVERING = "RECOVERING"',
+    'STATE_BLOCKED_UNCERTAIN = "BLOCKED_UNCERTAIN_TURN"',
+    "CHAT_RECOVERY_MAX_ATTEMPTS = 3",
+    "CHAT_READY_TIMEOUT_MS = 15_000L",
+    "NATIVE_PORT_RECOVERY_TIMEOUT_MS = 10_000L",
+    'scheduleChatRecovery("SESSION_CRASHED")',
+    'scheduleChatRecovery("SESSION_KILLED")',
+    'scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")',
+    'scheduleChatReadyTimeout("NO_COMPOSER")',
+    "if (!workerSession.isOpen)",
+    "workerSession.open(runtime)",
+    "workerSession.loadUri(CHATGPT_URL)",
+    "activeWakeUncertain = true",
+    "workerState = STATE_BLOCKED_UNCERTAIN",
 ):
     assert token in service, token
 
@@ -268,5 +282,17 @@ assert "Log." not in relay_store
 assert ".putString(KEY_TOKEN_CIPHERTEXT, config.bearerToken)" not in relay_store
 assert ".putString(KEY_TOKEN_IV, config.bearerToken)" not in relay_store
 assert "bearerToken = plaintext.toString(Charsets.UTF_8)" in relay_store
+
+
+# Chat/browser recovery is bounded and must fail closed on an uncertain in-flight turn.
+assert "while (true)" not in service
+assert "CHAT_RECOVERY_MAX_ATTEMPTS = 3" in service
+assert "chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS" in service
+assert "previousState != STATE_NO_COMPOSER" in service
+assert "activeWake != null" in service
+assert "activeWakeUncertain = true" in service
+assert "active != null && !activeWakeUncertain" in service
+assert "workerState == STATE_BLOCKED_UNCERTAIN" in service
+assert "mainHandler.removeCallbacksAndMessages(null)" in service
 
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
