@@ -53,6 +53,7 @@ jobs:
               "python3 tests/cloudflare_relay_contract.py",
               "npm run check",
               "npm run runtime-smoke",
+              "--env production",
               "RELAY_REQUIRED:",
               "RELAY_RESULT:",
           ]:

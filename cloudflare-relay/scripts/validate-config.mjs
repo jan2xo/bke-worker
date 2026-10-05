@@ -17,6 +17,9 @@ for (const token of [
   '"BKE_WORKER_RELAY_TOKEN_KEY"',
   '[env.preproduction]',
   '[env.preproduction.secrets]',
+  '[env.production]',
+  'name = "bke-worker-relay"',
+  '[env.production.secrets]',
 ]) {
   if (!config.includes(token)) {
     throw new Error(`wrangler.toml lost required relay contract: ${token}`);
