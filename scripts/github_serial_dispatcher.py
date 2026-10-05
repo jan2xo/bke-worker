@@ -19,6 +19,9 @@ WORKER_ID = "android-worker-a"
 WORKER_LABEL = f"bke-worker:{WORKER_ID}"
 TASK_BRANCH_PREFIX = "bke/task-"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+ACTIONS_PR_CREATION_DENIED_FRAGMENT = (
+    "GitHub Actions is not permitted to create or approve pull requests"
+)
 CONTROL_LABELS = {
     MASTER_LABEL: ("5319e7", "BKE serial Master Queue"),
     READY_LABEL: ("0e8a16", "Authorized runnable BKE task"),
@@ -154,6 +157,10 @@ def task_branch(task_number: int) -> str:
 
 def materialization_commit_message(task_number: int) -> str:
     return f"chore(queue): materialize task #{task_number}"
+
+
+def is_actions_pr_creation_denied(error: Exception) -> bool:
+    return ACTIONS_PR_CREATION_DENIED_FRAGMENT.lower() in str(error).lower()
 
 
 def validate_orphan_materialization(
@@ -490,18 +497,31 @@ class GitHubApi:
         branch: str,
         base_branch: str,
     ) -> dict[str, Any]:
-        payload = self.request(
-            "POST",
-            f"/repos/{self.repository}/pulls",
-            {
-                "title": f"task #{task.number}: {task.title}",
-                "head": branch,
-                "base": base_branch,
-                "body": build_task_pr_body(task),
-                "draft": True,
-                "maintainer_can_modify": True,
-            },
-        )
+        try:
+            payload = self.request(
+                "POST",
+                f"/repos/{self.repository}/pulls",
+                {
+                    "title": f"task #{task.number}: {task.title}",
+                    "head": branch,
+                    "base": base_branch,
+                    "body": build_task_pr_body(task),
+                    "draft": True,
+                    "maintainer_can_modify": True,
+                },
+            )
+        except DispatchError as error:
+            if is_actions_pr_creation_denied(error):
+                raise DispatchError(
+                    "OWNER_GATE_ACTIONS_PR_CREATION_DISABLED: "
+                    "enable repository Settings -> Actions -> General -> "
+                    "Workflow permissions -> Allow GitHub Actions to create "
+                    "and approve pull requests; or run "
+                    "scripts/enable-serial-dispatcher-pr-creation.sh "
+                    "with a human-authenticated GitHub CLI session"
+                ) from error
+            raise
+
         if not isinstance(payload, dict):
             raise DispatchError("Created PR payload invalid")
         return payload
