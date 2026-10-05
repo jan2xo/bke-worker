@@ -36,12 +36,15 @@ class RelayConfigStore(context: Context) {
         try {
             val ciphertext = cipher.doFinal(plaintext)
             val iv = cipher.iv
-            preferences.edit()
+            val committed = preferences.edit()
                 .putString(KEY_WORKER_ID, config.workerId)
                 .putString(KEY_RELAY_URL, config.relayUrl)
                 .putString(KEY_TOKEN_CIPHERTEXT, Base64.encodeToString(ciphertext, Base64.NO_WRAP))
                 .putString(KEY_TOKEN_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
-                .apply()
+                .commit()
+            if (!committed) {
+                throw IllegalStateException("RELAY_CONFIG_STORE_FAILED")
+            }
         } finally {
             plaintext.fill(0)
         }
@@ -90,9 +93,12 @@ class RelayConfigStore(context: Context) {
     }
 
     fun saveRelayRequested(requested: Boolean) {
-        preferences.edit()
+        val committed = preferences.edit()
             .putBoolean(KEY_RELAY_REQUESTED, requested)
-            .apply()
+            .commit()
+        if (!committed) {
+            throw IllegalStateException("RELAY_REQUESTED_STORE_FAILED")
+        }
     }
 
     fun loadRelayRequested(): Boolean =
