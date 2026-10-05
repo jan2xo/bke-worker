@@ -54,6 +54,7 @@ class FakeApi:
         self._branches = set(branches or [])
         self.updated_master = None
         self.materialized = []
+        self.recovered = []
         self.created = []
         self.labeled = []
         self.label_bootstrap_calls = 0
@@ -85,6 +86,9 @@ class FakeApi:
     def materialize_branch(self, branch, base_branch, task_number):
         self.materialized.append((branch, base_branch, task_number))
         self._branches.add(branch)
+
+    def recover_orphaned_task_branch(self, branch, base_branch, task_number):
+        self.recovered.append((branch, base_branch, task_number))
 
     def create_draft_pr(self, task, branch, base_branch):
         created = {
@@ -352,7 +356,7 @@ class SerialDispatcherTests(unittest.TestCase):
         self.assertFalse(api.materialized)
         self.assertFalse(api.created)
 
-    def test_orphaned_task_branch_fails_closed(self):
+    def test_safe_orphaned_task_branch_is_recovered(self):
         master = issue(100, "master", body="- [ ] #5")
         api = FakeApi(
             masters=[master],
@@ -361,11 +365,66 @@ class SerialDispatcherTests(unittest.TestCase):
             },
             branches={"bke/task-5"},
         )
+        result = dispatcher.reconcile(api)
+        self.assertEqual(result["state"], "DISPATCHED")
+        self.assertEqual(result["reason"], "RECOVERED_ORPHANED_TASK_BRANCH")
+        self.assertEqual(api.recovered, [("bke/task-5", "main", 5)])
+        self.assertFalse(api.materialized)
+        self.assertEqual(api.created, [(5, "bke/task-5", "main")])
+        self.assertEqual(api.labeled, [905])
+
+    def test_orphan_materialization_validation_accepts_metadata_only_commit(self):
+        parent_sha = "a" * 40
+        tree_sha = "b" * 40
+        branch_commit = {
+            "message": dispatcher.materialization_commit_message(5),
+            "tree": {"sha": tree_sha},
+            "parents": [{"sha": parent_sha}],
+        }
+        parent_commit = {"tree": {"sha": tree_sha}}
+        self.assertEqual(
+            dispatcher.validate_orphan_materialization(
+                branch_commit,
+                parent_commit,
+                5,
+            ),
+            parent_sha,
+        )
+
+    def test_orphan_materialization_validation_rejects_file_changes(self):
+        branch_commit = {
+            "message": dispatcher.materialization_commit_message(5),
+            "tree": {"sha": "b" * 40},
+            "parents": [{"sha": "a" * 40}],
+        }
+        parent_commit = {"tree": {"sha": "c" * 40}}
         with self.assertRaisesRegex(
             dispatcher.DispatchError,
-            "ORPHANED_TASK_BRANCH",
+            "ORPHANED_TASK_BRANCH_UNSAFE",
         ):
-            dispatcher.reconcile(api)
+            dispatcher.validate_orphan_materialization(
+                branch_commit,
+                parent_commit,
+                5,
+            )
+
+    def test_orphan_materialization_validation_rejects_unexpected_commit(self):
+        tree_sha = "b" * 40
+        branch_commit = {
+            "message": "feat: unexpected work",
+            "tree": {"sha": tree_sha},
+            "parents": [{"sha": "a" * 40}],
+        }
+        parent_commit = {"tree": {"sha": tree_sha}}
+        with self.assertRaisesRegex(
+            dispatcher.DispatchError,
+            "ORPHANED_TASK_BRANCH_UNSAFE",
+        ):
+            dispatcher.validate_orphan_materialization(
+                branch_commit,
+                parent_commit,
+                5,
+            )
 
     def test_no_runnable_task_waits(self):
         master = issue(100, "master", body="- [ ] #1")
