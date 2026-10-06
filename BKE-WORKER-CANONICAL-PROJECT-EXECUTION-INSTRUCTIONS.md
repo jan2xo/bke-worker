@@ -170,8 +170,10 @@ The entrypoint must:
   security challenges;
 - never print secret contents and never persist a secret except directly into an
   explicitly authorized encrypted secret boundary;
-- fail closed on wrong repository/environment, dirty or ambiguous local state,
-  uncertain ownership, stale/untrusted code, or failed post-action verification;
+- isolate execution from dirty/non-main local work when a temporary clean
+  worktree pinned to exact fetched `origin/main` can be established safely;
+- otherwise fail closed on wrong repository/environment, inability to establish
+  trusted code/state, uncertain ownership, or failed post-action verification;
 - perform the bounded action, verify the expected result, and write a safe
   durable GitHub checkpoint when that checkpoint is part of the intent;
 - preserve production/security locks.

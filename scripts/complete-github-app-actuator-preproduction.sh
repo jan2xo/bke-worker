@@ -9,6 +9,7 @@ BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 CERTIFICATION_ISSUE=55
 FROZEN_PR=48
 FROZEN_TASKS=(44 45 46)
+TRUSTED_WORKTREE="${BKE_OPERATOR_TRUSTED_WORKTREE:-0}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -42,8 +43,9 @@ ensure_human_auth() {
     fail "Cloudflare authentication did not complete"
 }
 
-ensure_clean_trusted_main() {
-  local top origin local_sha remote_sha
+ensure_trusted_main_or_isolate() {
+  local top origin local_sha remote_sha api_sha current_branch dirty
+  local tmp_root worktree_dir child_status
 
   top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [[ "$top" == "$ROOT_DIR" ]] || fail "run this script from the jan2xo/bke-worker checkout"
@@ -52,19 +54,48 @@ ensure_clean_trusted_main() {
   [[ "$origin" == *"github.com"* && "$origin" == *"jan2xo/bke-worker"* ]] ||
     fail "origin is not jan2xo/bke-worker"
 
-  [[ -z "$(git status --porcelain)" ]] ||
-    fail "working tree is not clean; refusing to change branches or deploy"
-
   git fetch origin main
-  git switch main
-  git merge --ff-only origin/main
+  remote_sha="$(git rev-parse refs/remotes/origin/main)"
+  api_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
+  [[ "$remote_sha" == "$api_sha" ]] ||
+    fail "fetched origin/main does not match GitHub main"
 
   local_sha="$(git rev-parse HEAD)"
-  remote_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
-  [[ "$local_sha" == "$remote_sha" ]] ||
-    fail "local main is not exact remote main"
+  current_branch="$(git branch --show-current)"
+  dirty="$(git status --porcelain)"
 
-  echo "Trusted main: $local_sha"
+  if [[ "$TRUSTED_WORKTREE" == "1" ]]; then
+    [[ -z "$dirty" ]] || fail "isolated trusted worktree became dirty"
+    [[ "$local_sha" == "$remote_sha" ]] ||
+      fail "isolated worktree is not exact origin/main"
+    echo "Trusted isolated main: $local_sha"
+    return
+  fi
+
+  if [[ "$current_branch" == "main" && -z "$dirty" && "$local_sha" == "$remote_sha" ]]; then
+    echo "Trusted main: $local_sha"
+    return
+  fi
+
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/bke-worker-operator.XXXXXX")"
+  worktree_dir="$tmp_root/repo"
+
+  echo "Local checkout is not a clean exact main; using an isolated trusted worktree."
+  echo "Your current branch and local changes will not be modified."
+
+  if ! git worktree add --detach "$worktree_dir" "$remote_sha" >/dev/null; then
+    rm -rf "$tmp_root"
+    fail "could not create isolated trusted worktree"
+  fi
+
+  set +e
+  BKE_OPERATOR_TRUSTED_WORKTREE=1     bash "$worktree_dir/scripts/complete-github-app-actuator-preproduction.sh" "$@"
+  child_status=$?
+  set -e
+
+  git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  rm -rf "$tmp_root"
+  exit "$child_status"
 }
 
 secret_names() {
@@ -153,7 +184,7 @@ main() {
   echo
 
   ensure_human_auth
-  ensure_clean_trusted_main
+  ensure_trusted_main_or_isolate "$@"
   ensure_actuator_secrets
   assert_frozen_queue
 

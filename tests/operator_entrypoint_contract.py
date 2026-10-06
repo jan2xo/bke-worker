@@ -43,7 +43,10 @@ for token in (
     'CLOUDFLARE_ENV="preproduction"',
     'gh auth login --hostname github.com --web',
     'wrangler login',
-    'git merge --ff-only origin/main',
+    'git fetch origin main',
+    'git worktree add --detach "$worktree_dir" "$remote_sha"',
+    'BKE_OPERATOR_TRUSTED_WORKTREE=1',
+    'Your current branch and local changes will not be modified.',
     'BKE_WORKER_GITHUB_APP_ID',
     'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
     'read -r -p "GitHub App ID: "',
@@ -61,6 +64,9 @@ for token in (
     assert token in script, token
 
 for forbidden in (
+    'working tree is not clean; refusing to change branches or deploy',
+    'git switch main',
+    'git merge --ff-only origin/main',
     "BKE_WORKER_GITHUB_APP_INSTALLATION_ID",
     "CLOUDFLARE_API_TOKEN=",
     "gh auth token",
