@@ -6,6 +6,7 @@ base = root / "android-gecko/app/src/main"
 service = (base / "kotlin/com/bke/worker/gecko/AndroidGeckoWorkerService.kt").read_text(encoding="utf-8")
 activity = (base / "kotlin/com/bke/worker/gecko/MainActivity.kt").read_text(encoding="utf-8")
 runtime = (base / "kotlin/com/bke/worker/gecko/GeckoRuntimeProvider.kt").read_text(encoding="utf-8")
+operator_script = (root / "scripts/certify-android-chat-target-recovery.sh").read_text(encoding="utf-8")
 relay_protocol = (base / "kotlin/com/bke/worker/gecko/RelayProtocol.kt").read_text(encoding="utf-8")
 relay_client = (base / "kotlin/com/bke/worker/gecko/RelayWebSocketClient.kt").read_text(encoding="utf-8")
 relay_store = (base / "kotlin/com/bke/worker/gecko/RelayConfigStore.kt").read_text(encoding="utf-8")
@@ -51,6 +52,21 @@ for token in (
     "relayConfigStore.saveRelayRequested(false)",
     "relayRequested = relayConfigStore.loadRelayRequested()",
     'STATE_RECOVERING = "RECOVERING"',
+    'CERTIFICATION_PACKAGE_SUFFIX = ".recoverycert"',
+    'ACTION_CERT_CRASH_CONTENT = "bke.worker.cert.crash_content"',
+    'ACTION_CERT_SIMULATE_CONTENT_KILL = "bke.worker.cert.simulate_content_kill"',
+    'ACTION_CERT_NO_COMPOSER = "bke.worker.cert.no_composer"',
+    'ACTION_CERT_NATIVE_PORT_LOSS = "bke.worker.cert.native_port_loss"',
+    'ACTION_CERT_EXHAUST_RECOVERY = "bke.worker.cert.exhaust_recovery"',
+    '"bke.worker.cert.resolve_uncertain_reject"',
+    "BuildConfig.DEBUG && packageName.endsWith(CERTIFICATION_PACKAGE_SUFFIX)",
+    'workerSession.loadUri("about:crashcontent")',
+    "contentDelegate.onKill(workerSession)",
+    '"recovery-cert-" + System.currentTimeMillis()',
+    "scheduleNativePortRecovery()",
+    'scheduleChatRecovery("CERTIFICATION_EXHAUSTED")',
+    'sendAck(active.deliveryId, "rejected")',
+    'scheduleChatRecovery("CERTIFICATION_UNCERTAIN_RESOLVED")',
     'STATE_BLOCKED_UNCERTAIN = "BLOCKED_UNCERTAIN_TURN"',
     "CHAT_RECOVERY_MAX_ATTEMPTS = 3",
     "CHAT_READY_TIMEOUT_MS = 15_000L",
@@ -308,3 +324,55 @@ assert "STATE_BLOCKED_UNCERTAIN" in service
 assert "mainHandler.removeCallbacksAndMessages(null)" in service
 
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
+
+
+# Local recovery certification hooks are fixed-function, debug-sidecar-only,
+# and do not create a generic remote command surface.
+for forbidden in (
+    'ACTION_CERT_EVAL',
+    'ACTION_CERT_JAVASCRIPT',
+    'ACTION_CERT_SHELL',
+    'ACTION_CERT_PROMPT',
+):
+    assert forbidden not in service, forbidden
+
+for token in (
+    'REPOSITORY="jan2xo/bke-worker"',
+    'PARENT_PR=52',
+    'SIDECAR_PR=54',
+    'SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"',
+    'PRIMARY_PACKAGE="com.bke.worker.gecko"',
+    'WORKER_ID="android-worker-recovery-cert"',
+    'OPERATOR_TEMP_DIRS=()',
+    'cleanup_operator_temp_dirs',
+    'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
+    'git worktree add --quiet --detach',
+    'gh run download "$run_id"',
+    'adb install -r',
+    'pm path "$PRIMARY_PACKAGE"',
+    'pm path "$SIDECAR_PACKAGE"',
+    'Human boundary: authenticate ChatGPT manually',
+    'bke.worker.cert.crash_content',
+    'bke.worker.cert.simulate_content_kill',
+    'bke.worker.cert.no_composer',
+    'bke.worker.cert.native_port_loss',
+    'bke.worker.cert.exhaust_recovery',
+    'bke.worker.cert.resolve_uncertain_reject',
+    'CHAT: BLOCKED_UNCERTAIN_TURN',
+    'gh pr edit "$SIDECAR_PR"',
+    '--add-label "$WORKER_LABEL"',
+    '--remove-label "$WORKER_LABEL"',
+    'BKE_WORKER_RELAY_TOKEN_KEY',
+    'derive-worker-token.mjs',
+    'Production: LOCKED',
+):
+    assert token in operator_script, token
+
+for forbidden in (
+    'adb uninstall',
+    'pm uninstall',
+    'set -x',
+    'eval ',
+    'production deploy',
+):
+    assert forbidden not in operator_script, forbidden

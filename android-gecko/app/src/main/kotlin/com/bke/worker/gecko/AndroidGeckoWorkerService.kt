@@ -42,6 +42,15 @@ class AndroidGeckoWorkerService : Service() {
         private const val ACTION_START_RELAY = "bke.worker.start_relay"
         private const val ACTION_STOP_RELAY = "bke.worker.stop_relay"
 
+        private const val CERTIFICATION_PACKAGE_SUFFIX = ".recoverycert"
+        private const val ACTION_CERT_CRASH_CONTENT = "bke.worker.cert.crash_content"
+        private const val ACTION_CERT_SIMULATE_CONTENT_KILL = "bke.worker.cert.simulate_content_kill"
+        private const val ACTION_CERT_NO_COMPOSER = "bke.worker.cert.no_composer"
+        private const val ACTION_CERT_NATIVE_PORT_LOSS = "bke.worker.cert.native_port_loss"
+        private const val ACTION_CERT_EXHAUST_RECOVERY = "bke.worker.cert.exhaust_recovery"
+        private const val ACTION_CERT_RESOLVE_UNCERTAIN_REJECT =
+            "bke.worker.cert.resolve_uncertain_reject"
+
         private const val EXTRA_WORKER_ID = "bke.worker.worker_id"
         private const val EXTRA_RELAY_URL = "bke.worker.relay_url"
         private const val EXTRA_RELAY_TOKEN = "bke.worker.relay_token"
@@ -177,21 +186,7 @@ class AndroidGeckoWorkerService : Service() {
         override fun onDisconnect(port: WebExtension.Port) {
             if (port !== workerPort) return
             workerPort = null
-
-            val generation = ++readinessWatchGeneration
-            mainHandler.postDelayed(
-                {
-                    if (!isRunning ||
-                        generation != readinessWatchGeneration ||
-                        workerPort != null ||
-                        activeWakeUncertain
-                    ) {
-                        return@postDelayed
-                    }
-                    scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")
-                },
-                NATIVE_PORT_RECOVERY_TIMEOUT_MS,
-            )
+            scheduleNativePortRecovery()
         }
     }
 
@@ -276,6 +271,10 @@ class AndroidGeckoWorkerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        if (handleCertificationAction(intent?.action)) {
+            return START_STICKY
+        }
 
         when (intent?.action) {
             ACTION_APPLY_RELAY_CONFIG -> {
@@ -369,6 +368,91 @@ class AndroidGeckoWorkerService : Service() {
             relayState = "UNPAIRED"
         }
         updateNotification()
+    }
+
+    private fun certificationHooksAllowed(): Boolean =
+        BuildConfig.DEBUG && packageName.endsWith(CERTIFICATION_PACKAGE_SUFFIX)
+
+    private fun handleCertificationAction(action: String?): Boolean {
+        if (action == null || !action.startsWith("bke.worker.cert.")) {
+            return false
+        }
+        if (!certificationHooksAllowed()) {
+            Log.w(TAG, "Ignoring recovery-cert action outside debug recovery sidecar")
+            return true
+        }
+
+        when (action) {
+            ACTION_CERT_CRASH_CONTENT -> {
+                Log.w(TAG, "Recovery certification: crashing Gecko content process")
+                workerSession.loadUri("about:crashcontent")
+            }
+            ACTION_CERT_SIMULATE_CONTENT_KILL -> {
+                Log.w(TAG, "Recovery certification: simulating Gecko content kill callback")
+                contentDelegate.onKill(workerSession)
+            }
+            ACTION_CERT_NO_COMPOSER -> {
+                Log.w(TAG, "Recovery certification: injecting bounded NO_COMPOSER status")
+                handleWorkerStatus(
+                    JSONObject()
+                        .put("type", "worker_status")
+                        .put("protocolVersion", RelayProtocol.VERSION)
+                        .put("observedAt", "recovery-cert-" + System.currentTimeMillis())
+                        .put("pageUrl", CHATGPT_URL)
+                        .put("composerAvailable", false)
+                        .put("turnBusy", false),
+                )
+            }
+            ACTION_CERT_NATIVE_PORT_LOSS -> {
+                Log.w(TAG, "Recovery certification: forcing native-port loss")
+                val port = workerPort
+                workerPort = null
+                runCatching { port?.disconnect() }
+                scheduleNativePortRecovery()
+            }
+            ACTION_CERT_EXHAUST_RECOVERY -> {
+                Log.w(TAG, "Recovery certification: forcing exhausted recovery boundary")
+                activeWake = null
+                activeSawBusy = false
+                activeWakeUncertain = false
+                chatRecoveryAttempt = CHAT_RECOVERY_MAX_ATTEMPTS
+                scheduleChatRecovery("CERTIFICATION_EXHAUSTED")
+            }
+            ACTION_CERT_RESOLVE_UNCERTAIN_REJECT -> {
+                val active = activeWake
+                if (!activeWakeUncertain || active == null) {
+                    Log.w(TAG, "Recovery certification: no uncertain wake to resolve")
+                } else {
+                    Log.w(TAG, "Recovery certification: explicitly rejecting uncertain wake")
+                    relayClient?.sendAck(active.deliveryId, "rejected")
+                    activeWake = null
+                    activeSawBusy = false
+                    activeWakeUncertain = false
+                    workerState = STATE_RECOVERING
+                    updateNotification()
+                    scheduleChatRecovery("CERTIFICATION_UNCERTAIN_RESOLVED")
+                }
+            }
+            else -> Log.w(TAG, "Ignoring unknown recovery-cert action")
+        }
+        return true
+    }
+
+    private fun scheduleNativePortRecovery() {
+        val generation = ++readinessWatchGeneration
+        mainHandler.postDelayed(
+            {
+                if (!isRunning ||
+                    generation != readinessWatchGeneration ||
+                    workerPort != null ||
+                    activeWakeUncertain
+                ) {
+                    return@postDelayed
+                }
+                scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")
+            },
+            NATIVE_PORT_RECOVERY_TIMEOUT_MS,
+        )
     }
 
     private fun connectRelay() {
