@@ -78,37 +78,49 @@ test("GitHub App JWT is RS256-shaped and short-lived", async () => {
   assert.equal(payload.exp, now + 540);
 });
 
-test("installation token request is repository and permission scoped", async () => {
+test("installation is resolved from the control repository before token mint", async () => {
   const seen = [];
-  const fetchImpl = async (url, options) => {
+  const fetchImpl = async (url, options = {}) => {
     seen.push({ url, options });
-    return new Response(
-      JSON.stringify({
-        token: "ghs_test_token",
-        expires_at: "2026-10-05T06:00:00Z",
-      }),
-      {
-        status: 201,
+    if (url === "https://api.github.com/repos/jan2xo/bke-worker/installation") {
+      return new Response(JSON.stringify({ id: 67890 }), {
+        status: 200,
         headers: { "content-type": "application/json" },
-      },
-    );
+      });
+    }
+    if (url === "https://api.github.com/app/installations/67890/access_tokens") {
+      return new Response(
+        JSON.stringify({
+          token: "ghs_test_token",
+          expires_at: "2026-10-05T06:00:00Z",
+        }),
+        {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+    throw new Error(`unexpected fetch: ${url}`);
   };
 
   const result = await mintInstallationToken(
     {
       BKE_WORKER_GITHUB_APP_ID: "12345",
-      BKE_WORKER_GITHUB_APP_INSTALLATION_ID: "67890",
       BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM: privateKeyPem(),
     },
     fetchImpl,
   );
 
-  assert.equal(seen.length, 1);
+  assert.equal(seen.length, 2);
   assert.equal(
     seen[0].url,
+    "https://api.github.com/repos/jan2xo/bke-worker/installation",
+  );
+  assert.equal(
+    seen[1].url,
     "https://api.github.com/app/installations/67890/access_tokens",
   );
-  const body = JSON.parse(seen[0].options.body);
+  const body = JSON.parse(seen[1].options.body);
   assert.deepEqual(body.repositories, ["bke-worker"]);
   assert.deepEqual(body.permissions, {
     contents: "write",
@@ -117,4 +129,27 @@ test("installation token request is repository and permission scoped", async () 
   });
   assert.equal(result.repository, "jan2xo/bke-worker");
   assert.equal(result.token, "ghs_test_token");
+});
+
+test("installation resolution fails closed before token mint", async () => {
+  const seen = [];
+  await assert.rejects(
+    mintInstallationToken(
+      {
+        BKE_WORKER_GITHUB_APP_ID: "12345",
+        BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM: privateKeyPem(),
+      },
+      async (url) => {
+        seen.push(url);
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    ),
+    /GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:404/u,
+  );
+  assert.deepEqual(seen, [
+    "https://api.github.com/repos/jan2xo/bke-worker/installation",
+  ]);
 });
