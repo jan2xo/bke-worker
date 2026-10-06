@@ -27,6 +27,12 @@ The entrypoint should first discover and reuse everything it safely can:
 A human should not be asked to pre-export an ID, URL, path, or other value that
 the script can reliably discover.
 
+A dirty or non-main local checkout should not automatically block an operation
+when the script can establish an isolated trusted execution context. Prefer a
+temporary clean worktree pinned to exact fetched `origin/main`, run the bounded
+operation there, then remove the temporary worktree without touching the user's
+current branch or local changes.
+
 ## Human-only interaction
 
 Prompt only when the missing value or action genuinely belongs to the human
@@ -51,7 +57,8 @@ an explicitly authorized encrypted boundary.
 An operator entrypoint must stop rather than improvise when it encounters:
 
 - the wrong repository or environment;
-- a dirty/ambiguous working tree when exact state matters;
+- inability to establish a clean trusted execution context from a dirty,
+  non-main, stale, or otherwise ambiguous local checkout;
 - stale or untrusted code;
 - conflicting worker ownership;
 - an unexpected queue state;
