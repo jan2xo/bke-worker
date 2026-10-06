@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 
 root = Path(__file__).resolve().parents[1]
 base = root / "android-gecko/app/src/main"
 service = (base / "kotlin/com/bke/worker/gecko/AndroidGeckoWorkerService.kt").read_text(encoding="utf-8")
 activity = (base / "kotlin/com/bke/worker/gecko/MainActivity.kt").read_text(encoding="utf-8")
 runtime = (base / "kotlin/com/bke/worker/gecko/GeckoRuntimeProvider.kt").read_text(encoding="utf-8")
-operator_script = (root / "scripts/certify-android-chat-target-recovery.sh").read_text(encoding="utf-8")
+operator_script_path = root / "scripts/certify-android-chat-target-recovery.sh"
+operator_script = operator_script_path.read_text(encoding="utf-8")
+subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
 relay_protocol = (base / "kotlin/com/bke/worker/gecko/RelayProtocol.kt").read_text(encoding="utf-8")
 relay_client = (base / "kotlin/com/bke/worker/gecko/RelayWebSocketClient.kt").read_text(encoding="utf-8")
 relay_store = (base / "kotlin/com/bke/worker/gecko/RelayConfigStore.kt").read_text(encoding="utf-8")
