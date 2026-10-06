@@ -140,6 +140,9 @@ select_device() {
     fi
   fi
   ADB=(adb -s "$DEVICE_SERIAL")
+
+  ANDROID_USER_ID="$("${ADB[@]}" shell am get-current-user 2>/dev/null | tr -d '\r')"
+  [[ "$ANDROID_USER_ID" =~ ^[0-9]+$ ]] || fail "unable to resolve current Android user id"
 }
 
 ui_text() {
@@ -175,20 +178,21 @@ wait_for_text() {
 }
 
 launch_sidecar() {
-  "${ADB[@]}" shell am start -W -n "$SIDECAR_PACKAGE/com.bke.worker.gecko.MainActivity" >/dev/null
+  "${ADB[@]}" shell am start -W --user "$ANDROID_USER_ID" -n "$SIDECAR_PACKAGE/com.bke.worker.gecko.MainActivity" >/dev/null
 }
 
 run_sidecar_service_action() {
   local action="$1"
   "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" \
     am start-foreground-service \
+      --user "$ANDROID_USER_ID" \
       -n "$SIDECAR_PACKAGE/$SERVICE_CLASS" \
       -a "$action" >/dev/null
 }
 
 restart_and_require_ready() {
   local xml_file="$1"
-  "${ADB[@]}" shell am force-stop "$SIDECAR_PACKAGE"
+  "${ADB[@]}" shell am force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"
   launch_sidecar
   wait_for_text "BROWSER: ATTACHED" 30 "$xml_file" || fail "sidecar browser did not reattach after restart"
   if ! wait_for_text "CHAT: READY" 30 "$xml_file"; then
@@ -231,7 +235,7 @@ apply_relay_config_securely() {
     sh -c 'umask 077; mkdir -p files; cat > files/bke-recovery-relay-token'
 
   "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" sh -c \
-    "token=\$(cat files/bke-recovery-relay-token); am start-foreground-service -n '$SIDECAR_PACKAGE/$SERVICE_CLASS' -a bke.worker.apply_relay_config --es bke.worker.worker_id '$WORKER_ID' --es bke.worker.relay_url '$relay_url' --es bke.worker.relay_token \"\$token\" >/dev/null; rm -f files/bke-recovery-relay-token"
+    "token=\$(cat files/bke-recovery-relay-token); am start-foreground-service --user '$ANDROID_USER_ID' -n '$SIDECAR_PACKAGE/$SERVICE_CLASS' -a bke.worker.apply_relay_config --es bke.worker.worker_id '$WORKER_ID' --es bke.worker.relay_url '$relay_url' --es bke.worker.relay_token \"\$token\" >/dev/null; rm -f files/bke-recovery-relay-token"
 }
 
 try_real_tab_kill() {
@@ -417,7 +421,7 @@ main() {
   run_sidecar_service_action bke.worker.start_relay
   wait_for_text "RELAY: CONNECTED" 30 "$xml_file" || fail "recovery sidecar did not connect to PREPRODUCTION relay"
 
-  "${ADB[@]}" shell am force-stop "$SIDECAR_PACKAGE"
+  "${ADB[@]}" shell am force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"
   launch_sidecar
   wait_for_text "CHAT: READY" 60 "$xml_file" || fail "process recreation did not restore ChatGPT READY"
   wait_for_text "RELAY: CONNECTED" 45 "$xml_file" || fail "process recreation did not restore requested relay connection"

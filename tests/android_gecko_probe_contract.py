@@ -346,6 +346,8 @@ for token in (
     'SIDECAR_PR=54',
     'SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"',
     'PRIMARY_PACKAGE="com.bke.worker.gecko"',
+    'ANDROID_USER_ID="$("${ADB[@]}" shell am get-current-user',
+    '--user "$ANDROID_USER_ID"',
     'WORKER_ID="android-worker-recovery-cert"',
     'OPERATOR_TEMP_DIRS=()',
     'CERT_FINAL_RESULT=""',
