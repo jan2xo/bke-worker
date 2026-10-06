@@ -163,6 +163,8 @@ The entrypoint must:
 
 - discover reusable non-secret state, repository configuration, URLs, IDs, and
   prerequisites itself whenever they are derivable;
+- invoke provider CLIs from the repository-owned configuration root that defines
+  the intended environment, never from an incidental operator working directory;
 - prompt **inside the script, at the point of need**, only for information that
   genuinely requires human input;
 - use human-interactive official login/auth flows when authentication is

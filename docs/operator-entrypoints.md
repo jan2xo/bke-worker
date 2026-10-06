@@ -38,6 +38,12 @@ example `/var/...` vs `/private/var/...`), entrypoints must compare
 canonical physical paths (for example via `pwd -P`) rather than raw path
 strings.
 
+Provider CLIs must also run from the repository-owned configuration root that
+defines the target environment. For example, Wrangler commands for the BKE
+relay run from `cloudflare-relay/`, where `wrangler.toml` defines
+`[env.preproduction]`; they must not rely on the operator's current working
+directory.
+
 ## Human-only interaction
 
 Prompt only when the missing value or action genuinely belongs to the human

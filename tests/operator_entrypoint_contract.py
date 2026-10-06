@@ -14,6 +14,7 @@ for token in (
     "prompt **inside the script, at the point of need**",
     "without automating credentials",
     "docs/operator-entrypoints.md",
+    "repository-owned configuration root",
 ):
     assert token in canonical, token
 
@@ -41,6 +42,9 @@ for token in (
 for token in (
     'REPOSITORY="jan2xo/bke-worker"',
     'CLOUDFLARE_ENV="preproduction"',
+    'CLOUDFLARE_DIR="$ROOT_DIR/cloudflare-relay"',
+    'cd "$CLOUDFLARE_DIR"',
+    'wrangler secret list --env "$CLOUDFLARE_ENV"',
     'gh auth login --hostname github.com --web',
     'wrangler login',
     'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"',
