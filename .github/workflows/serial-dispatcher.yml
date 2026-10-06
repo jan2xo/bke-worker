@@ -60,7 +60,20 @@ jobs:
           oidc_token="$(OIDC_JSON="$oidc_json" python3 -c 'import json, os; p=json.loads(os.environ["OIDC_JSON"]); v=p.get("value"); assert isinstance(v,str) and v, "OIDC response missing value"; print(v)')"
 
           broker_url="${BKE_GITHUB_APP_BROKER_URL%/}/github/app/install-token"
-          broker_json="$(curl --fail --silent --show-error --request POST -H "Authorization: Bearer $oidc_token" -H "Accept: application/json" "$broker_url")"
+          broker_response_file="$(mktemp)"
+          trap 'rm -f "$broker_response_file"' EXIT
+          broker_status="$(
+            curl --silent --show-error --output "$broker_response_file" --write-out '%{http_code}'               --request POST               -H "Authorization: Bearer $oidc_token"               -H "Accept: application/json"               "$broker_url"
+          )"
+          broker_json="$(cat "$broker_response_file")"
+
+          if [[ ! "$broker_status" =~ ^2[0-9][0-9]$ ]]; then
+            broker_error="$(
+              BROKER_JSON="$broker_json" python3 -c 'import json, os, re; p=json.loads(os.environ.get("BROKER_JSON") or "{}"); v=p.get("error"); v=v if isinstance(v,str) else "GITHUB_APP_BROKER_FAILED"; v=re.sub(r"[^A-Za-z0-9_:=;,. -]", "?", v)[:240]; print(v)'
+            )"
+            echo "BKE dispatcher FAIL-CLOSED: broker rejected token request status=$broker_status error=$broker_error" >&2
+            exit 22
+          fi
 
           app_token="$(BROKER_JSON="$broker_json" python3 -c 'import json, os; p=json.loads(os.environ["BROKER_JSON"]); v=p.get("token"); assert isinstance(v,str) and v, "broker response missing token"; print(v)')"
           expires_at="$(BROKER_JSON="$broker_json" python3 -c 'import json, os; p=json.loads(os.environ["BROKER_JSON"]); v=p.get("expires_at"); assert isinstance(v,str) and v, "broker response missing expiry"; print(v)')"
