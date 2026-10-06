@@ -95,6 +95,10 @@ bash scripts/certify-android-chat-target-recovery.sh
 The entrypoint discovers the exact parent/sidecar heads, downloads and verifies
 the certified sidecar APK, preserves the existing `com.bke.worker.gecko`
 installation, and prompts only at the human ChatGPT authentication boundary.
+The `com.bke.worker.gecko.recoverycert` package is disposable certification state:
+if an older recovery-cert build is already installed, the entrypoint removes only
+that exact package before installing the newly certified APK. This permits CI debug
+signing-key rotation without ever uninstalling or replacing the primary Worker package.
 
 Fixed recovery-cert actions are accepted only by a debuggable package whose
 application ID ends in `.recoverycert`. They are invoked through the

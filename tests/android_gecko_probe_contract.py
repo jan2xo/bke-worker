@@ -345,11 +345,17 @@ for token in (
     'PRIMARY_PACKAGE="com.bke.worker.gecko"',
     'WORKER_ID="android-worker-recovery-cert"',
     'OPERATOR_TEMP_DIRS=()',
+    'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
+    'cert_exit_guard',
+    'script exited without final certification result',
+    'BKE CERT: [5/10] Downloading certified sidecar APK...',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
     'gh run download "$run_id"',
     'install -r',
+    '[[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]]',
+    'uninstall "$SIDECAR_PACKAGE"',
     'pm path "$PRIMARY_PACKAGE"',
     'pm path "$SIDECAR_PACKAGE"',
     'Human boundary: authenticate ChatGPT manually',
@@ -370,8 +376,8 @@ for token in (
     assert token in operator_script, token
 
 for forbidden in (
-    'adb uninstall',
-    'pm uninstall',
+    'uninstall "$PRIMARY_PACKAGE"',
+    'pm uninstall "$PRIMARY_PACKAGE"',
     'set -x',
     'eval ',
     'production deploy',
