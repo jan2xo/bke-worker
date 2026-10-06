@@ -352,7 +352,7 @@ main() {
   wait_for_text "CHAT: FAILED" 10 "$xml_file" || fail "exhausted recovery did not fail closed"
   restart_and_require_ready "$xml_file"
 
-  [[ -f "$SECRET_FILE" ]] || fail "PREPRODUCTION relay secret file not found: $SECRET_FILE"
+  cert_stage "relay-config" "[8/10] Preparing PREPRODUCTION relay proof..."\n  [[ -f "$SECRET_FILE" ]] || fail "PREPRODUCTION relay secret file not found: $SECRET_FILE"
   chmod 600 "$SECRET_FILE" 2>/dev/null || true
   set -a
   # shellcheck disable=SC1090
