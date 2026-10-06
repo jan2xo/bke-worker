@@ -66,6 +66,9 @@ for token in (
     'cmp -s "$before_heads" "$after_heads"',
     'cmp -s "$before_prs" "$after_prs"',
     'gh issue comment "$CERTIFICATION_ISSUE"',
+    'GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:404',
+    'GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:401',
+    'GITHUB_APP_TOKEN_MINT_FAILED:403',
     'Production: LOCKED',
 ):
     assert token in script, token
