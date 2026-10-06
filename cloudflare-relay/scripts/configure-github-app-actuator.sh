@@ -8,7 +8,6 @@ WRANGLER_VERSION="4.147.0"
 ENVIRONMENT="preproduction"
 REPOSITORY="jan2xo/bke-worker"
 APP_ID="${BKE_WORKER_GITHUB_APP_ID:-}"
-INSTALLATION_ID="${BKE_WORKER_GITHUB_APP_INSTALLATION_ID:-}"
 PRIVATE_KEY_FILE="${BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE:-}"
 BROKER_URL="${BKE_WORKER_GITHUB_APP_BROKER_URL:-}"
 
@@ -39,7 +38,6 @@ To apply after the owner has granted the permissions above and generated a
 GitHub App private key:
 
   export BKE_WORKER_GITHUB_APP_ID='<app id>'
-  export BKE_WORKER_GITHUB_APP_INSTALLATION_ID='<installation id>'
   export BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE='<path to downloaded PEM>'
   export BKE_WORKER_GITHUB_APP_BROKER_URL='https://<preproduction-worker>.workers.dev'
 
@@ -59,10 +57,6 @@ if [[ ! "$APP_ID" =~ ^[0-9]+$ ]]; then
   echo "ERROR: BKE_WORKER_GITHUB_APP_ID must be numeric." >&2
   exit 2
 fi
-if [[ ! "$INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: BKE_WORKER_GITHUB_APP_INSTALLATION_ID must be numeric." >&2
-  exit 2
-fi
 if [[ -z "$PRIVATE_KEY_FILE" || ! -f "$PRIVATE_KEY_FILE" ]]; then
   echo "ERROR: BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE must point to the GitHub App PEM." >&2
   exit 2
@@ -80,7 +74,6 @@ fi
 
 echo "Binding GitHub App identity to Cloudflare PREPRODUCTION..."
 printf '%s' "$APP_ID"   | wrangler secret put BKE_WORKER_GITHUB_APP_ID --env "$ENVIRONMENT" >/dev/null
-printf '%s' "$INSTALLATION_ID"   | wrangler secret put BKE_WORKER_GITHUB_APP_INSTALLATION_ID --env "$ENVIRONMENT" >/dev/null
 cat "$PRIVATE_KEY_FILE"   | wrangler secret put BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM --env "$ENVIRONMENT" >/dev/null
 
 echo "Deploying PREPRODUCTION relay + GitHub App broker..."
@@ -94,6 +87,7 @@ echo "BKE GitHub App actuator bootstrap: CONFIGURED"
 echo "Repository: $REPOSITORY"
 echo "Broker URL: $BROKER_URL/github/app/install-token"
 echo "Private key: stored only as Cloudflare encrypted secret binding"
+echo "Installation: resolved by the broker from GitHub for $REPOSITORY"
 echo
 echo "Next proof: manually dispatch Serial Master Queue Dispatcher while the queue is frozen."
 echo "Expected state: WAITING / NO_RUNNABLE_TASK with a successfully minted App token."
