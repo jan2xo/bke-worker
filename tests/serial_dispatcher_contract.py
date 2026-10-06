@@ -518,6 +518,10 @@ class SerialDispatcherTests(unittest.TestCase):
             "/github/app/install-token",
             "ACTIONS_ID_TOKEN_REQUEST_URL",
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "broker_response_file",
+            "broker_status",
+            "broker rejected token request status=",
+            "GITHUB_APP_BROKER_FAILED",
             'echo "::add-mask::$app_token"',
             "BKE_GITHUB_APP_TOKEN=$app_token",
             'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
@@ -534,6 +538,9 @@ class SerialDispatcherTests(unittest.TestCase):
             "worker-b",
             "worker-c",
             "github.event.pull_request.head.sha",
+            'echo "$oidc_token"',
+            'echo "$app_token"',
+            'echo "$broker_json"',
         ]
         for token in forbidden:
             self.assertNotIn(token, workflow)
