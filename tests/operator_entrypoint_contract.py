@@ -21,9 +21,14 @@ for token in (
     "## Operator Action",
     "bash scripts/<intent-entrypoint>.sh",
     "Human-only inputs",
-    "prompts internally only for genuinely human-required input",
 ):
     assert token in template, token
+
+template_words = " ".join(template.split())
+assert (
+    "prompts internally only for genuinely human-required input"
+    in template_words
+)
 
 for token in (
     "Discovery before prompting",
