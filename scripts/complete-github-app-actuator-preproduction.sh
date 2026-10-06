@@ -11,7 +11,13 @@ FROZEN_PR=48
 FROZEN_TASKS=(44 45 46)
 TRUSTED_WORKTREE="${BKE_OPERATOR_TRUSTED_WORKTREE:-0}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$ROOT_DIR" ]] || {
+  echo "BKE OPERATOR FAIL-CLOSED: script is not inside a Git worktree" >&2
+  exit 3
+}
+ROOT_DIR="$(cd "$ROOT_DIR" && pwd -P)"
 cd "$ROOT_DIR"
 
 fail() {
@@ -48,7 +54,9 @@ ensure_trusted_main_or_isolate() {
   local tmp_root worktree_dir child_status
 
   top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  [[ "$top" == "$ROOT_DIR" ]] || fail "run this script from the jan2xo/bke-worker checkout"
+  [[ -n "$top" ]] || fail "unable to resolve the current Git worktree"
+  top="$(cd "$top" && pwd -P)"
+  [[ "$top" == "$ROOT_DIR" ]] || fail "script root does not match the active Git worktree"
 
   origin="$(git remote get-url origin 2>/dev/null || true)"
   [[ "$origin" == *"github.com"* && "$origin" == *"jan2xo/bke-worker"* ]] ||
