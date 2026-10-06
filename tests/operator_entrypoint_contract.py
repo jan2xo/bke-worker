@@ -75,9 +75,16 @@ for token in (
     'After Save + installation approval are complete, press Enter to resume certification:',
     'exec bash "$ROOT_DIR/scripts/complete-github-app-actuator-preproduction.sh"',
     'GITHUB_APP_TOKEN_MINT_FAILED:422',
+    'OPERATOR_TEMP_FILES=()',
+    'cleanup_operator_temp_files()',
+    'trap cleanup_operator_temp_files EXIT',
+    'cleanup_operator_temp_files',
+    'trap - EXIT',
     'Production: LOCKED',
 ):
     assert token in script, token
+
+assert 'trap \'rm -f "$before_heads"' not in script
 
 for forbidden in (
     'working tree is not clean; refusing to change branches or deploy',
