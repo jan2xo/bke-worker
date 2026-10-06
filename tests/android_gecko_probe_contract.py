@@ -348,7 +348,7 @@ for token in (
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
     'gh run download "$run_id"',
-    'adb install -r',
+    'install -r',
     'pm path "$PRIMARY_PACKAGE"',
     'pm path "$SIDECAR_PACKAGE"',
     'Human boundary: authenticate ChatGPT manually',
