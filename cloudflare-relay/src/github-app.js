@@ -232,29 +232,50 @@ async function verifyActionsOidcToken(token, fetchImpl = fetch) {
 
 function requiredAppConfiguration(env) {
   const appId = String(env.BKE_WORKER_GITHUB_APP_ID || "").trim();
-  const installationId = String(env.BKE_WORKER_GITHUB_APP_INSTALLATION_ID || "").trim();
   const privateKeyPem = String(env.BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM || "").trim();
   if (!/^\d+$/u.test(appId)) throw new Error("GITHUB_APP_ID_UNCONFIGURED");
-  if (!/^\d+$/u.test(installationId)) {
-    throw new Error("GITHUB_APP_INSTALLATION_ID_UNCONFIGURED");
-  }
   if (!privateKeyPem) throw new Error("GITHUB_APP_PRIVATE_KEY_UNCONFIGURED");
-  return { appId, installationId, privateKeyPem };
+  return { appId, privateKeyPem };
+}
+
+function appHeaders(appJwt) {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${appJwt}`,
+    "user-agent": "bke-worker-github-app-broker",
+    "x-github-api-version": GITHUB_API_VERSION,
+  };
+}
+
+async function resolveInstallationId(appJwt, fetchImpl = fetch) {
+  const response = await fetchImpl(
+    "https://api.github.com/repos/jan2xo/bke-worker/installation",
+    {
+      headers: appHeaders(appJwt),
+    },
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:${response.status}`);
+  }
+  const installationId = String(payload?.id || "");
+  if (!/^\d+$/u.test(installationId)) {
+    throw new Error("GITHUB_APP_INSTALLATION_RESPONSE_INVALID");
+  }
+  return installationId;
 }
 
 async function mintInstallationToken(env, fetchImpl = fetch) {
-  const { appId, installationId, privateKeyPem } = requiredAppConfiguration(env);
+  const { appId, privateKeyPem } = requiredAppConfiguration(env);
   const appJwt = await createGitHubAppJwt(appId, privateKeyPem);
+  const installationId = await resolveInstallationId(appJwt, fetchImpl);
   const response = await fetchImpl(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
       headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${appJwt}`,
+        ...appHeaders(appJwt),
         "content-type": "application/json",
-        "user-agent": "bke-worker-github-app-broker",
-        "x-github-api-version": GITHUB_API_VERSION,
       },
       body: JSON.stringify({
         repositories: ["bke-worker"],
@@ -296,6 +317,7 @@ export {
   SERIAL_WORKFLOW_REF,
   createGitHubAppJwt,
   mintInstallationToken,
+  resolveInstallationId,
   validateActionsClaims,
   verifyActionsOidcToken,
 };
