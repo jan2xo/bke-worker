@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 
 root = Path(__file__).resolve().parents[1]
 base = root / "android-gecko/app/src/main"
 service = (base / "kotlin/com/bke/worker/gecko/AndroidGeckoWorkerService.kt").read_text(encoding="utf-8")
 activity = (base / "kotlin/com/bke/worker/gecko/MainActivity.kt").read_text(encoding="utf-8")
 runtime = (base / "kotlin/com/bke/worker/gecko/GeckoRuntimeProvider.kt").read_text(encoding="utf-8")
-operator_script = (root / "scripts/certify-android-chat-target-recovery.sh").read_text(encoding="utf-8")
+operator_script_path = root / "scripts/certify-android-chat-target-recovery.sh"
+operator_script = operator_script_path.read_text(encoding="utf-8")
+subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
 relay_protocol = (base / "kotlin/com/bke/worker/gecko/RelayProtocol.kt").read_text(encoding="utf-8")
 relay_client = (base / "kotlin/com/bke/worker/gecko/RelayWebSocketClient.kt").read_text(encoding="utf-8")
 relay_store = (base / "kotlin/com/bke/worker/gecko/RelayConfigStore.kt").read_text(encoding="utf-8")
@@ -345,11 +348,17 @@ for token in (
     'PRIMARY_PACKAGE="com.bke.worker.gecko"',
     'WORKER_ID="android-worker-recovery-cert"',
     'OPERATOR_TEMP_DIRS=()',
+    'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
+    'cert_exit_guard',
+    'script exited without final certification result',
+    'BKE CERT: [5/10] Downloading certified sidecar APK...',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
     'gh run download "$run_id"',
     'install -r',
+    '[[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]]',
+    'uninstall "$SIDECAR_PACKAGE"',
     'pm path "$PRIMARY_PACKAGE"',
     'pm path "$SIDECAR_PACKAGE"',
     'Human boundary: authenticate ChatGPT manually',
@@ -370,8 +379,8 @@ for token in (
     assert token in operator_script, token
 
 for forbidden in (
-    'adb uninstall',
-    'pm uninstall',
+    'uninstall "$PRIMARY_PACKAGE"',
+    'pm uninstall "$PRIMARY_PACKAGE"',
     'set -x',
     'eval ',
     'production deploy',

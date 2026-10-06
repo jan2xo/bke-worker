@@ -14,11 +14,14 @@ BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 SECRET_FILE="${BKE_WORKER_RELAY_SECRET_FILE:-$HOME/.bke-secrets/bke-worker-cloudflare-preproduction.env}"
 TRUSTED_WORKTREE="${BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE:-0}"
 OPERATOR_TEMP_DIRS=()
+CERT_STAGE="bootstrap"
+CERT_FINAL_RESULT=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
 
 fail() {
+  CERT_FINAL_RESULT="FAIL"
   echo "BKE ANDROID RECOVERY CERTIFICATION: FAIL-CLOSED — $*" >&2
   exit 1
 }
@@ -33,6 +36,31 @@ cleanup_operator_temp_dirs() {
     [[ -n "$path" ]] && rm -rf -- "$path"
   done
   OPERATOR_TEMP_DIRS=()
+}
+
+cert_stage() {
+  CERT_STAGE="$1"
+  echo "BKE CERT: $2"
+}
+
+cert_exit_guard() {
+  local rc="$1"
+  trap - EXIT
+  cleanup_operator_temp_dirs
+
+  case "$CERT_FINAL_RESULT" in
+    PASS|BLOCKED|FAIL)
+      exit "$rc"
+      ;;
+  esac
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "BKE ANDROID RECOVERY CERTIFICATION: FAIL-CLOSED — script exited without final certification result at stage: $CERT_STAGE" >&2
+    exit 3
+  fi
+
+  echo "BKE ANDROID RECOVERY CERTIFICATION: FAIL-CLOSED — stage failed: $CERT_STAGE (exit $rc)" >&2
+  exit "$rc"
 }
 
 sha256_file() {
@@ -275,11 +303,15 @@ EOF_COMMENT
 }
 
 main() {
+  cert_stage "preflight" "[1/10] Checking required tools and GitHub authentication..."
   for command_name in git gh adb python3 node awk; do
     require_command "$command_name"
   done
   ensure_github_auth
+  cert_stage "exact-head" "[2/10] Verifying exact PR #52 worktree..."
   ensure_trusted_worktree
+
+  trap 'cert_exit_guard "$?"' EXIT
 
   local parent_head current_head sidecar_head sidecar_state sidecar_base
   parent_head="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
@@ -292,6 +324,7 @@ main() {
   [[ "$sidecar_state" == "OPEN" ]] || fail "certification sidecar PR #$SIDECAR_PR is not open"
   [[ "$sidecar_base" == "$PARENT_BRANCH" ]] || fail "PR #$SIDECAR_PR is not based on $PARENT_BRANCH"
 
+  cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
 
   local temp_dir comments_file proof apk run_id expected_apk_sha proof_head actual_apk_sha xml_file
@@ -299,23 +332,34 @@ main() {
   comments_file="$temp_dir/comments.json"
   xml_file="$temp_dir/window.xml"
   OPERATOR_TEMP_DIRS+=("$temp_dir")
-  trap cleanup_operator_temp_dirs EXIT
 
+  cert_stage "sidecar-proof" "[4/10] Resolving certified sidecar proof..."
   proof="$(load_sidecar_proof "$comments_file")"
   read -r proof_head run_id expected_apk_sha <<<"$proof"
   [[ "$proof_head" == "$sidecar_head" ]] || fail "latest certified sidecar proof is stale: certified $proof_head, current $sidecar_head"
 
+  cert_stage "artifact-download" "[5/10] Downloading certified sidecar APK..."
   gh run download "$run_id" --repo "$REPOSITORY" -n bke-worker-android-gecko-probe -D "$temp_dir/artifact" >/dev/null
   apk="$(find "$temp_dir/artifact" -type f -name '*.apk' -print -quit)"
   [[ -n "$apk" ]] || fail "certified sidecar artifact did not contain an APK"
   actual_apk_sha="$(sha256_file "$apk")"
   [[ "$actual_apk_sha" == "$expected_apk_sha" ]] || fail "sidecar APK SHA mismatch"
 
+  cert_stage "sidecar-install" "[6/10] Installing certified recovery sidecar..."
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "existing $PRIMARY_PACKAGE installation is required to prove side-by-side safety"
+
+  [[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]] || fail "refusing to replace unexpected sidecar package: $SIDECAR_PACKAGE"
+  if "${ADB[@]}" shell pm path "$SIDECAR_PACKAGE" >/dev/null 2>&1; then
+    echo "BKE CERT: replacing previous disposable recovery-cert package before certified install..."
+    "${ADB[@]}" uninstall "$SIDECAR_PACKAGE" >/dev/null || fail "unable to remove previous disposable recovery-cert package"
+    "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared while replacing recovery sidecar"
+  fi
+
   "${ADB[@]}" install -r "$apk" >/dev/null
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared during sidecar install"
   "${ADB[@]}" shell pm path "$SIDECAR_PACKAGE" >/dev/null 2>&1 || fail "recovery sidecar did not install"
 
+  cert_stage "local-recovery" "[7/10] Running local Android recovery matrix..."
   launch_sidecar
   wait_for_text "BROWSER: ATTACHED" 30 "$xml_file" || fail "sidecar browser did not attach"
   if ! wait_for_text "CHAT: READY" 30 "$xml_file"; then
@@ -352,7 +396,8 @@ main() {
   wait_for_text "CHAT: FAILED" 10 "$xml_file" || fail "exhausted recovery did not fail closed"
   restart_and_require_ready "$xml_file"
 
-  cert_stage "relay-config" "[8/10] Preparing PREPRODUCTION relay proof..."\n  [[ -f "$SECRET_FILE" ]] || fail "PREPRODUCTION relay secret file not found: $SECRET_FILE"
+  cert_stage "relay-config" "[8/10] Preparing PREPRODUCTION relay proof..."
+  [[ -f "$SECRET_FILE" ]] || fail "PREPRODUCTION relay secret file not found: $SECRET_FILE"
   chmod 600 "$SECRET_FILE" 2>/dev/null || true
   set -a
   # shellcheck disable=SC1090
@@ -377,6 +422,7 @@ main() {
   wait_for_text "CHAT: READY" 60 "$xml_file" || fail "process recreation did not restore ChatGPT READY"
   wait_for_text "RELAY: CONNECTED" 45 "$xml_file" || fail "process recreation did not restore requested relay connection"
 
+  cert_stage "uncertain-turn" "[9/10] Running bounded uncertain-turn ownership proof..."
   require_no_worker_assignment
   ensure_worker_label_exists
   gh pr edit "$SIDECAR_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null
@@ -400,14 +446,17 @@ main() {
   gh pr edit "$SIDECAR_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null
   require_no_worker_assignment
 
+  cert_stage "ledger" "[10/10] Recording local certification checkpoint..."
   if [[ "$actual_kill_result" != "PASS" ]]; then
     comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$sidecar_head" "$actual_apk_sha" "$actual_kill_result" "PASS"
+    CERT_FINAL_RESULT="BLOCKED"
     echo "BKE ANDROID RECOVERY CERTIFICATION: BLOCKED"
     echo "All bounded recovery/uncertain-turn proof passed except a real Gecko tab-process kill, which this Android device denied."
     exit 2
   fi
 
   comment_parent "BKE EXECUTION CHECKPOINT — LOCAL DEVICE CERTIFIED" "$parent_head" "$sidecar_head" "$actual_apk_sha" "PASS" "PASS"
+  CERT_FINAL_RESULT="PASS"
   echo "BKE ANDROID RECOVERY CERTIFICATION: PASS"
   echo "Parent exact head: $parent_head"
   echo "Sidecar exact head: $sidecar_head"
