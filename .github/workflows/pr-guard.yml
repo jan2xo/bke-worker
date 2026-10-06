@@ -124,6 +124,11 @@ jobs:
               "owner-blocked",
               "Blocked lane != blocked mission",
               "docs/autonomous-gatekeeper.md",
+              "Operator action entrypoints",
+              "one repo-tracked operator entrypoint script",
+              "prompt **inside the script, at the point of need**",
+              "without automating credentials",
+              "docs/operator-entrypoints.md",
           ]:
               if token not in canonical:
                   raise SystemExit(
@@ -152,6 +157,9 @@ jobs:
               "## Description",
               "## How Has This Been Tested?",
               "## Architecture / Security",
+              "## Operator Action",
+              "Human-only inputs",
+              "bash scripts/<intent-entrypoint>.sh",
               "## Checklist",
               "## Certification Notes",
               "One independent engineering intent belongs in one PR",
@@ -173,3 +181,8 @@ jobs:
 
       - name: Execute Android PREPRODUCTION signing contract
         run: python3 tests/android_preproduction_signing_contract.py
+
+      - name: Execute operator entrypoint contract
+        run: |
+          python3 tests/operator_entrypoint_contract.py
+          bash -n scripts/complete-github-app-actuator-preproduction.sh

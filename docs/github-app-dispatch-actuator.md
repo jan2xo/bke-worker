@@ -153,6 +153,24 @@ The script:
 
 It does not print the private key.
 
+## One-command operator completion
+
+After the actuator identity is configured, the normal PREPRODUCTION operator
+interface is one command from the repository:
+
+```bash
+bash scripts/complete-github-app-actuator-preproduction.sh
+```
+
+The script synchronizes trusted `main`, reuses existing Cloudflare/GitHub
+configuration, asks for input only if a required configuration/authentication
+boundary is genuinely missing, deploys PREPRODUCTION, runs the frozen serial
+dispatcher proof, verifies `WAITING / NO_RUNNABLE_TASK`, verifies there was no
+branch/PR/worker-assignment mutation, and writes the safe proof checkpoint to
+Issue #55.
+
+It never asks for an installation ID. The broker resolves that from GitHub.
+
 ## Remote proof before local Android certification
 
 With #44/#45/#46 still blocked:
