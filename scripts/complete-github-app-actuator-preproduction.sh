@@ -18,6 +18,11 @@ ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || tru
   exit 3
 }
 ROOT_DIR="$(cd "$ROOT_DIR" && pwd -P)"
+CLOUDFLARE_DIR="$ROOT_DIR/cloudflare-relay"
+[[ -f "$CLOUDFLARE_DIR/wrangler.toml" ]] || {
+  echo "BKE OPERATOR FAIL-CLOSED: cloudflare-relay/wrangler.toml is missing" >&2
+  exit 3
+}
 cd "$ROOT_DIR"
 
 fail() {
@@ -30,7 +35,10 @@ require_command() {
 }
 
 wrangler() {
-  npx --yes "wrangler@${WRANGLER_VERSION}" "$@"
+  (
+    cd "$CLOUDFLARE_DIR"
+    npx --yes "wrangler@${WRANGLER_VERSION}" "$@"
+  )
 }
 
 ensure_human_auth() {
@@ -107,7 +115,7 @@ ensure_trusted_main_or_isolate() {
 }
 
 secret_names() {
-  wrangler secret list --env "$CLOUDFLARE_ENV" 2>/dev/null || true
+  wrangler secret list --env "$CLOUDFLARE_ENV"
 }
 
 ensure_actuator_secrets() {
