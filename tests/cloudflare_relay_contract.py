@@ -100,8 +100,9 @@ for token in (
     'issues: "write"',
     'pull_requests: "write"',
     'BKE_WORKER_GITHUB_APP_ID',
-    'BKE_WORKER_GITHUB_APP_INSTALLATION_ID',
     'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    '"https://api.github.com/repos/jan2xo/bke-worker/installation"',
+    'GITHUB_APP_INSTALLATION_RESOLUTION_FAILED',
 ):
     assert token in github_app, token
 
@@ -133,7 +134,6 @@ for token in (
     '[env.preproduction]',
     '[env.preproduction.secrets]',
     '"BKE_WORKER_GITHUB_APP_ID"',
-    '"BKE_WORKER_GITHUB_APP_INSTALLATION_ID"',
     '"BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM"',
 ):
 
@@ -143,7 +143,6 @@ for forbidden in (
     "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
     "BKE_WORKER_RELAY_TOKEN_KEY =",
     "BKE_WORKER_GITHUB_APP_ID =",
-    "BKE_WORKER_GITHUB_APP_INSTALLATION_ID =",
     "BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM =",
     "route =",
     "routes =",
@@ -195,9 +194,9 @@ for token in (
     'Issues: read & write',
     'Pull requests: read & write',
     'BKE_WORKER_GITHUB_APP_ID',
-    'BKE_WORKER_GITHUB_APP_INSTALLATION_ID',
     'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE',
     'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    'Installation: resolved by the broker from GitHub',
     'wrangler secret put BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
     'gh variable set BKE_WORKER_GITHUB_APP_BROKER_URL',
     'Production remains LOCKED.',
