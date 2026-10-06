@@ -10,6 +10,7 @@ CERTIFICATION_ISSUE=55
 FROZEN_PR=48
 FROZEN_TASKS=(44 45 46)
 TRUSTED_WORKTREE="${BKE_OPERATOR_TRUSTED_WORKTREE:-0}"
+OPERATOR_TEMP_FILES=()
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
@@ -32,6 +33,14 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command missing: $1"
+}
+
+cleanup_operator_temp_files() {
+  local path
+  for path in "${OPERATOR_TEMP_FILES[@]}"; do
+    [[ -n "$path" ]] && rm -f -- "$path"
+  done
+  OPERATOR_TEMP_FILES=()
 }
 
 wrangler() {
@@ -226,6 +235,8 @@ request_github_app_permission_repair() {
   read -r -p "After Save + installation approval are complete, press Enter to resume certification: " _
 
   echo "Resuming from trusted PREPRODUCTION state..."
+  cleanup_operator_temp_files
+  trap - EXIT
   exec bash "$ROOT_DIR/scripts/complete-github-app-actuator-preproduction.sh"
 }
 
@@ -252,7 +263,15 @@ main() {
   after_prs="$(mktemp)"
   deploy_log="$(mktemp)"
   proof_log="$(mktemp)"
-  trap 'rm -f "$before_heads" "$after_heads" "$before_prs" "$after_prs" "$deploy_log" "$proof_log"' EXIT
+  OPERATOR_TEMP_FILES=(
+    "$before_heads"
+    "$after_heads"
+    "$before_prs"
+    "$after_prs"
+    "$deploy_log"
+    "$proof_log"
+  )
+  trap cleanup_operator_temp_files EXIT
 
   git ls-remote --heads origin | LC_ALL=C sort >"$before_heads"
   snapshot_open_prs >"$before_prs"
