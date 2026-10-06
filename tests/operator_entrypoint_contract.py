@@ -14,6 +14,7 @@ for token in (
     "prompt **inside the script, at the point of need**",
     "without automating credentials",
     "docs/operator-entrypoints.md",
+    "repository-owned configuration root",
 ):
     assert token in canonical, token
 
