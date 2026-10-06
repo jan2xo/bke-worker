@@ -33,6 +33,11 @@ temporary clean worktree pinned to exact fetched `origin/main`, run the bounded
 operation there, then remove the temporary worktree without touching the user's
 current branch or local changes.
 
+On macOS and other systems where logical and physical paths may differ (for
+example `/var/...` vs `/private/var/...`), entrypoints must compare
+canonical physical paths (for example via `pwd -P`) rather than raw path
+strings.
+
 ## Human-only interaction
 
 Prompt only when the missing value or action genuinely belongs to the human
