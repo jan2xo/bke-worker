@@ -180,6 +180,13 @@ Issue #55.
 
 It never asks for an installation ID. The broker resolves that from GitHub.
 
+If the live broker proves that the GitHub App installation is under-granted, the
+same operator entrypoint treats that as a human security boundary rather than a
+chat/manual-command boundary: it opens the GitHub App settings and installed-app
+settings pages, prints the exact required repository permissions (Contents,
+Issues, Pull requests = Read and write), waits for the owner to save/approve the
+permission update, then resumes the same PREPRODUCTION certification flow.
+
 ## Remote proof before local Android certification
 
 With #44/#45/#46 still blocked:
