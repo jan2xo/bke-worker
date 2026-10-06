@@ -346,7 +346,7 @@ for token in (
     'OPERATOR_TEMP_DIRS=()',
     'cleanup_operator_temp_dirs',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
-    'git worktree add --quiet --detach',
+    'worktree add --quiet --detach',
     'gh run download "$run_id"',
     'adb install -r',
     'pm path "$PRIMARY_PACKAGE"',
