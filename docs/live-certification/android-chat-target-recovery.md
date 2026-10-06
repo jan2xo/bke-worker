@@ -82,3 +82,45 @@ Required later:
 - active-turn uncertainty proof.
 
 Production remains locked.
+
+
+## One-command local certification
+
+The live device matrix is driven by the repository-owned operator entrypoint:
+
+```bash
+bash scripts/certify-android-chat-target-recovery.sh
+```
+
+The entrypoint discovers the exact parent/sidecar heads, downloads and verifies
+the certified sidecar APK, preserves the existing `com.bke.worker.gecko`
+installation, and prompts only at the human ChatGPT authentication boundary.
+
+Fixed recovery-cert actions are accepted only by a debuggable package whose
+application ID ends in `.recoverycert`. They are invoked through the
+non-exported Worker service from the app UID and expose only bounded test
+operations: content crash, content-kill callback, NO_COMPOSER, native-port loss,
+exhausted-recovery fail-closed behavior, and explicit reject/recovery of a
+deliberately uncertain certification wake. They do not accept arbitrary prompt
+text, JavaScript, shell commands, URLs, or credentials.
+
+For the content-process kill case, the operator entrypoint first attempts a real
+`:tab`/Tab child-process kill. If the Android build isolates that child such
+that the app UID cannot kill it, the script exercises the fixed onKill callback
+path for diagnostics but reports the matrix as BLOCKED rather than claiming a
+real kill PASS.
+
+The in-flight uncertainty test uses certification-only PR #54 and worker ID
+`android-worker-recovery-cert`. The script assigns that worker only for the
+bounded live proof, waits for `CHAT: BUSY`, crashes the content process, requires
+`BLOCKED_UNCERTAIN_TURN`, waits to prove the state remains blocked, then performs
+an explicit operator reject/recovery before stopping the relay and releasing the
+temporary assignment. An interrupted/ambiguous run fails closed rather than
+silently clearing ownership.
+
+The script sources the PREPRODUCTION relay master key only from the authorized
+local secret file, derives a worker-bound token without printing it, transfers
+that token to the debuggable sidecar without writing it to GitHub, and removes
+the temporary app-private token file immediately after configuration.
+
+Production remains locked.
