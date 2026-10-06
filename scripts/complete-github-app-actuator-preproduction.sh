@@ -187,6 +187,48 @@ ensure_broker_variable() {
   printf '%s' "$broker_url"
 }
 
+open_human_url() {
+  local url="$1"
+  if command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  if command -v gio >/dev/null 2>&1; then
+    gio open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  echo "Open in your browser: $url"
+}
+
+request_github_app_permission_repair() {
+  local permission_error="$1"
+
+  echo
+  echo "GitHub human approval is required."
+  echo "Detected: $permission_error"
+  echo
+  echo "In the BKE Worker GitHub App -> Permissions & events -> Repository permissions:"
+  echo "  Contents:      Read and write"
+  echo "  Issues:        Read and write"
+  echo "  Pull requests: Read and write"
+  echo
+  echo "Save the App permission changes, then approve the updated installation permissions if GitHub asks."
+  echo "Opening the two GitHub settings pages now..."
+
+  open_human_url "https://github.com/settings/apps"
+  open_human_url "https://github.com/settings/installations"
+
+  echo
+  read -r -p "After Save + installation approval are complete, press Enter to resume certification: " _
+
+  echo "Resuming from trusted PREPRODUCTION state..."
+  exec bash "$ROOT_DIR/scripts/complete-github-app-actuator-preproduction.sh"
+}
+
 main() {
   local deploy_log broker_url endpoint_status before_run_id run_id candidate
   local proof_log before_heads after_heads before_prs after_prs main_sha
@@ -267,7 +309,7 @@ main() {
         grep -o 'GITHUB_APP_PERMISSION_REQUIRED:[A-Za-z0-9_=;.-]*' "$proof_log" |
           tail -n 1
       )"
-      fail "BKE Worker GitHub App installation is under-granted: $permission_error. Update that repository permission on the custom App, approve the installation permission change if GitHub asks, then rerun this same script."
+      request_github_app_permission_repair "$permission_error"
     fi
     if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:403" "$proof_log"; then
       fail "BKE Worker GitHub App is installed but GitHub denied the scoped token request. Verify the required repository permissions are approved on the installation."
