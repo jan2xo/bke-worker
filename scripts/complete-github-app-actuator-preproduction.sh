@@ -253,8 +253,20 @@ main() {
   [[ -n "$run_id" ]] || fail "could not identify the new workflow_dispatch run"
 
   if ! gh run watch "$run_id" --repo "$REPOSITORY" --exit-status; then
-    gh run view "$run_id" --repo "$REPOSITORY" --log-failed || true
-    fail "remote dispatcher proof failed (run $run_id)"
+    gh run view "$run_id" --repo "$REPOSITORY" --log-failed >"$proof_log" 2>&1 || true
+    cat "$proof_log"
+
+    if grep -Fq "GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:404" "$proof_log"; then
+      fail "BKE Worker GitHub App is not installed on jan2xo/bke-worker, or the App installation cannot see the repository. Install/repair the custom BKE Worker App installation, then rerun this same script."
+    fi
+    if grep -Fq "GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:401" "$proof_log"; then
+      fail "GitHub rejected the configured App identity. The Cloudflare App ID and private-key PEM do not authenticate as the same GitHub App."
+    fi
+    if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:403" "$proof_log"; then
+      fail "BKE Worker GitHub App is installed but lacks one or more required repository permissions for the scoped token."
+    fi
+
+    fail "remote dispatcher proof failed; see the sanitized broker error above (run $run_id)"
   fi
 
   gh run view "$run_id" --repo "$REPOSITORY" --log >"$proof_log"
