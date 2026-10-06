@@ -70,6 +70,10 @@ for token in (
     'GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:401',
     'GITHUB_APP_TOKEN_MINT_FAILED:403',
     'GITHUB_APP_PERMISSION_REQUIRED:',
+    'https://github.com/settings/apps',
+    'https://github.com/settings/installations',
+    'After Save + installation approval are complete, press Enter to resume certification:',
+    'exec bash "$ROOT_DIR/scripts/complete-github-app-actuator-preproduction.sh"',
     'GITHUB_APP_TOKEN_MINT_FAILED:422',
     'Production: LOCKED',
 ):
