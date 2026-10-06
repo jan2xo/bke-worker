@@ -24,7 +24,6 @@ Set these as Cloudflare Worker secrets. Never commit them:
 - `BKE_WORKER_GITHUB_WEBHOOK_SECRET`
 - `BKE_WORKER_RELAY_TOKEN_KEY`
 - `BKE_WORKER_GITHUB_APP_ID`
-- `BKE_WORKER_GITHUB_APP_INSTALLATION_ID`
 - `BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM`
 
 Variable names are generation-independent.
@@ -108,7 +107,7 @@ That prints the intended configuration only. After relay certification and expli
 
 The existing BKE Worker GitHub App is also the preferred outbound repository mutation identity.
 
-The long-lived private key lives only in Cloudflare PREPRODUCTION encrypted secret bindings. GitHub Actions authenticates to the broker with its OIDC identity and receives a short-lived installation token scoped to `jan2xo/bke-worker` and only Contents/Issues/Pull Requests write.
+The long-lived private key lives only in Cloudflare PREPRODUCTION encrypted secret bindings. The broker authenticates as the App, resolves the App installation for `jan2xo/bke-worker` directly from GitHub, then mints a short-lived installation token scoped to that repository and only Contents/Issues/Pull Requests write. No operator-supplied installation ID is trusted.
 
 See `docs/github-app-dispatch-actuator.md`.
 

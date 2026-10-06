@@ -29,6 +29,7 @@ Serial Master Queue Dispatcher
   -> Cloudflare PREPRODUCTION broker
   -> verify exact repository + workflow@main + event
   -> sign short-lived GitHub App JWT
+  -> resolve the App installation for jan2xo/bke-worker from GitHub
   -> mint one-hour installation token
   -> scope token to jan2xo/bke-worker
   -> scope permissions to Contents/Issues/Pull requests write
@@ -66,7 +67,6 @@ Not required and should remain disabled:
 PREPRODUCTION Worker encrypted secrets:
 
 - `BKE_WORKER_GITHUB_APP_ID`
-- `BKE_WORKER_GITHUB_APP_INSTALLATION_ID`
 - `BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM`
 
 The App private key must never appear in:
@@ -99,9 +99,15 @@ The broker accepts only a valid GitHub Actions OIDC JWT that proves:
 
 The OIDC signature is verified against GitHub's published Actions OIDC JWKS.
 
-## Installation-token scope
+## Installation resolution and token scope
 
-The broker asks GitHub for an installation token with:
+The broker never trusts an operator-supplied installation ID. After signing the GitHub App JWT, it asks GitHub for the installation of that App on the canonical control repository:
+
+`GET /repos/jan2xo/bke-worker/installation`
+
+The returned installation ID is used only for the following installation-token request. If repository installation lookup fails or returns an invalid ID, the broker fails closed before any repository mutation.
+
+The broker then asks GitHub for an installation token with:
 
 ```json
 {
@@ -130,7 +136,6 @@ Then, from a human-authenticated operator shell:
 cd cloudflare-relay
 
 export BKE_WORKER_GITHUB_APP_ID='<app id>'
-export BKE_WORKER_GITHUB_APP_INSTALLATION_ID='<installation id>'
 export BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE='<path to downloaded PEM>'
 export BKE_WORKER_GITHUB_APP_BROKER_URL='https://<preproduction-worker>.workers.dev'
 
@@ -140,10 +145,10 @@ bash scripts/configure-github-app-actuator.sh --apply
 The script:
 
 1. validates human `gh` and Wrangler authentication;
-2. stores the App identity/private key in Cloudflare PREPRODUCTION secret
-   bindings;
-3. deploys the broker;
-4. sets only the non-secret broker origin as repository variable
+2. stores the App ID/private key in Cloudflare PREPRODUCTION secret bindings;
+3. leaves installation identity to GitHub repository lookup at broker runtime;
+4. deploys the broker;
+5. sets only the non-secret broker origin as repository variable
    `BKE_WORKER_GITHUB_APP_BROKER_URL`.
 
 It does not print the private key.
