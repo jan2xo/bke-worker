@@ -352,7 +352,7 @@ for token in (
     'cleanup_operator_temp_dirs',
     'cert_exit_guard',
     'script exited without final certification result',
-    'BKE CERT: [5/10] Downloading certified sidecar APK...',
+    'cert_stage "artifact-download" "[5/10] Downloading certified sidecar APK..."',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
     'gh run download "$run_id"',
