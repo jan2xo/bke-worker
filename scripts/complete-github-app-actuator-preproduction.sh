@@ -262,8 +262,18 @@ main() {
     if grep -Fq "GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:401" "$proof_log"; then
       fail "GitHub rejected the configured App identity. The Cloudflare App ID and private-key PEM do not authenticate as the same GitHub App."
     fi
+    if grep -Fq "GITHUB_APP_PERMISSION_REQUIRED:" "$proof_log"; then
+      permission_error="$(
+        grep -o 'GITHUB_APP_PERMISSION_REQUIRED:[A-Za-z0-9_=;.-]*' "$proof_log" |
+          tail -n 1
+      )"
+      fail "BKE Worker GitHub App installation is under-granted: $permission_error. Update that repository permission on the custom App, approve the installation permission change if GitHub asks, then rerun this same script."
+    fi
     if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:403" "$proof_log"; then
-      fail "BKE Worker GitHub App is installed but lacks one or more required repository permissions for the scoped token."
+      fail "BKE Worker GitHub App is installed but GitHub denied the scoped token request. Verify the required repository permissions are approved on the installation."
+    fi
+    if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:422" "$proof_log"; then
+      fail "GitHub rejected the scoped installation-token request as invalid. The broker already uses the immutable bke-worker repository ID and validates granted permissions; see the sanitized broker error above."
     fi
 
     fail "remote dispatcher proof failed; see the sanitized broker error above (run $run_id)"
