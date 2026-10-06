@@ -86,6 +86,11 @@ operator ceremony:
 The script should print one clear final state such as `PASS`, `BLOCKED`, or
 `FAIL-CLOSED`.
 
+Cleanup handlers that run on shell `EXIT` must not depend on function-local
+variables that have gone out of scope under `set -u`. Persist cleanup state at
+script scope (or expand it into the trap when registered), and clean temporary
+state before any `exec`-based resume.
+
 When a remote trusted boundary fails, preserve only a sanitized machine-readable
 error code and safe status needed to identify the human action. Do not discard
 the body into an opaque HTTP error, and do not print credentials, bearer tokens,
