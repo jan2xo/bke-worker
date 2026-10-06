@@ -146,6 +146,42 @@ Do not use PR descriptions as chronological logs.
 
 Do not reuse merged/old feature branches for new intents.
 
+### Operator action entrypoints
+
+When a PR requires an owner/operator action on a local machine, cloud account,
+device, browser, or other human-controlled boundary, that PR must include or
+update **one repo-tracked operator entrypoint script** for the action.
+
+The operator-facing contract is:
+
+`bash <repo-tracked-script>`
+
+The operator must not be asked to copy/paste a sequence of setup commands or
+pre-export values that the script can discover or request itself.
+
+The entrypoint must:
+
+- discover reusable non-secret state, repository configuration, URLs, IDs, and
+  prerequisites itself whenever they are derivable;
+- prompt **inside the script, at the point of need**, only for information that
+  genuinely requires human input;
+- use human-interactive official login/auth flows when authentication is
+  missing, without automating credentials, OAuth approval, MFA, CAPTCHA, or
+  security challenges;
+- never print secret contents and never persist a secret except directly into an
+  explicitly authorized encrypted secret boundary;
+- fail closed on wrong repository/environment, dirty or ambiguous local state,
+  uncertain ownership, stale/untrusted code, or failed post-action verification;
+- perform the bounded action, verify the expected result, and write a safe
+  durable GitHub checkpoint when that checkpoint is part of the intent;
+- preserve production/security locks.
+
+PR bodies must declare whether an operator action is required, the one-command
+entrypoint, and the human-only inputs (if any). If no human-only input is needed,
+the script should run without asking questions.
+
+Detailed convention: `docs/operator-entrypoints.md`.
+
 ## 5. MULTI-WORKER OWNERSHIP REQUIREMENTS
 
 Core rule:
