@@ -9,6 +9,11 @@ const ACTIONS_OIDC_JWKS =
 const BROKER_AUDIENCE = "bke-worker-github-app-broker";
 const GITHUB_API_VERSION = "2026-03-10";
 const ALLOWED_EVENTS = new Set(["issues", "pull_request_target", "workflow_dispatch"]);
+const REQUIRED_TOKEN_PERMISSIONS = Object.freeze({
+  contents: "write",
+  issues: "write",
+  pull_requests: "write",
+});
 
 function base64UrlEncodeBytes(bytes) {
   let binary = "";
@@ -247,7 +252,24 @@ function appHeaders(appJwt) {
   };
 }
 
-async function resolveInstallationId(appJwt, fetchImpl = fetch) {
+function permissionSatisfies(granted, required) {
+  if (required === "read") return granted === "read" || granted === "write";
+  return granted === "write";
+}
+
+function validateInstallationPermissions(permissions) {
+  const granted = permissions && typeof permissions === "object" ? permissions : {};
+  for (const [name, required] of Object.entries(REQUIRED_TOKEN_PERMISSIONS)) {
+    const actual = String(granted[name] || "none");
+    if (!permissionSatisfies(actual, required)) {
+      throw new Error(
+        `GITHUB_APP_PERMISSION_REQUIRED:${name}=${required};granted=${actual}`,
+      );
+    }
+  }
+}
+
+async function resolveInstallation(appJwt, fetchImpl = fetch) {
   const response = await fetchImpl(
     "https://api.github.com/repos/jan2xo/bke-worker/installation",
     {
@@ -262,15 +284,19 @@ async function resolveInstallationId(appJwt, fetchImpl = fetch) {
   if (!/^\d+$/u.test(installationId)) {
     throw new Error("GITHUB_APP_INSTALLATION_RESPONSE_INVALID");
   }
-  return installationId;
+  validateInstallationPermissions(payload?.permissions);
+  return {
+    id: installationId,
+    repositorySelection: String(payload?.repository_selection || ""),
+  };
 }
 
 async function mintInstallationToken(env, fetchImpl = fetch) {
   const { appId, privateKeyPem } = requiredAppConfiguration(env);
   const appJwt = await createGitHubAppJwt(appId, privateKeyPem);
-  const installationId = await resolveInstallationId(appJwt, fetchImpl);
+  const installation = await resolveInstallation(appJwt, fetchImpl);
   const response = await fetchImpl(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `https://api.github.com/app/installations/${installation.id}/access_tokens`,
     {
       method: "POST",
       headers: {
@@ -278,12 +304,8 @@ async function mintInstallationToken(env, fetchImpl = fetch) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        repositories: ["bke-worker"],
-        permissions: {
-          contents: "write",
-          issues: "write",
-          pull_requests: "write",
-        },
+        repository_ids: [Number(CONTROL_REPOSITORY_ID)],
+        permissions: REQUIRED_TOKEN_PERMISSIONS,
       }),
     },
   );
@@ -301,11 +323,7 @@ async function mintInstallationToken(env, fetchImpl = fetch) {
     token: payload.token,
     expires_at: payload.expires_at,
     repository: CONTROL_REPOSITORY,
-    permissions: {
-      contents: "write",
-      issues: "write",
-      pull_requests: "write",
-    },
+    permissions: REQUIRED_TOKEN_PERMISSIONS,
   };
 }
 
@@ -317,7 +335,8 @@ export {
   SERIAL_WORKFLOW_REF,
   createGitHubAppJwt,
   mintInstallationToken,
-  resolveInstallationId,
+  resolveInstallation,
   validateActionsClaims,
+  validateInstallationPermissions,
   verifyActionsOidcToken,
 };

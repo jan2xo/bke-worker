@@ -9,6 +9,7 @@ import {
   createGitHubAppJwt,
   mintInstallationToken,
   validateActionsClaims,
+  validateInstallationPermissions,
 } from "../src/github-app.js";
 
 function validClaims(now = Math.floor(Date.now() / 1000)) {
@@ -83,7 +84,16 @@ test("installation is resolved from the control repository before token mint", a
   const fetchImpl = async (url, options = {}) => {
     seen.push({ url, options });
     if (url === "https://api.github.com/repos/jan2xo/bke-worker/installation") {
-      return new Response(JSON.stringify({ id: 67890 }), {
+      return new Response(JSON.stringify({
+        id: 67890,
+        repository_selection: "all",
+        permissions: {
+          contents: "write",
+          issues: "write",
+          pull_requests: "write",
+          metadata: "read",
+        },
+      }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -121,7 +131,8 @@ test("installation is resolved from the control repository before token mint", a
     "https://api.github.com/app/installations/67890/access_tokens",
   );
   const body = JSON.parse(seen[1].options.body);
-  assert.deepEqual(body.repositories, ["bke-worker"]);
+  assert.deepEqual(body.repository_ids, [1354026486]);
+  assert.equal(body.repositories, undefined);
   assert.deepEqual(body.permissions, {
     contents: "write",
     issues: "write",
@@ -129,6 +140,53 @@ test("installation is resolved from the control repository before token mint", a
   });
   assert.equal(result.repository, "jan2xo/bke-worker");
   assert.equal(result.token, "ghs_test_token");
+});
+
+
+test("under-granted installation fails before token mint", async () => {
+  const seen = [];
+  await assert.rejects(
+    mintInstallationToken(
+      {
+        BKE_WORKER_GITHUB_APP_ID: "12345",
+        BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM: privateKeyPem(),
+      },
+      async (url) => {
+        seen.push(url);
+        if (url === "https://api.github.com/repos/jan2xo/bke-worker/installation") {
+          return new Response(JSON.stringify({
+            id: 67890,
+            repository_selection: "all",
+            permissions: {
+              contents: "write",
+              issues: "write",
+              pull_requests: "read",
+              metadata: "read",
+            },
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      },
+    ),
+    /GITHUB_APP_PERMISSION_REQUIRED:pull_requests=write;granted=read/u,
+  );
+  assert.deepEqual(seen, [
+    "https://api.github.com/repos/jan2xo/bke-worker/installation",
+  ]);
+});
+
+test("installation permission validator accepts required writes", () => {
+  assert.doesNotThrow(() =>
+    validateInstallationPermissions({
+      contents: "write",
+      issues: "write",
+      pull_requests: "write",
+      metadata: "read",
+    })
+  );
 });
 
 test("installation resolution fails closed before token mint", async () => {

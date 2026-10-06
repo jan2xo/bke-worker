@@ -105,13 +105,18 @@ The broker never trusts an operator-supplied installation ID. After signing the 
 
 `GET /repos/jan2xo/bke-worker/installation`
 
-The returned installation ID is used only for the following installation-token request. If repository installation lookup fails or returns an invalid ID, the broker fails closed before any repository mutation.
+The returned installation ID and permission grant are used only for the following
+installation-token request. Before minting, the broker verifies that the
+installation actually grants Contents/Issues/Pull requests write. An
+under-granted installation fails closed with the exact missing permission before
+the token request.
 
-The broker then asks GitHub for an installation token with:
+The broker then asks GitHub for an installation token scoped by the immutable
+control repository ID:
 
 ```json
 {
-  "repositories": ["bke-worker"],
+  "repository_ids": [1354026486],
   "permissions": {
     "contents": "write",
     "issues": "write",
@@ -119,6 +124,10 @@ The broker then asks GitHub for an installation token with:
   }
 }
 ```
+
+Using the repository ID avoids relying on a mutable name string while preserving
+the one-repository token boundary even if the App installation itself can see
+additional repositories.
 
 The installation token is short-lived and is masked immediately by the Actions
 workflow before being exported to the following dispatcher step.
