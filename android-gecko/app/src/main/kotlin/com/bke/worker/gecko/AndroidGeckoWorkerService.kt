@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -371,7 +372,8 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun certificationHooksAllowed(): Boolean =
-        BuildConfig.DEBUG && packageName.endsWith(CERTIFICATION_PACKAGE_SUFFIX)
+        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+            packageName.endsWith(CERTIFICATION_PACKAGE_SUFFIX)
 
     private fun handleCertificationAction(action: String?): Boolean {
         if (action == null || !action.startsWith("bke.worker.cert.")) {
