@@ -13,6 +13,8 @@ BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 SECRET_FILE="${BKE_WORKER_RELAY_SECRET_FILE:-$HOME/.bke-secrets/bke-worker-cloudflare-preproduction.env}"
 TRUSTED_WORKTREE="${BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE:-0}"
 LOCAL_BUILD_ROOT="${BKE_ANDROID_RECOVERY_LOCAL_OUTPUT_ROOT:-}"
+LOCAL_SIGNING_DIR="${BKE_ANDROID_RECOVERY_LOCAL_SIGNING_DIR:-$HOME/.bke-secrets/bke-worker-android-recovery-local}"
+LOCAL_CERT_FILE="$LOCAL_SIGNING_DIR/cert.sha256"
 OPERATOR_TEMP_DIRS=()
 CERT_STAGE="bootstrap"
 CERT_FINAL_RESULT=""
@@ -313,7 +315,7 @@ required = {
     "package_name": "com.bke.worker.gecko.recoverycert",
     "architecture": "arm64-v8a",
     "sha256": actual_apk_sha,
-    "signing_authority": "PREPRODUCTION",
+    "signing_authority": "LOCAL_CERTIFICATION",
     "certification_state": "recovery-cert-local-build",
 }
 for key, expected in required.items():
@@ -349,13 +351,15 @@ verify_local_recovery_apk() {
       tr '[:upper:]' '[:lower:]' |
       tr -d ':[:space:]'
   )"
+  [[ -f "$LOCAL_CERT_FILE" ]] ||
+    fail "local recovery signer trust file is missing; run scripts/build-android-recovery-local.sh first"
   expected_signer="$(
-    tr '[:upper:]' '[:lower:]' < "$ROOT_DIR/android-gecko/preproduction-signing-cert.sha256" |
+    tr '[:upper:]' '[:lower:]' < "$LOCAL_CERT_FILE" |
       tr -d ':[:space:]'
   )"
-  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "repo-pinned PREPRODUCTION signer fingerprint is invalid"
+  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "local recovery signer trust fingerprint is invalid"
   [[ "$signer_sha" =~ ^[0-9a-f]{64}$ ]] || fail "unable to verify local recovery APK signer"
-  [[ "$signer_sha" == "$expected_signer" ]] || fail "local recovery APK signer does not match repo-pinned PREPRODUCTION signer"
+  [[ "$signer_sha" == "$expected_signer" ]] || fail "local recovery APK signer does not match the stable local certification signer"
 
   debuggable="$("$apkanalyzer" manifest debuggable "$apk" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   package_name="$("$apkanalyzer" manifest application-id "$apk" | tr -d '[:space:]')"
@@ -604,11 +608,11 @@ main() {
   install_output=""
   if ! install_output="$("${ADB[@]}" install -r "$apk" 2>&1)"; then
     if grep -Fq "INSTALL_FAILED_UPDATE_INCOMPATIBLE" <<<"$install_output"; then
-      echo "BKE CERT: one-time migration from ephemeral recovery signature to stable PREPRODUCTION signing authority..."
+      echo "BKE CERT: one-time migration to the stable LOCAL certification signer..."
       "${ADB[@]}" uninstall "$SIDECAR_PACKAGE" >/dev/null || fail "unable to remove legacy recovery-cert package during signer migration"
       "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared during recovery signer migration"
       "${ADB[@]}" install "$apk" >/dev/null || fail "stable-signed recovery sidecar did not install after signer migration"
-      echo "BKE CERT: signer migration complete; future recovery builds can upgrade in place and preserve app data."
+      echo "BKE CERT: local signer migration complete; future local recovery builds can upgrade in place and preserve app data."
     else
       printf '%s\n' "$install_output" >&2
       fail "stable-signed recovery sidecar install failed"
