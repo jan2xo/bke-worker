@@ -5,6 +5,8 @@ root = Path(__file__).resolve().parents[1]
 workflow = (root / ".github/workflows/certify.yml").read_text(encoding="utf-8")
 gradle = (root / "android-gecko/app/build.gradle.kts").read_text(encoding="utf-8")
 canonical = (root / "BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md").read_text(encoding="utf-8")
+pinned_signer = (root / "android-gecko/preproduction-signing-cert.sha256").read_text(encoding="utf-8").strip().lower()
+assert len(pinned_signer) == 64 and all(ch in "0123456789abcdef" for ch in pinned_signer)
 
 for token in (
     "android-recovery",
@@ -20,6 +22,9 @@ for token in (
     "python3 tests/android_recovery_operator_contract.py",
     "gradle -p android-gecko :app:assembleRecovery --stacktrace",
     "app-recovery.apk",
+    "android-gecko/preproduction-signing-cert.sha256",
+    'test "$SECRET_SIGNER" = "$EXPECTED_SIGNER"',
+    'test "$SIGNER_SHA256" = "$EXPECTED_SIGNER"',
     'test "$DEBUGGABLE" = "true"',
     'test "$PACKAGE_NAME" = "com.bke.worker.gecko.recoverycert"',
     '"workflow_run_id": int(os.environ["GITHUB_RUN_ID"])',
