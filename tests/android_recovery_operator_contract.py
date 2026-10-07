@@ -21,7 +21,7 @@ for token in (
     '"Required certification"',
     'verify_local_recovery_manifest',
     'verify_local_recovery_apk',
-    'expected_signer',
+    'preproduction-signing-cert.sha256',
     '"build_origin": "local-exact-head"',
     '"package_name": "com.bke.worker.gecko.recoverycert"',
     '"signing_authority": "PREPRODUCTION"',
@@ -33,7 +33,7 @@ for token in (
     'bash scripts/build-android-recovery-local.sh',
     'remote artifact download is disabled',
     'wait_for_recovery_witness',
-    '"SESSION_CRASHED"',
+    '"SESSION_CRASHED|SESSION_KILLED"',
     '"SESSION_KILLED"',
     '"CHAT_READY_TIMEOUT:NO_COMPOSER"',
     'terminal FAILED continued scheduling recovery after exhaustion',
@@ -43,6 +43,7 @@ for token in (
     assert token in operator_script, token
 
 assert 'gh run download "$run_id"' not in operator_script
+assert 'signer certificate SHA-256' not in operator_script
 assert "clear_stale_certification_assignments" not in operator_script
 
 for token in (
@@ -52,7 +53,6 @@ for token in (
     'BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD',
     'BKE_ANDROID_PREPRODUCTION_KEY_ALIAS',
     'BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD',
-    'BKE_ANDROID_PREPRODUCTION_CERT_SHA256',
     'BKE_ANDROID_GRADLE_OFFLINE',
     ':app:assembleRecovery',
     '--offline',
@@ -184,10 +184,10 @@ ui_text() {
     printf '%s\n' \
       "BROWSER: ATTACHED" \
       "CHAT: READY" \
-      "LAST RECOVERY: SESSION_CRASHED" \
+      "LAST RECOVERY: SESSION_KILLED" \
       "RECOVERY SEQ: 7"
 }
-if wait_for_recovery_witness 7 SESSION_CRASHED 1 /tmp/unused; then
+if wait_for_recovery_witness 7 'SESSION_CRASHED|SESSION_KILLED' 1 /tmp/unused; then
     exit 91
 fi
 
@@ -195,10 +195,10 @@ ui_text() {
     printf '%s\n' \
       "BROWSER: ATTACHED" \
       "CHAT: READY" \
-      "LAST RECOVERY: SESSION_CRASHED" \
+      "LAST RECOVERY: SESSION_KILLED" \
       "RECOVERY SEQ: 8"
 }
-wait_for_recovery_witness 7 SESSION_CRASHED 2 /tmp/unused
+wait_for_recovery_witness 7 'SESSION_CRASHED|SESSION_KILLED' 2 /tmp/unused
 """
 subprocess.run(
     ["bash", "-c", witness_probe, "bke-recovery-witness-proof", str(operator_script_path)],
