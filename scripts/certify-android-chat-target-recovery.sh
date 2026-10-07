@@ -554,29 +554,41 @@ main() {
 
   restart_and_require_ready "$xml_file"
 
+  local before_sequence after_sequence failed_sequence
+  before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before content crash"
   run_sidecar_service_action bke.worker.cert.crash_content
-  wait_for_text "CHAT: RECOVERING" 15 "$xml_file" || true
-  wait_for_text "CHAT: READY" 45 "$xml_file" || fail "content crash did not recover to READY"
+  wait_for_recovery_witness "$before_sequence" "SESSION_CRASHED" 60 "$xml_file" ||
+    fail "content crash did not produce a fresh SESSION_CRASHED recovery witness"
 
   local actual_kill_result="PASS"
-  if ! try_real_tab_kill "$xml_file"; then
-    actual_kill_result="BLOCKED — device denied real tab-process kill; fixed onKill callback path only"
+  before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before real tab-process kill"
+  if ! try_real_tab_kill "$xml_file" "$before_sequence"; then
+    actual_kill_result="BLOCKED — real tab-process kill did not produce a fresh SESSION_KILLED witness; fixed onKill callback path only"
+    before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before simulated content kill"
     run_sidecar_service_action bke.worker.cert.simulate_content_kill
-    wait_for_text "CHAT: RECOVERING" 15 "$xml_file" || true
-    wait_for_text "CHAT: READY" 45 "$xml_file" || fail "simulated content-kill callback did not recover"
+    wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 60 "$xml_file" ||
+      fail "simulated content-kill callback did not produce a fresh SESSION_KILLED recovery witness"
   fi
 
+  before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before NO_COMPOSER"
   run_sidecar_service_action bke.worker.cert.no_composer
   wait_for_text "CHAT: NO_COMPOSER" 10 "$xml_file" || fail "NO_COMPOSER condition was not observed"
-  wait_for_text "CHAT: READY" 50 "$xml_file" || fail "NO_COMPOSER did not recover to READY"
+  wait_for_recovery_witness "$before_sequence" "CHAT_READY_TIMEOUT:NO_COMPOSER" 70 "$xml_file" ||
+    fail "NO_COMPOSER did not produce a fresh bounded recovery witness"
 
+  before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before native-port loss"
   run_sidecar_service_action bke.worker.cert.native_port_loss
-  wait_for_text "CHAT: RECOVERING" 15 "$xml_file" || true
-  wait_for_text "LAST RECOVERY: NATIVE_PORT_DISCONNECTED" 25 "$xml_file" || fail "native-port loss did not traverse bounded recovery"
-  wait_for_text "CHAT: READY" 45 "$xml_file" || fail "native-port loss did not recover to READY"
+  wait_for_recovery_witness "$before_sequence" "NATIVE_PORT_DISCONNECTED" 60 "$xml_file" ||
+    fail "native-port loss did not produce a fresh bounded recovery witness"
 
   run_sidecar_service_action bke.worker.cert.exhaust_recovery
   wait_for_text "CHAT: FAILED" 10 "$xml_file" || fail "exhausted recovery did not fail closed"
+  wait_for_text "LAST RECOVERY: CERTIFICATION_EXHAUSTED" 5 "$xml_file" || fail "terminal FAILED did not retain exhausted-recovery reason"
+  failed_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read terminal recovery sequence"
+  sleep 17
+  wait_for_text "CHAT: FAILED" 5 "$xml_file" || fail "terminal FAILED did not remain sticky beyond readiness window"
+  after_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence after terminal quiescence window"
+  [[ "$after_sequence" == "$failed_sequence" ]] || fail "terminal FAILED continued scheduling recovery after exhaustion"
   restart_and_require_ready "$xml_file"
 
   cert_stage "relay-config" "[8/10] Preparing PREPRODUCTION relay proof..."
@@ -609,7 +621,6 @@ main() {
   wait_for_text "RELAY: CONNECTED" 45 "$xml_file" || fail "process recreation did not restore requested relay connection"
 
   cert_stage "uncertain-turn" "[9/10] Running bounded uncertain-turn ownership proof..."
-  clear_stale_certification_assignments
   require_no_worker_assignment
   ensure_worker_label_exists
   gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null || fail "unable to assign certification worker label"
@@ -617,12 +628,15 @@ main() {
   if ! wait_for_text "CHAT: BUSY" 30 "$xml_file"; then
     run_sidecar_service_action bke.worker.stop_relay || true
     gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null || true
-    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$actual_apk_sha" "$actual_kill_result" "BLOCKED — wake never reached CHAT: BUSY"
+    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$artifact_source_sha" "$run_id" "$actual_apk_sha" "$actual_kill_result" "BLOCKED — wake never reached CHAT: BUSY"
     fail "bounded wake did not reach an active ChatGPT turn"
   fi
 
   run_sidecar_service_action bke.worker.cert.crash_content
   wait_for_text "CHAT: BLOCKED_UNCERTAIN_TURN" 20 "$xml_file" || fail "in-flight crash did not fail closed as BLOCKED_UNCERTAIN_TURN"
+  run_sidecar_service_action bke.worker.cert.no_composer
+  wait_for_text "CHAT: BLOCKED_UNCERTAIN_TURN" 5 "$xml_file" ||
+    fail "raw page readiness overwrote unresolved BLOCKED_UNCERTAIN_TURN"
   sleep 15
   wait_for_text "CHAT: BLOCKED_UNCERTAIN_TURN" 5 "$xml_file" || fail "uncertain turn was cleared without explicit operator recovery"
 
@@ -635,18 +649,18 @@ main() {
 
   cert_stage "ledger" "[10/10] Recording local certification checkpoint..."
   if [[ "$actual_kill_result" != "PASS" ]]; then
-    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$actual_apk_sha" "$actual_kill_result" "PASS"
+    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$artifact_source_sha" "$run_id" "$actual_apk_sha" "$actual_kill_result" "PASS"
     CERT_FINAL_RESULT="BLOCKED"
     echo "BKE ANDROID RECOVERY CERTIFICATION: BLOCKED"
     echo "All bounded recovery/uncertain-turn proof passed except a real Gecko tab-process kill, which this Android device denied."
     exit 2
   fi
 
-  comment_parent "BKE EXECUTION CHECKPOINT — LOCAL DEVICE CERTIFIED" "$parent_head" "$actual_apk_sha" "PASS" "PASS"
+  comment_parent "BKE EXECUTION CHECKPOINT — LOCAL DEVICE CERTIFIED" "$parent_head" "$artifact_source_sha" "$run_id" "$actual_apk_sha" "PASS" "PASS"
   CERT_FINAL_RESULT="PASS"
   echo "BKE ANDROID RECOVERY CERTIFICATION: PASS"
   echo "Parent exact head: $parent_head"
-  echo "Stable recovery artifact head: $parent_head"
+  echo "Stable recovery artifact head: $artifact_source_sha"
   echo "Production: LOCKED"
 }
 
