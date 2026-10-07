@@ -395,6 +395,7 @@ for token in (
     'LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"',
     'initialize_cert_worker_identity "$parent_head"',
     'clear_stale_certification_assignments',
+    '[[ -n "$stale" ]] || return 0',
     'OPERATOR_TEMP_DIRS=()',
     'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
@@ -508,6 +509,27 @@ initialize_cert_worker_identity "0123456789abcdef0123456789abcdef01234567"
 [[ "${#WORKER_LABEL}" -le 50 ]]
 """,
         "bke-android-recovery-contract",
+        str(operator_script_path),
+    ],
+    check=True,
+)
+
+subprocess.run(
+    [
+        "bash",
+        "-c",
+        r"""
+set -euo pipefail
+source "$1"
+gh() {
+    if [[ "$1" == "pr" && "$2" == "view" ]]; then
+        return 0
+    fi
+    return 99
+}
+clear_stale_certification_assignments
+""",
+        "bke-android-recovery-empty-stale-labels",
         str(operator_script_path),
     ],
     check=True,
