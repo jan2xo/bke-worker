@@ -8,11 +8,14 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 operator_script_path = root / "scripts/certify-android-chat-target-recovery.sh"
 builder_script_path = root / "scripts/build-android-recovery-local.sh"
+runner_script_path = root / "scripts/run-android-recovery-certification.sh"
 operator_script = operator_script_path.read_text(encoding="utf-8")
 builder_script = builder_script_path.read_text(encoding="utf-8")
+runner_script = runner_script_path.read_text(encoding="utf-8")
 
 subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
 subprocess.run(["bash", "-n", str(builder_script_path)], check=True)
+subprocess.run(["bash", "-n", str(runner_script_path)], check=True)
 
 for token in (
     'resolve_recovery_run "$parent_head" "$head_ref"',
@@ -62,7 +65,7 @@ for token in (
     'refusing contaminated tab-kill proof',
     'certify_content_kill_recovery',
     'optional lab proof not observed',
-    'real Gecko process death was observed but required recovery proof failed or became ambiguous',
+    'a fresh SESSION_KILLED was observed during real-kill injection',
     'Gecko onKill callback recovery with fresh SESSION_KILLED witness (required): PASS',
     'real external Gecko tab-process kill integration (optional lab proof)',
 ):
@@ -81,6 +84,31 @@ assert 'signer certificate SHA-256' not in operator_script
 assert "clear_stale_certification_assignments" not in operator_script
 assert 'if [[ "$actual_kill_result" != "PASS" ]]' not in operator_script
 assert 'All bounded recovery/uncertain-turn proof passed except a real Gecko tab-process kill' not in operator_script
+
+for token in (
+    'gh workflow run certify.yml',
+    '-f modules=android-recovery',
+    'gh run watch "$RUN_ID" --repo "$REPOSITORY" --exit-status',
+    'resolve_successful_run',
+    'verify_recovery_run "$RUN_ID"',
+    'git -C "$ROOT_DIR" pull --ff-only',
+    'BKE_ANDROID_RECOVERY_EXPECTED_SHA="$PARENT_HEAD"',
+    'build-android-recovery-local.sh',
+    'certify-android-chat-target-recovery.sh',
+    'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
+):
+    assert token in runner_script, token
+
+for forbidden in (
+    'gh run download',
+    'curl ',
+    'wget ',
+    'set -x',
+    'git reset --hard',
+    'git clean -',
+):
+    assert forbidden not in runner_script, forbidden
+
 
 for token in (
     'BKE_ANDROID_RECOVERY_LOCAL_SIGNING_DIR',
@@ -297,8 +325,7 @@ ui_text() {
           "RECOVERY SEQ: 8"
     else
         printf '%s\n' \
-          "BROWSER: ATTACHED" \
-          "CHAT: READY" \
+          "BROWSER: ATTACHED" \          "CHAT: READY" \
           "LAST RECOVERY: NATIVE_PORT_DISCONNECTED" \
           "RECOVERY SEQ: 8"
     fi
