@@ -42,6 +42,7 @@ jobs:
               "bke-worker-android-gecko-probe",
               "name: Android recovery sidecar stable signed build",
               "python3 tests/android_recovery_signing_contract.py",
+              "python3 tests/android_recovery_operator_contract.py",
               ":app:assembleRecovery",
               "bke-worker-android-recovery-sidecar",
               "ANDROID_REQUIRED:",
