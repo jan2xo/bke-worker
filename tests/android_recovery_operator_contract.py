@@ -45,6 +45,12 @@ for token in (
     'force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
     'sidecar browser did not reattach after human authentication restart',
     'ChatGPT did not reach READY after human authentication restart',
+    'list_gecko_tab_pids',
+    'read_sidecar_main_pid',
+    'am kill --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
+    'ActivityManager real package-process kill proved active-session recovery',
+    'refusing whole-app restart as tab-kill proof',
+    'refusing causal attribution',
 ):
     assert token in operator_script, token
 
@@ -260,6 +266,55 @@ subprocess.run(
     ["bash", "-c", witness_probe, "bke-recovery-witness-proof", str(operator_script_path)],
     check=True,
 )
+
+activity_manager_kill_probe = r"""
+set -euo pipefail
+source "$1"
+ANDROID_USER_ID=0
+ADB=(adb_mock)
+AM_KILL_DONE=0
+AM_CHANGE_MAIN="${2:-0}"
+
+adb_mock() {
+    if [[ "$1" == "shell" && "$2" == "ps" ]]; then
+        if [[ "$AM_KILL_DONE" == "0" ]]; then
+            printf '%s\n'               "PID NAME"               "100 com.bke.worker.gecko.recoverycert"               "200 com.bke.worker.gecko.recoverycert:tab0"
+        else
+            if [[ "$AM_CHANGE_MAIN" == "1" ]]; then
+                main_pid=101
+            else
+                main_pid=100
+            fi
+            printf '%s\n'               "PID NAME"               "$main_pid com.bke.worker.gecko.recoverycert"               "201 com.bke.worker.gecko.recoverycert:tab1"
+        fi
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "run-as" ]]; then
+        return 1
+    fi
+    if [[ "$1" == "shell" && "$2" == "am" && "$3" == "kill" ]]; then
+        AM_KILL_DONE=1
+        return 0
+    fi
+    return 99
+}
+
+wait_for_recovery_witness() {
+    [[ "$AM_KILL_DONE" == "1" ]]
+}
+
+try_real_tab_kill /tmp/unused 7
+"""
+
+subprocess.run(
+    ["bash", "-c", activity_manager_kill_probe, "bke-recovery-am-kill-proof", str(operator_script_path), "0"],
+    check=True,
+)
+
+bad = subprocess.run(
+    ["bash", "-c", activity_manager_kill_probe, "bke-recovery-am-kill-restart-reject", str(operator_script_path), "1"],
+)
+assert bad.returncode != 0
 
 with tempfile.TemporaryDirectory() as td:
     removal_marker = Path(td) / "removed"

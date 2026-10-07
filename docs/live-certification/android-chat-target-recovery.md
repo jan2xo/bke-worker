@@ -136,10 +136,17 @@ deliberately uncertain certification wake. They do not accept arbitrary prompt
 text, JavaScript, shell commands, URLs, or credentials.
 
 For the content-process kill case, the operator entrypoint first attempts a real
-`:tab`/Tab child-process kill. If the Android build isolates that child such
-that the app UID cannot kill it, the script exercises the fixed onKill callback
-path for diagnostics but reports the matrix as BLOCKED rather than claiming a
-real kill PASS.
+`:tab`/Tab child-process kill from the recovery app UID. If Android isolates that
+child such that the app UID cannot signal it, the script makes one bounded
+system-mediated attempt through Android ActivityManager's `am kill` package
+operation. That path counts only when the existing monotonic witness advances as
+`SESSION_KILLED`, the recovery sidecar's main PID remains unchanged, and at least
+one Gecko tab PID observed immediately before the command has disappeared. A
+whole-app restart, unchanged READY state, unrelated process churn, or a no-op
+ActivityManager request cannot satisfy the gate. If neither real-kill path proves
+the active session, the script exercises the fixed onKill callback only for
+diagnostics and reports the matrix as BLOCKED rather than claiming a real-kill
+PASS.
 
 The in-flight uncertainty test uses the parent recovery PR and a fresh
 certification-only worker ID for each ceremony run. The ID includes the exact-head

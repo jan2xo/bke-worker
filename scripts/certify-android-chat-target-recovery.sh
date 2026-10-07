@@ -477,14 +477,67 @@ am start-foreground-service \
 REMOTE_SH
 }
 
+list_gecko_tab_pids() {
+  "${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null |
+    tr -d '\r' |
+    awk -v pkg="$SIDECAR_PACKAGE" '$2 ~ ("^" pkg ":") && tolower($2) ~ /tab/ {print $1}' |
+    sort -rn
+}
+
+read_sidecar_main_pid() {
+  "${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null |
+    tr -d '\r' |
+    awk -v pkg="$SIDECAR_PACKAGE" '$2 == pkg {print $1; exit}'
+}
+
+try_activity_manager_tab_kill() {
+  local xml_file="$1"
+  local before_sequence="$2"
+  local candidates="$3"
+  local main_pid_before main_pid_after after_candidates pid lost_candidate
+
+  main_pid_before="$(read_sidecar_main_pid)"
+  [[ "$main_pid_before" =~ ^[0-9]+$ ]] || return 1
+
+  echo "BKE CERT: app-UID SIGKILL did not prove the active tab; asking Android ActivityManager to kill safe package processes." >&2
+  if ! "${ADB[@]}" shell am kill --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if ! wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 45 "$xml_file"; then
+    return 1
+  fi
+
+  main_pid_after="$(read_sidecar_main_pid)"
+  if [[ "$main_pid_after" != "$main_pid_before" ]]; then
+    echo "BKE CERT: ActivityManager kill changed the main sidecar process; refusing whole-app restart as tab-kill proof." >&2
+    return 1
+  fi
+
+  after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
+  lost_candidate=0
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    if ! grep -Fxq "$pid" <<<"$after_candidates"; then
+      lost_candidate=1
+      break
+    fi
+  done <<<"$candidates"
+
+  if [[ "$lost_candidate" -ne 1 ]]; then
+    echo "BKE CERT: ActivityManager witness advanced but no pre-existing Gecko tab PID disappeared; refusing causal attribution." >&2
+    return 1
+  fi
+
+  echo "BKE CERT: Android ActivityManager real package-process kill proved active-session recovery with main process preserved."
+  return 0
+}
+
 try_real_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
   local candidates pid observed_sequence
-  candidates="$("${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null |
-    tr -d '\r' |
-    awk -v pkg="$SIDECAR_PACKAGE" '$2 ~ ("^" pkg ":") && tolower($2) ~ /tab/ {print $1}' |
-    sort -rn)"
+  candidates="$(list_gecko_tab_pids)"
   [[ -n "$candidates" ]] || return 1
 
   while IFS= read -r pid; do
@@ -507,7 +560,9 @@ try_real_tab_kill() {
     echo "BKE CERT: tab-process candidate pid=$pid did not affect the active session; trying the next bounded candidate." >&2
   done <<<"$candidates"
 
-  return 1
+  candidates="$(list_gecko_tab_pids)"
+  [[ -n "$candidates" ]] || return 1
+  try_activity_manager_tab_kill "$xml_file" "$before_sequence" "$candidates"
 }
 
 initialize_cert_worker_identity() {
