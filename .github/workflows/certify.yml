@@ -509,7 +509,9 @@ jobs:
 
           manifest = {
               "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "component": "BKE Worker Android Recovery Cert",
+              "package_name": "com.bke.worker.gecko.recoverycert",
               "architecture": "arm64-v8a",
               "version_name": os.environ["VERSION_NAME"],
               "version_code": int(os.environ["VERSION_CODE"]),
