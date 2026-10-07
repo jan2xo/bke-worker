@@ -132,3 +132,15 @@ that token to the debuggable sidecar without writing it to GitHub, and removes
 the temporary app-private token file immediately after configuration.
 
 Production remains locked.
+
+
+## Recovery render and durable witness
+
+Recovery status includes a monotonic recovery sequence and the last initiating recovery
+reason. Live certification uses that durable witness for native-port loss instead of
+requiring a one-second poll to catch the transient `CHAT: RECOVERING` value.
+
+When a new recovery sequence reaches `CHAT: READY` or `CHAT: BUSY`, the Activity
+explicitly requests a root/GeckoView layout and invalidation pass. This prevents a
+recovered GeckoSession from remaining visually white until unrelated operator UI
+interaction (such as expanding Worker Configuration) forces a layout.

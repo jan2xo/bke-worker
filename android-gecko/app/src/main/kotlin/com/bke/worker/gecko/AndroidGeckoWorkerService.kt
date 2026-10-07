@@ -24,6 +24,8 @@ data class AndroidWorkerStatusSnapshot(
     val workerId: String,
     val chatGptState: String,
     val relayState: String,
+    val recoverySequence: Int,
+    val lastRecoveryReason: String?,
 )
 
 class AndroidGeckoWorkerService : Service() {
@@ -147,6 +149,10 @@ class AndroidGeckoWorkerService : Service() {
     private var workerState = STATE_STARTING
     @Volatile
     private var relayState = "STOPPED"
+    @Volatile
+    private var recoverySequence = 0
+    @Volatile
+    private var lastRecoveryReason: String? = null
 
     private var appliedRelayConfig = RelayConfig(
         workerId = DEFAULT_WORKER_ID,
@@ -178,6 +184,8 @@ class AndroidGeckoWorkerService : Service() {
             workerId = activeWorkerId,
             chatGptState = workerState,
             relayState = relayState,
+            recoverySequence = recoverySequence,
+            lastRecoveryReason = lastRecoveryReason,
         )
 
     private val portDelegate = object : WebExtension.PortDelegate {
@@ -519,6 +527,11 @@ class AndroidGeckoWorkerService : Service() {
 
     private fun scheduleChatRecovery(reason: String) {
         if (!isRunning) return
+
+        if (workerState != STATE_RECOVERING && workerState != STATE_BLOCKED_UNCERTAIN) {
+            recoverySequence += 1
+            lastRecoveryReason = reason
+        }
 
         if (activeWake != null) {
             activeWakeUncertain = true

@@ -392,7 +392,8 @@ main() {
   wait_for_text "CHAT: READY" 50 "$xml_file" || fail "NO_COMPOSER did not recover to READY"
 
   run_sidecar_service_action bke.worker.cert.native_port_loss
-  wait_for_text "CHAT: RECOVERING" 25 "$xml_file" || fail "native-port loss did not enter bounded recovery"
+  wait_for_text "CHAT: RECOVERING" 15 "$xml_file" || true
+  wait_for_text "LAST RECOVERY: NATIVE_PORT_DISCONNECTED" 25 "$xml_file" || fail "native-port loss did not traverse bounded recovery"
   wait_for_text "CHAT: READY" 45 "$xml_file" || fail "native-port loss did not recover to READY"
 
   run_sidecar_service_action bke.worker.cert.exhaust_recovery
