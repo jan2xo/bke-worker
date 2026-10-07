@@ -86,6 +86,20 @@ Production remains locked.
 
 ## Local build + live certification
 
+Recovery CI has two mirrored paths:
+
+- `android-recovery` is the fast local-base authority. It checks the exact head and all recovery/operator/signing contracts without installing the Android SDK, invoking Gradle, building an APK, or uploading an artifact. This is the normal gate before a local operator build.
+- `android-recovery-github` is the slow GitHub-base path. It runs the same recovery contracts, then installs the Android toolchain, builds the recovery APK, verifies PREPRODUCTION signing/provenance, and uploads the GitHub artifact. Run it only when GitHub-built APK proof is actually required.
+
+The normal bandwidth-efficient loop is therefore:
+
+```bash
+gh workflow run certify.yml --repo jan2xo/bke-worker --ref <branch> \
+  -f source_sha=<exact-head> -f modules=android-recovery -f publish_preproduction=false
+bash scripts/build-android-recovery-local.sh
+bash scripts/certify-android-chat-target-recovery.sh
+```
+
 The operator path intentionally separates source sync/local APK construction from the live device ceremony:
 
 ```bash
