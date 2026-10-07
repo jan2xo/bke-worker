@@ -155,6 +155,34 @@ slash-escaped parameter replacement and is validated with portable shell prefix,
 host, and exact-path checks. This keeps the operator ceremony compatible with the
 macOS system Bash used by the live device host.
 
+
+## Independent-review negative-path hardening
+
+The live ceremony does not trust a PR checkpoint as sufficient artifact provenance.
+Before installation it now independently verifies that the referenced certification run
+completed successfully on the exact parent SHA, including both the stable recovery build
+and required-certification aggregate. The downloaded artifact manifest must bind the same
+source SHA and workflow run ID, the recovery-cert package identity, APK hash, signer
+certificate provenance, PREPRODUCTION signing authority, and recovery-cert certification
+state. The durable local-device ledger records that verified artifact revision and run.
+
+Crash, content-process kill, NO_COMPOSER, and native-port recovery PASS require a fresh
+monotonic recovery-sequence witness with the expected initiating reason, followed by an
+attached READY ChatGPT surface. An unchanged pre-existing READY surface is not accepted
+as recovery proof. Terminal FAILED is held beyond the readiness timeout and the recovery
+sequence must remain unchanged before the explicit process restart boundary.
+
+Existing `bke-worker:*` ownership is never removed merely because its label resembles a
+prior certification worker. Any existing owner blocks a new ceremony until the operator
+explicitly resolves the prior relay/uncertain-turn state and releases that ownership.
+Interrupted ambiguous ceremonies therefore remain fail-closed.
+
+While an accepted wake is uncertain, `BLOCKED_UNCERTAIN_TURN` dominates raw BUSY,
+READY, and NO_COMPOSER page observations. Page readiness cannot clear or visually mask
+the delivery-ambiguity boundary; only the explicit reject/recovery certification action
+can resolve it.
+
+
 Production remains locked.
 
 
