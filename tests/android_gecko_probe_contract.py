@@ -400,10 +400,10 @@ for token in (
     'verify_recovery_run "$run_id" "$parent_head"',
     'verify_local_recovery_manifest',
     'verify_local_recovery_apk',
-    'expected_signer',
+    'preproduction-signing-cert.sha256',
     'package_name',
     'wait_for_recovery_witness',
-    'SESSION_CRASHED',
+    'SESSION_CRASHED|SESSION_KILLED',
     'SESSION_KILLED',
     'CHAT_READY_TIMEOUT:NO_COMPOSER',
     'terminal FAILED continued scheduling recovery after exhaustion',
@@ -417,7 +417,6 @@ for token in (
     'Sidecar certification run:',
     'script exited without final certification result',
     'cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."',
-    'bke-worker-android-recovery-sidecar',
     'RECOVERY SIDECAR SIGNED',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
@@ -504,6 +503,7 @@ for token in (
 assert "clear_stale_certification_assignments" not in operator_script
 assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
 assert 'gh run download "$run_id"' not in operator_script
+assert 'signer certificate SHA-256' not in operator_script
 assert 'status --porcelain --untracked-files=no' in operator_script
 
 subprocess.run(
