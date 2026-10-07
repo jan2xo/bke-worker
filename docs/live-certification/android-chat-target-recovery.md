@@ -154,12 +154,19 @@ Gecko tab PID actually disappears, the sidecar main PID remains stable, and a fr
 such a kill at all, that row is recorded as NOT AVAILABLE optional lab proof and
 does not invalidate the required recovery certification.
 
-This is not a relaxation for observed real failures: if any injection route really
-removes a Gecko tab process or otherwise advances recovery state but the required
-fresh causal recovery witness is missing, contradictory, or contaminated by a
-whole-app restart, the ceremony still fails closed. Unchanged READY state,
-unrelated process churn, and no-op kill commands can never be reported as real-kill
-PASS.
+A generic `:tab` PID disappearance by itself is not enough to identify the
+content process hosting the tested GeckoSession; Gecko may have unrelated or
+preallocated tab children. Such a disappearance without a fresh recovery witness is
+therefore recorded as INCONCLUSIVE optional lab evidence, and the bounded candidate
+search may continue. It can never be reported as real-kill PASS.
+
+The ceremony still fails closed for an attributable recovery failure: if the
+monotonic witness advances specifically as `SESSION_KILLED` during real-kill
+injection but the browser does not return ATTACHED + READY, certification fails.
+Likewise, the required fixed `onKill` callback proof must independently produce a
+fresh `SESSION_KILLED` + ATTACHED + READY witness. Whole-app restart, unrelated
+recovery state, unchanged READY state, unrelated process churn, and no-op kill
+commands remain insufficient for real-kill PASS.
 
 The in-flight uncertainty test uses the parent recovery PR and a fresh
 certification-only worker ID for each ceremony run. The ID includes the exact-head

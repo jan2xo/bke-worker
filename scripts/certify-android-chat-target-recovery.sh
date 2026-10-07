@@ -302,6 +302,30 @@ wait_for_recovery_witness() {
   return 1
 }
 
+classify_failed_kill_witness() {
+  local before_sequence="$1"
+  local xml_file="$2"
+  local snapshot sequence reason chat browser
+
+  snapshot="$(ui_text "$xml_file" 2>/dev/null || true)"
+  sequence="$(awk -F': ' '/^RECOVERY SEQ: [0-9]+$/ {print $2; exit}' <<<"$snapshot")"
+  reason="$(awk -F': ' '/^LAST RECOVERY: / {print $2; exit}' <<<"$snapshot")"
+  chat="$(awk -F': ' '/^CHAT: / {print $2; exit}' <<<"$snapshot")"
+  browser="$(awk -F': ' '/^BROWSER: / {print $2; exit}' <<<"$snapshot")"
+
+  if [[ "$sequence" =~ ^[0-9]+$ ]] && (( sequence > before_sequence )); then
+    if [[ "$reason" == "SESSION_KILLED" ]]; then
+      echo "BKE CERT: fresh SESSION_KILLED occurred but recovery did not return ATTACHED + READY — seq=$sequence chat=${chat:-?} browser=${browser:-?}." >&2
+      return 2
+    fi
+
+    echo "BKE CERT: recovery sequence advanced for ${reason:-unknown} while testing a real kill; lab proof is contaminated and cannot be attributed." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 verify_recovery_run() {
   local run_id="$1"
   local parent_head="$2"
@@ -505,7 +529,7 @@ try_activity_manager_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
   local candidates="$3"
-  local main_pid_before main_pid_after after_candidates pid lost_candidate
+  local main_pid_before main_pid_after after_candidates pid lost_candidate kill_state
 
   main_pid_before="$(read_sidecar_main_pid)"
   [[ "$main_pid_before" =~ ^[0-9]+$ ]] || return 1
@@ -516,24 +540,35 @@ try_activity_manager_tab_kill() {
   fi
 
   if ! wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 45 "$xml_file"; then
+    kill_state=0
+    classify_failed_kill_witness "$before_sequence" "$xml_file" || kill_state=$?
+    [[ "$kill_state" -ne 2 ]] || return 2
+    [[ "$kill_state" -eq 0 ]] || return 1
+
     main_pid_after="$(read_sidecar_main_pid)"
     after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
-    if [[ "$main_pid_after" == "$main_pid_before" ]]; then
-      while IFS= read -r pid; do
-        [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        if ! grep -Fxq "$pid" <<<"$after_candidates"; then
-          echo "BKE CERT: ActivityManager removed Gecko tab pid=$pid without a fresh SESSION_KILLED READY witness." >&2
-          return 2
-        fi
-      done <<<"$candidates"
+    if [[ "$main_pid_after" != "$main_pid_before" ]]; then
+      REAL_KILL_RESULT="INCONCLUSIVE — ActivityManager changed the sidecar process without an attributable active-session kill witness"
+      echo "BKE CERT: ActivityManager changed the main sidecar process without a fresh SESSION_KILLED witness; lab proof is contaminated." >&2
+      return 1
     fi
+
+    while IFS= read -r pid; do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      if ! grep -Fxq "$pid" <<<"$after_candidates"; then
+        REAL_KILL_RESULT="INCONCLUSIVE — one or more Gecko tab candidates disappeared without a fresh active-session SESSION_KILLED witness"
+        echo "BKE CERT: ActivityManager removed Gecko tab pid=$pid, but no fresh SESSION_KILLED witness identified it as the active session." >&2
+        return 1
+      fi
+    done <<<"$candidates"
     return 1
   fi
 
   main_pid_after="$(read_sidecar_main_pid)"
   if [[ "$main_pid_after" != "$main_pid_before" ]]; then
-    echo "BKE CERT: ActivityManager kill changed the main sidecar process; refusing whole-app restart as tab-kill proof." >&2
-    return 2
+    REAL_KILL_RESULT="INCONCLUSIVE — fresh SESSION_KILLED coincided with a whole-app process change"
+    echo "BKE CERT: ActivityManager witness advanced but the main sidecar process changed; refusing causal attribution." >&2
+    return 1
   fi
 
   after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
@@ -547,18 +582,18 @@ try_activity_manager_tab_kill() {
   done <<<"$candidates"
 
   if [[ "$lost_candidate" -ne 1 ]]; then
+    REAL_KILL_RESULT="INCONCLUSIVE — fresh SESSION_KILLED had no matching pre-existing Gecko tab disappearance"
     echo "BKE CERT: ActivityManager witness advanced but no pre-existing Gecko tab PID disappeared; refusing causal attribution." >&2
-    return 2
+    return 1
   fi
 
   echo "BKE CERT: Android ActivityManager real package-process kill proved active-session recovery with main process preserved."
   return 0
 }
-
 try_root_emulator_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
-  local qemu build_type main_pid_before main_pid_after candidates pid observed_sequence after_candidates
+  local qemu build_type main_pid_before main_pid_after candidates pid after_candidates kill_state
 
   qemu="$("${ADB[@]}" shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r[:space:]')"
   [[ "$qemu" == "1" ]] || return 1
@@ -581,6 +616,7 @@ try_root_emulator_tab_kill() {
 
   main_pid_after="$(read_sidecar_main_pid)"
   if [[ "$main_pid_after" != "$main_pid_before" ]]; then
+    REAL_KILL_RESULT="INCONCLUSIVE — adb-root transition changed the sidecar process"
     echo "BKE CERT: adb-root transition changed the main sidecar process; refusing contaminated tab-kill proof." >&2
     restore_adb_privilege
     return 1
@@ -607,34 +643,42 @@ try_root_emulator_tab_kill() {
         return 0
       fi
 
+      REAL_KILL_RESULT="INCONCLUSIVE — fresh SESSION_KILLED could not be causally tied to the targeted Gecko tab"
       echo "BKE CERT: emulator-root witness advanced without preserved main PID + killed candidate; refusing causal attribution." >&2
+      restore_adb_privilege
+      return 1
+    fi
+
+    kill_state=0
+    classify_failed_kill_witness "$before_sequence" "$xml_file" || kill_state=$?
+    if [[ "$kill_state" -eq 2 ]]; then
       restore_adb_privilege
       return 2
     fi
-
-    observed_sequence="$(read_recovery_sequence "$xml_file" 2>/dev/null || true)"
-    if [[ "$observed_sequence" =~ ^[0-9]+$ ]] && (( observed_sequence > before_sequence )); then
-      echo "BKE CERT: emulator-root kill changed recovery sequence without the required SESSION_KILLED READY witness." >&2
+    if [[ "$kill_state" -eq 1 ]]; then
+      REAL_KILL_RESULT="INCONCLUSIVE — recovery state changed during real-kill injection without causal attribution"
       restore_adb_privilege
-      return 2
+      return 1
     fi
 
     after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
     if ! grep -Fxq "$pid" <<<"$after_candidates"; then
-      echo "BKE CERT: emulator-root removed Gecko tab pid=$pid without a fresh SESSION_KILLED READY witness." >&2
-      restore_adb_privilege
-      return 2
+      REAL_KILL_RESULT="INCONCLUSIVE — one or more Gecko tab candidates disappeared without a fresh active-session SESSION_KILLED witness"
+      echo "BKE CERT: emulator-root removed Gecko tab pid=$pid, but no fresh SESSION_KILLED witness identified it as the active session; continuing bounded candidate search." >&2
     fi
   done <<<"$candidates"
 
   restore_adb_privilege
   return 1
 }
-
 try_real_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
-  local candidates pid observed_sequence am_result
+  local candidates pid am_result main_pid_before main_pid_after after_candidates kill_state
+
+  main_pid_before="$(read_sidecar_main_pid)"
+  [[ "$main_pid_before" =~ ^[0-9]+$ ]] || return 1
+
   candidates="$(list_gecko_tab_pids)"
   [[ -n "$candidates" ]] || return 1
 
@@ -645,19 +689,31 @@ try_real_tab_kill() {
     fi
 
     if wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 45 "$xml_file"; then
-      echo "BKE CERT: real Gecko tab-process kill proved active-session recovery (pid=$pid)."
-      return 0
+      main_pid_after="$(read_sidecar_main_pid)"
+      after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
+      if [[ "$main_pid_after" == "$main_pid_before" ]] && ! grep -Fxq "$pid" <<<"$after_candidates"; then
+        echo "BKE CERT: real Gecko tab-process kill proved active-session recovery (pid=$pid)."
+        return 0
+      fi
+
+      REAL_KILL_RESULT="INCONCLUSIVE — fresh SESSION_KILLED could not be causally tied to the targeted Gecko tab"
+      echo "BKE CERT: fresh SESSION_KILLED followed the kill, but main-PID/target-PID checks could not establish causal attribution." >&2
+      return 1
     fi
 
-    observed_sequence="$(read_recovery_sequence "$xml_file" 2>/dev/null || true)"
-    if [[ "$observed_sequence" =~ ^[0-9]+$ ]] && (( observed_sequence > before_sequence )); then
-      echo "BKE CERT: tab-process kill changed recovery sequence without the required SESSION_KILLED READY witness; refusing further candidate kills." >&2
-      return 2
+    kill_state=0
+    classify_failed_kill_witness "$before_sequence" "$xml_file" || kill_state=$?
+    [[ "$kill_state" -ne 2 ]] || return 2
+    if [[ "$kill_state" -eq 1 ]]; then
+      REAL_KILL_RESULT="INCONCLUSIVE — recovery state changed during real-kill injection without causal attribution"
+      return 1
     fi
 
-    if ! list_gecko_tab_pids | grep -Fxq "$pid"; then
-      echo "BKE CERT: Gecko tab pid=$pid disappeared without a fresh SESSION_KILLED READY witness." >&2
-      return 2
+    after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
+    if ! grep -Fxq "$pid" <<<"$after_candidates"; then
+      REAL_KILL_RESULT="INCONCLUSIVE — one or more Gecko tab candidates disappeared without a fresh active-session SESSION_KILLED witness"
+      echo "BKE CERT: Gecko tab pid=$pid disappeared, but no fresh SESSION_KILLED witness identified it as the active session; continuing bounded candidate search." >&2
+      continue
     fi
 
     echo "BKE CERT: tab-process candidate pid=$pid did not affect the active session; trying the next bounded candidate." >&2
@@ -675,7 +731,6 @@ try_real_tab_kill() {
 
   try_root_emulator_tab_kill "$xml_file" "$before_sequence"
 }
-
 certify_content_kill_recovery() {
   local xml_file="$1"
   local before_sequence kill_rc
@@ -688,7 +743,7 @@ certify_content_kill_recovery() {
   else
     kill_rc=$?
     if [[ "$kill_rc" -eq 2 ]]; then
-      echo "BKE CERT: real Gecko process death was observed but required recovery proof failed or became ambiguous." >&2
+      echo "BKE CERT: a fresh SESSION_KILLED was observed during real-kill injection, but bounded recovery did not return ATTACHED + READY." >&2
       return 1
     fi
     echo "BKE CERT: real Gecko kill injection unavailable on this device; continuing with required fixed onKill callback proof." >&2

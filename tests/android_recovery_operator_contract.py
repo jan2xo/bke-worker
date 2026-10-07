@@ -283,6 +283,93 @@ subprocess.run(
     check=True,
 )
 
+kill_timeout_classifier_probe = r"""
+set -euo pipefail
+source "$1"
+MODE="$2"
+
+ui_text() {
+    if [[ "$MODE" == "killed-unhealthy" ]]; then
+        printf '%s\n' \
+          "BROWSER: ATTACHED" \
+          "CHAT: RECOVERING" \
+          "LAST RECOVERY: SESSION_KILLED" \
+          "RECOVERY SEQ: 8"
+    else
+        printf '%s\n' \
+          "BROWSER: ATTACHED" \
+          "CHAT: READY" \
+          "LAST RECOVERY: NATIVE_PORT_DISCONNECTED" \
+          "RECOVERY SEQ: 8"
+    fi
+}
+
+set +e
+classify_failed_kill_witness 7 /tmp/unused
+rc=$?
+set -e
+
+if [[ "$MODE" == "killed-unhealthy" ]]; then
+    [[ "$rc" -eq 2 ]]
+else
+    [[ "$rc" -eq 1 ]]
+fi
+"""
+subprocess.run(
+    ["bash", "-c", kill_timeout_classifier_probe, "bke-recovery-kill-timeout-hard-fail", str(operator_script_path), "killed-unhealthy"],
+    check=True,
+)
+subprocess.run(
+    ["bash", "-c", kill_timeout_classifier_probe, "bke-recovery-kill-timeout-contaminated", str(operator_script_path), "other-recovery"],
+    check=True,
+)
+
+unattributed_tab_disappearance_probe = r"""
+set -euo pipefail
+source "$1"
+ADB=(adb_mock)
+KILLED=0
+SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"
+
+adb_mock() {
+    if [[ "$1" == "shell" && "$2" == "ps" ]]; then
+        printf '%s\n' "PID NAME" "100 $SIDECAR_PACKAGE"
+        if [[ "$KILLED" == "0" ]]; then
+            printf '%s\n' "200 $SIDECAR_PACKAGE:tab0"
+        fi
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "run-as" && "$4" == "kill" ]]; then
+        KILLED=1
+        return 0
+    fi
+    return 99
+}
+
+wait_for_recovery_witness() {
+    return 1
+}
+
+ui_text() {
+    printf '%s\n' \
+      "BROWSER: ATTACHED" \
+      "CHAT: READY" \
+      "LAST RECOVERY: SESSION_KILLED" \
+      "RECOVERY SEQ: 7"
+}
+
+set +e
+try_real_tab_kill /tmp/unused 7
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+[[ "$REAL_KILL_RESULT" == INCONCLUSIVE* ]]
+"""
+subprocess.run(
+    ["bash", "-c", unattributed_tab_disappearance_probe, "bke-recovery-unattributed-tab-disappearance", str(operator_script_path)],
+    check=True,
+)
+
 activity_manager_kill_probe = r"""
 set -euo pipefail
 source "$1"
