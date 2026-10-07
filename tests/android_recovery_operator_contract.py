@@ -7,33 +7,75 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 operator_script_path = root / "scripts/certify-android-chat-target-recovery.sh"
+builder_script_path = root / "scripts/build-android-recovery-local.sh"
 operator_script = operator_script_path.read_text(encoding="utf-8")
+builder_script = builder_script_path.read_text(encoding="utf-8")
 
 subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
+subprocess.run(["bash", "-n", str(builder_script_path)], check=True)
 
 for token in (
     'verify_recovery_run "$run_id" "$parent_head"',
     'gh run view "$run_id" --repo "$REPOSITORY" --json headSha,conclusion,event,jobs',
     '"Android recovery sidecar stable signed build"',
     '"Required certification"',
-    'verify_recovery_artifact_manifest',
-    '"workflow_run_id": int(run_id)',
+    'verify_local_recovery_manifest',
+    'verify_local_recovery_apk',
+    'expected_signer',
+    '"build_origin": "local-exact-head"',
     '"package_name": "com.bke.worker.gecko.recoverycert"',
     '"signing_authority": "PREPRODUCTION"',
-    '"certification_state": "recovery-cert-certified"',
-    'artifact_source_sha="$(verify_recovery_artifact_manifest',
+    '"certification_state": "recovery-cert-local-build"',
+    'artifact_source_sha="$(verify_local_recovery_manifest',
     'local sidecar_head="$3"',
     'Sidecar certification run:',
+    'cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."',
+    'bash scripts/build-android-recovery-local.sh',
+    'remote artifact download is disabled',
     'wait_for_recovery_witness',
     '"SESSION_CRASHED"',
     '"SESSION_KILLED"',
     '"CHAT_READY_TIMEOUT:NO_COMPOSER"',
     'terminal FAILED continued scheduling recovery after exhaustion',
     'explicitly resolve and release the existing owner before rerunning',
+    'status --porcelain --untracked-files=no',
 ):
     assert token in operator_script, token
 
+assert 'gh run download "$run_id"' not in operator_script
 assert "clear_stale_certification_assignments" not in operator_script
+
+for token in (
+    'BKE_ANDROID_PREPRODUCTION_ENV_FILE',
+    'BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH',
+    'BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64',
+    'BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD',
+    'BKE_ANDROID_PREPRODUCTION_KEY_ALIAS',
+    'BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD',
+    'BKE_ANDROID_PREPRODUCTION_CERT_SHA256',
+    'BKE_ANDROID_GRADLE_OFFLINE',
+    ':app:assembleRecovery',
+    '--offline',
+    'verify --verbose --print-certs',
+    'manifest debuggable',
+    'manifest application-id',
+    '"build_origin": "local-exact-head"',
+    '"certification_state": "recovery-cert-local-build"',
+    'artifacts/android-recovery-local',
+    'Network artifact download: NONE',
+    'diff --quiet --ignore-submodules',
+):
+    assert token in builder_script, token
+
+for forbidden in (
+    "gh run download",
+    "curl ",
+    "wget ",
+    "wrangler deploy",
+    "production deploy",
+    "set -x",
+):
+    assert forbidden not in builder_script, forbidden
 
 head = "0123456789abcdef0123456789abcdef01234567"
 run_id = 123456789
@@ -84,7 +126,7 @@ with tempfile.TemporaryDirectory() as td:
     manifest_path = Path(td) / "manifest.json"
     manifest = {
         "source_sha": head,
-        "workflow_run_id": run_id,
+        "build_origin": "local-exact-head",
         "component": "BKE Worker Android Recovery Cert",
         "package_name": "com.bke.worker.gecko.recoverycert",
         "architecture": "arm64-v8a",
@@ -93,14 +135,15 @@ with tempfile.TemporaryDirectory() as td:
         "sha256": apk_sha,
         "signer_certificate_sha256": signer_sha,
         "signing_authority": "PREPRODUCTION",
-        "certification_state": "recovery-cert-certified",
+        "certification_state": "recovery-cert-local-build",
+        "apk_file": "BKE.Worker.Android.RECOVERY-CERT.arm64-v0.0.1-probe-recoverycert.apk",
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     manifest_probe = r"""
 set -euo pipefail
 source "$1"
-verified="$(verify_recovery_artifact_manifest "$2" "$3" "$4" "$5")"
+verified="$(verify_local_recovery_manifest "$2" "$3" "$4")"
 [[ "$verified" == "$4" ]]
 """
     subprocess.run(
@@ -108,12 +151,11 @@ verified="$(verify_recovery_artifact_manifest "$2" "$3" "$4" "$5")"
             "bash",
             "-c",
             manifest_probe,
-            "bke-recovery-manifest-proof",
+            "bke-recovery-local-manifest-proof",
             str(operator_script_path),
             str(manifest_path),
             apk_sha,
             head,
-            str(run_id),
         ],
         check=True,
     )
@@ -125,12 +167,11 @@ verified="$(verify_recovery_artifact_manifest "$2" "$3" "$4" "$5")"
             "bash",
             "-c",
             manifest_probe,
-            "bke-recovery-manifest-proof",
+            "bke-recovery-local-manifest-proof",
             str(operator_script_path),
             str(manifest_path),
             apk_sha,
             head,
-            str(run_id),
         ]
     )
     assert bad.returncode != 0
@@ -140,14 +181,22 @@ set -euo pipefail
 source "$1"
 
 ui_text() {
-    printf '%s\n'       "BROWSER: ATTACHED"       "CHAT: READY"       "LAST RECOVERY: SESSION_CRASHED"       "RECOVERY SEQ: 7"
+    printf '%s\n' \
+      "BROWSER: ATTACHED" \
+      "CHAT: READY" \
+      "LAST RECOVERY: SESSION_CRASHED" \
+      "RECOVERY SEQ: 7"
 }
 if wait_for_recovery_witness 7 SESSION_CRASHED 1 /tmp/unused; then
     exit 91
 fi
 
 ui_text() {
-    printf '%s\n'       "BROWSER: ATTACHED"       "CHAT: READY"       "LAST RECOVERY: SESSION_CRASHED"       "RECOVERY SEQ: 8"
+    printf '%s\n' \
+      "BROWSER: ATTACHED" \
+      "CHAT: READY" \
+      "LAST RECOVERY: SESSION_CRASHED" \
+      "RECOVERY SEQ: 8"
 }
 wait_for_recovery_witness 7 SESSION_CRASHED 2 /tmp/unused
 """
