@@ -188,7 +188,7 @@ main() {
 
   local signer_report
   signer_report="$(mktemp "${TMPDIR:-/tmp}/bke-recovery-signer.XXXXXX.txt")"
-  trap 'rm -f -- "$signer_report"; cleanup' EXIT
+  trap 'rm -f -- "$signer_report"' EXIT
 
   "$apksigner" verify --verbose --print-certs "$apk" >"$signer_report"
   signer_sha="$(
@@ -253,7 +253,7 @@ Path(sys.argv[1]).write_text(json.dumps(manifest, indent=2) + "\n", encoding="ut
 PY
 
   rm -f -- "$signer_report"
-  trap cleanup EXIT
+  trap - EXIT
 
   echo "BKE ANDROID LOCAL RECOVERY BUILD: PASS"
   echo "Source: $source_sha"
