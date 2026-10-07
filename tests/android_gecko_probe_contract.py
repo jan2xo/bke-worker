@@ -433,6 +433,9 @@ for token in (
     'pm path "$PRIMARY_PACKAGE"',
     'pm path "$SIDECAR_PACKAGE"',
     'Human boundary: authenticate ChatGPT manually',
+    'force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
+    'sidecar browser did not reattach after human authentication restart',
+    'ChatGPT did not reach READY after human authentication restart',
     'bke.worker.cert.crash_content',
     'bke.worker.cert.simulate_content_kill',
     'bke.worker.cert.no_composer',
@@ -451,6 +454,12 @@ for token in (
     'Production: LOCKED',
 ):
     assert token in operator_script, token
+
+human_start = operator_script.index('Human boundary: complete ChatGPT authentication/security checks inside BKE Worker Recovery Cert.')
+human_end = operator_script.index('read_recovery_sequence()', human_start)
+human_block = operator_script[human_start:human_end]
+assert human_block.index('Press Enter after the ChatGPT composer is visibly usable') < human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"')
+assert human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"') < human_block.index('ChatGPT did not reach READY after human authentication restart')
 
 relay_apply_start = operator_script.index("apply_relay_config_securely()")
 relay_apply_end = operator_script.index("try_real_tab_kill()", relay_apply_start)
