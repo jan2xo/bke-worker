@@ -220,6 +220,10 @@ class AndroidGeckoWorkerService : Service() {
             workerPort?.disconnect()
             workerPort = port
             port.setDelegate(portDelegate)
+            if (workerState == STATE_FAILED) {
+                updateNotification()
+                return
+            }
             nativePortRecoveryGeneration += 1
             readinessWatchGeneration += 1
             scheduleChatReadyTimeout("NATIVE_PORT_CONNECTED")
@@ -463,10 +467,15 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun scheduleNativePortRecovery() {
+        if (workerState == STATE_FAILED) {
+            certificationNativePortLossArmed = false
+            return
+        }
+
         val generation = ++nativePortRecoveryGeneration
         mainHandler.postDelayed(
             {
-                if (!isRunning) {
+                if (!isRunning || workerState == STATE_FAILED) {
                     certificationNativePortLossArmed = false
                     return@postDelayed
                 }
@@ -526,7 +535,7 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun scheduleChatRecovery(reason: String) {
-        if (!isRunning) return
+        if (!isRunning || workerState == STATE_FAILED) return
 
         if (workerState != STATE_RECOVERING && workerState != STATE_BLOCKED_UNCERTAIN) {
             recoverySequence += 1
@@ -538,12 +547,11 @@ class AndroidGeckoWorkerService : Service() {
             activeSawBusy = false
         }
 
-        workerPort?.disconnect()
-        workerPort = null
-        nativePortRecoveryGeneration += 1
-        readinessWatchGeneration += 1
-
         if (chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS) {
+            chatRecoveryGeneration += 1
+            readinessWatchGeneration += 1
+            nativePortRecoveryGeneration += 1
+            certificationNativePortLossArmed = false
             workerState = if (activeWakeUncertain) {
                 STATE_BLOCKED_UNCERTAIN
             } else {
@@ -556,6 +564,11 @@ class AndroidGeckoWorkerService : Service() {
             )
             return
         }
+
+        workerPort?.disconnect()
+        workerPort = null
+        nativePortRecoveryGeneration += 1
+        readinessWatchGeneration += 1
 
         workerState = if (activeWakeUncertain) {
             STATE_BLOCKED_UNCERTAIN
@@ -598,6 +611,8 @@ class AndroidGeckoWorkerService : Service() {
         reason: String,
         recoveryGeneration: Int = chatRecoveryGeneration,
     ) {
+        if (!isRunning || workerState == STATE_FAILED) return
+
         val readinessGeneration = ++readinessWatchGeneration
         mainHandler.postDelayed(
             {
@@ -606,7 +621,8 @@ class AndroidGeckoWorkerService : Service() {
                     readinessGeneration != readinessWatchGeneration ||
                     workerState == STATE_READY ||
                     workerState == STATE_BUSY ||
-                    workerState == STATE_BLOCKED_UNCERTAIN
+                    workerState == STATE_BLOCKED_UNCERTAIN ||
+                    workerState == STATE_FAILED
                 ) {
                     return@postDelayed
                 }
@@ -663,13 +679,15 @@ class AndroidGeckoWorkerService : Service() {
             else -> STATE_NO_COMPOSER
         }
 
-        workerState = if (activeWakeUncertain && observedState == STATE_READY) {
+        workerState = if (activeWakeUncertain) {
             STATE_BLOCKED_UNCERTAIN
         } else {
             observedState
         }
 
-        if (observedState == STATE_READY || observedState == STATE_BUSY) {
+        if (!activeWakeUncertain &&
+            (observedState == STATE_READY || observedState == STATE_BUSY)
+        ) {
             markChatSurfaceResponsive()
         } else if (!activeWakeUncertain && previousState != STATE_NO_COMPOSER) {
             scheduleChatReadyTimeout("NO_COMPOSER")
