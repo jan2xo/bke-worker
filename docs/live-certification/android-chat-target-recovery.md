@@ -144,3 +144,17 @@ When a new recovery sequence reaches `CHAT: READY` or `CHAT: BUSY`, the Activity
 explicitly requests a root/GeckoView layout and invalidation pass. This prevents a
 recovered GeckoSession from remaining visually white until unrelated operator UI
 interaction (such as expanding Worker Configuration) forces a layout.
+
+
+## Terminal fail-closed and visible surface reattachment
+
+Once bounded ChatGPT recovery is exhausted and the Worker enters `CHAT: FAILED`,
+subsequent WebExtension status reports cannot promote the Worker back to READY/BUSY.
+The terminal failure is cleared only by the existing explicit process/operator restart
+boundary used by live certification.
+
+A logical READY after recovery is not sufficient proof that the visible GeckoView
+compositor is usable. For each new recovery sequence that reaches READY/BUSY, the
+Activity detaches and reattaches the same service-owned GeckoSession to GeckoView,
+then requests layout/invalidation. The GeckoSession itself is not closed or replaced,
+so its authenticated browser profile/session remains owned by the service.

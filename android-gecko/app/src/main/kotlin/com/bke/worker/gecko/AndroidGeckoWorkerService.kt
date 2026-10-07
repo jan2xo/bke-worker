@@ -649,6 +649,11 @@ class AndroidGeckoWorkerService : Service() {
             return
         }
 
+        if (workerState == STATE_FAILED) {
+            Log.w(TAG, "Ignoring worker status after terminal ChatGPT recovery failure")
+            return
+        }
+
         val previousState = workerState
         val composerAvailable = message.optBoolean("composerAvailable")
         val turnBusy = message.optBoolean("turnBusy")

@@ -95,6 +95,8 @@ for token in (
     "activeWakeUncertain = true",
     "workerState = if (activeWakeUncertain)",
     "STATE_BLOCKED_UNCERTAIN",
+    'if (workerState == STATE_FAILED) {',
+    "Ignoring worker status after terminal ChatGPT recovery failure",
     "workerState != STATE_RECOVERING && workerState != STATE_BLOCKED_UNCERTAIN",
     "recoverySequence += 1",
     "lastRecoveryReason = reason",
@@ -125,7 +127,11 @@ for token in (
     "LAST RECOVERY: ",
     "RECOVERY SEQ: ",
     "renderedRecoverySequence",
-    "refreshGeckoSurfaceAfterRecovery()",
+    "reattachGeckoSurfaceAfterRecovery(snapshot.recoverySequence)",
+    "private fun reattachGeckoSurfaceAfterRecovery(recoverySequence: Int)",
+    "geckoView.releaseSession()",
+    "geckoView.setSession(session)",
+    "renderedRecoverySequence = recoverySequence",
     "root.requestLayout()",
     "geckoView.requestLayout()",
     "geckoView.postInvalidateOnAnimation()",
@@ -343,6 +349,15 @@ native_recovery_end = service.index("    private fun connectRelay()", native_rec
 native_recovery_block = service[native_recovery_start:native_recovery_end]
 assert "readinessWatchGeneration" not in native_recovery_block
 assert "nativePortRecoveryGeneration" in native_recovery_block
+failed_guard_index = service.index("if (workerState == STATE_FAILED) {", service.index("private fun handleWorkerStatus"))
+observed_state_index = service.index("val observedState = when", failed_guard_index)
+assert failed_guard_index < observed_state_index
+surface_recovery_start = activity.index("    private fun reattachGeckoSurfaceAfterRecovery")
+surface_recovery_end = activity.index("    private fun compactCardContainer", surface_recovery_start)
+surface_recovery_block = activity[surface_recovery_start:surface_recovery_end]
+assert "geckoView.releaseSession()" in surface_recovery_block
+assert "geckoView.setSession(session)" in surface_recovery_block
+assert surface_recovery_block.index("geckoView.releaseSession()") < surface_recovery_block.index("geckoView.setSession(session)")
 assert "CHAT_RECOVERY_MAX_ATTEMPTS = 3" in service
 assert "chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS" in service
 assert "previousState != STATE_NO_COMPOSER" in service

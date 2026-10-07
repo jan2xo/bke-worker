@@ -338,18 +338,29 @@ class MainActivity : Activity() {
         if (snapshot.recoverySequence > renderedRecoverySequence &&
             (snapshot.chatGptState == "READY" || snapshot.chatGptState == "BUSY")
         ) {
-            renderedRecoverySequence = snapshot.recoverySequence
-            refreshGeckoSurfaceAfterRecovery()
+            reattachGeckoSurfaceAfterRecovery(snapshot.recoverySequence)
         }
     }
 
-    private fun refreshGeckoSurfaceAfterRecovery() {
+    private fun reattachGeckoSurfaceAfterRecovery(recoverySequence: Int) {
+        val session = workerService?.session() ?: return
         geckoView.post {
-            root.requestLayout()
-            root.invalidate()
-            geckoView.requestLayout()
-            geckoView.invalidate()
-            geckoView.postInvalidateOnAnimation()
+            runCatching {
+                geckoView.releaseSession()
+                geckoView.setSession(session)
+                root.requestLayout()
+                root.invalidate()
+                geckoView.requestLayout()
+                geckoView.invalidate()
+                geckoView.postInvalidateOnAnimation()
+            }.onSuccess {
+                browserAttached = true
+                renderedRecoverySequence = recoverySequence
+            }.onFailure {
+                browserAttached = false
+                status.text =
+                    "BROWSER: ATTACH_FAILED\nCHAT: UNKNOWN\nRELAY: UNKNOWN\nWORKER ID: —"
+            }
         }
     }
 
