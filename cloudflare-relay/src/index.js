@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  mintInstallationToken,
+  verifyActionsOidcToken,
+} from "./github-app.js";
+import {
   CONTROL_REPOSITORY,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
@@ -134,6 +138,24 @@ async function handleGitHubWebhook(request, env) {
   );
 }
 
+async function handleGitHubAppInstallToken(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const match = /^Bearer\s+(.+)$/iu.exec(authorization);
+  if (!match) return json({ error: "ACTIONS_OIDC_REQUIRED" }, 401);
+
+  try {
+    await verifyActionsOidcToken(match[1]);
+    const minted = await mintInstallationToken(env);
+    return json(minted, 200);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "GITHUB_APP_BROKER_FAILED";
+    const status = code.startsWith("OIDC_") ? 401 :
+      code.endsWith("_UNCONFIGURED") ? 503 :
+      502;
+    return json({ error: code }, status);
+  }
+}
+
 async function handleRelayUpgrade(request, env, workerId) {
   if (!isValidWorkerId(workerId)) {
     return json({ error: "WORKER_ID_INVALID" }, 400);
@@ -167,6 +189,13 @@ export default {
         return json({ error: "METHOD_NOT_ALLOWED" }, 405);
       }
       return handleGitHubWebhook(request, env);
+    }
+
+    if (url.pathname === "/github/app/install-token") {
+      if (request.method !== "POST") {
+        return json({ error: "METHOD_NOT_ALLOWED" }, 405);
+      }
+      return handleGitHubAppInstallToken(request, env);
     }
 
     const workerId = relayPathWorkerId(url.pathname);

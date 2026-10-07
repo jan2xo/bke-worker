@@ -11,8 +11,11 @@ GitHub remains the source of task ownership and exact-head truth. The relay neve
 ## Public surface
 
 - `POST /webhooks/github` — GitHub webhook ingress.
+- `POST /github/app/install-token` — OIDC-authenticated BKE GitHub App installation-token broker for the trusted serial dispatcher.
 - `GET /relay/<worker_id>` with `Upgrade: websocket` — Android outbound WSS connection.
 - every other path returns 404.
+
+The installation-token endpoint accepts only the exact GitHub Actions OIDC identity for `jan2xo/bke-worker/.github/workflows/serial-dispatcher.yml@main`; it is not a generic GitHub API proxy.
 
 ## Required secrets
 
@@ -20,6 +23,8 @@ Set these as Cloudflare Worker secrets. Never commit them:
 
 - `BKE_WORKER_GITHUB_WEBHOOK_SECRET`
 - `BKE_WORKER_RELAY_TOKEN_KEY`
+- `BKE_WORKER_GITHUB_APP_ID`
+- `BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM`
 
 Variable names are generation-independent.
 
@@ -97,3 +102,13 @@ BKE_WORKER_CLOUDFLARE_WEBHOOK_URL="https://<preproduction-worker-host>/webhooks/
 ```
 
 That prints the intended configuration only. After relay certification and explicit owner authorization, add `--apply` and provide `BKE_WORKER_GITHUB_WEBHOOK_SECRET`. The script creates or updates only the exact pull-request webhook and sends the secret to `gh api` through stdin rather than printing it or placing it directly in command arguments.
+
+## GitHub App outbound actuator
+
+The existing BKE Worker GitHub App is also the preferred outbound repository mutation identity.
+
+The long-lived private key lives only in Cloudflare PREPRODUCTION encrypted secret bindings. The broker authenticates as the App, resolves the App installation for `jan2xo/bke-worker` directly from GitHub, then mints a short-lived installation token scoped to that repository and only Contents/Issues/Pull Requests write. No operator-supplied installation ID is trusted.
+
+See `docs/github-app-dispatch-actuator.md`.
+
+The repository-wide Actions setting that allows `GITHUB_TOKEN` to create pull requests is not required when this actuator is active.

@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/github_serial_dispatcher.py"
+PR_CREATION_BOOTSTRAP = ROOT / "scripts/enable-serial-dispatcher-pr-creation.sh"
 SPEC = importlib.util.spec_from_file_location("bke_serial_dispatcher", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 dispatcher = importlib.util.module_from_spec(SPEC)
@@ -442,6 +443,41 @@ class SerialDispatcherTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn(r"\\`", source)
 
+    def test_actions_pr_creation_gate_is_named(self):
+        error = dispatcher.DispatchError(
+            "GitHub API POST /repos/jan2xo/bke-worker/pulls failed with 403: "
+            '{"message":"GitHub Actions is not permitted to create or approve pull requests."}'
+        )
+        self.assertTrue(dispatcher.is_actions_pr_creation_denied(error))
+        self.assertFalse(
+            dispatcher.is_actions_pr_creation_denied(
+                dispatcher.DispatchError("GitHub API failed with 500")
+            )
+        )
+
+    def test_human_authenticated_pr_creation_bootstrap_is_bounded(self):
+        source = PR_CREATION_BOOTSTRAP.read_text(encoding="utf-8")
+        for token in [
+            'REPOSITORY="${BKE_WORKER_REPOSITORY:-jan2xo/bke-worker}"'.replace("\\", ""),
+            'if [[ "$REPOSITORY" != "jan2xo/bke-worker" ]]',
+            "gh auth status --hostname github.com",
+            '/actions/permissions/workflow',
+            "default_workflow_permissions",
+            "can_approve_pull_request_reviews=true",
+            'if [[ "$verified" != "true" ]]',
+            "BKE serial dispatcher PR-creation permission: ENABLED",
+        ]:
+            self.assertIn(token, source)
+
+        for forbidden in [
+            "GITHUB_TOKEN=",
+            "GH_TOKEN=",
+            "PRIVATE_KEY",
+            "PERSONAL_ACCESS_TOKEN",
+            "gh auth login",
+        ]:
+            self.assertNotIn(forbidden, source)
+
     def test_pr_body_carries_issue_contract_and_worker_lock(self):
         task = dispatcher.task_snapshot(
             issue(
@@ -463,7 +499,7 @@ class SerialDispatcherTests(unittest.TestCase):
         ]:
             self.assertIn(token, body)
 
-    def test_workflow_is_serial_trusted_main_and_write_bounded(self):
+    def test_workflow_is_serial_trusted_main_and_github_app_bounded(self):
         workflow = (
             ROOT / ".github/workflows/serial-dispatcher.yml"
         ).read_text(encoding="utf-8")
@@ -473,20 +509,38 @@ class SerialDispatcherTests(unittest.TestCase):
             "workflow_dispatch:",
             "group: bke-worker-serial-dispatcher",
             "cancel-in-progress: false",
-            "contents: write",
-            "pull-requests: write",
-            "issues: write",
+            "contents: read",
+            "id-token: write",
             "ref: ${{ github.event.repository.default_branch }}",
             "persist-credentials: false",
+            "BKE_WORKER_GITHUB_APP_BROKER_URL",
+            "bke-worker-github-app-broker",
+            "/github/app/install-token",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "broker_response_file",
+            "broker_status",
+            "broker rejected token request status=",
+            "GITHUB_APP_BROKER_FAILED",
+            'echo "::add-mask::$app_token"',
+            "BKE_GITHUB_APP_TOKEN=$app_token",
+            'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
             "python3 scripts/github_serial_dispatcher.py",
             "BKE_WORKER_ID: android-worker-a",
         ]
         for token in required:
             self.assertIn(token, workflow)
         forbidden = [
+            "contents: write",
+            "pull-requests: write",
+            "issues: write",
+            "GITHUB_TOKEN: ${{ github.token }}",
             "worker-b",
             "worker-c",
             "github.event.pull_request.head.sha",
+            'echo "$oidc_token"',
+            'echo "$app_token"',
+            'echo "$broker_json"',
         ]
         for token in forbidden:
             self.assertNotIn(token, workflow)
