@@ -442,7 +442,7 @@ for token in (
 ):
     assert token in relay_apply_block, token
 
-assert "sh -c" not in relay_apply_block
+assert 'shell run-as "$SIDECAR_PACKAGE" sh -c' not in relay_apply_block
 assert relay_apply_block.index('chmod 600 "$token_file"') < relay_apply_block.index('tee "$token_file"')
 
 
