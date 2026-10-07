@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       modules:
-        description: "Space-separated modules: core server chatgpt android android-recovery android-preproduction android-release relay"
+        description: "Space-separated modules: core server chatgpt android android-recovery android-recovery-github android-preproduction android-release relay"
         required: true
         default: core
         type: string
@@ -43,6 +43,7 @@ jobs:
       chatgpt: ${{ steps.plan.outputs.chatgpt }}
       android: ${{ steps.plan.outputs.android }}
       android_recovery: ${{ steps.plan.outputs.android_recovery }}
+      android_recovery_github: ${{ steps.plan.outputs.android_recovery_github }}
       android_preproduction: ${{ steps.plan.outputs.android_preproduction }}
       android_release: ${{ steps.plan.outputs.android_release }}
       relay: ${{ steps.plan.outputs.relay }}
@@ -88,11 +89,11 @@ jobs:
             const requested = new Set(
               rawModules.split(/\s+/).filter(Boolean)
             );
-            const allowedModules = new Set(["core", "server", "chatgpt", "android", "android-recovery", "android-preproduction", "android-release", "relay"]);
+            const allowedModules = new Set(["core", "server", "chatgpt", "android", "android-recovery", "android-recovery-github", "android-preproduction", "android-release", "relay"]);
             const unknown = [...requested].filter(module => !allowedModules.has(module));
             if (requested.size === 0 || unknown.length > 0) {
               core.setFailed(
-                `Certification modules must be one or more of core server chatgpt android android-recovery android-preproduction android-release relay. Unknown: ${unknown.join(", ")}`
+                `Certification modules must be one or more of core server chatgpt android android-recovery android-recovery-github android-preproduction android-release relay. Unknown: ${unknown.join(", ")}`
               );
               return;
             }
@@ -392,9 +393,38 @@ jobs:
 
 
   android-recovery:
-    name: Android recovery sidecar stable signed build
+    name: Android recovery local contract
     needs: plan
     if: needs.plan.outputs.android_recovery == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Verify local recovery contracts
+        run: |
+          bash -n scripts/build-android-recovery-local.sh
+          bash -n scripts/certify-android-chat-target-recovery.sh
+          python3 tests/android_gecko_probe_contract.py
+          python3 tests/android_recovery_operator_contract.py
+          python3 tests/android_recovery_signing_contract.py
+
+      - name: Diff hygiene
+        run: git diff --check
+
+  android-recovery-github:
+    name: Android recovery GitHub signed APK build
+    needs: plan
+    if: needs.plan.outputs.android_recovery_github == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -961,7 +991,7 @@ jobs:
   required-certification:
     name: Required certification
     if: always() && needs.plan.result == 'success'
-    needs: [plan, core, server, chatgpt, android, android-recovery, android-preproduction, android-release, relay]
+    needs: [plan, core, server, chatgpt, android, android-recovery, android-recovery-github, android-preproduction, android-release, relay]
     runs-on: ubuntu-latest
     steps:
       - name: Require requested exact-head proof
@@ -972,6 +1002,7 @@ jobs:
           CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
           ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
           ANDROID_RECOVERY_REQUIRED: ${{ needs.plan.outputs.android_recovery }}
+          ANDROID_RECOVERY_GITHUB_REQUIRED: ${{ needs.plan.outputs.android_recovery_github }}
           ANDROID_PREPRODUCTION_REQUIRED: ${{ needs.plan.outputs.android_preproduction }}
           ANDROID_RELEASE_REQUIRED: ${{ needs.plan.outputs.android_release }}
           RELAY_REQUIRED: ${{ needs.plan.outputs.relay }}
@@ -980,6 +1011,7 @@ jobs:
           CHATGPT_RESULT: ${{ needs.chatgpt.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           ANDROID_RECOVERY_RESULT: ${{ needs.android-recovery.result }}
+          ANDROID_RECOVERY_GITHUB_RESULT: ${{ needs.android-recovery-github.result }}
           ANDROID_PREPRODUCTION_RESULT: ${{ needs.android-preproduction.result }}
           ANDROID_RELEASE_RESULT: ${{ needs.android-release.result }}
           RELAY_RESULT: ${{ needs.relay.result }}
@@ -991,6 +1023,7 @@ jobs:
           [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
           [[ "$ANDROID_REQUIRED" != "true" || "$ANDROID_RESULT" == "success" ]]
           [[ "$ANDROID_RECOVERY_REQUIRED" != "true" || "$ANDROID_RECOVERY_RESULT" == "success" ]]
+          [[ "$ANDROID_RECOVERY_GITHUB_REQUIRED" != "true" || "$ANDROID_RECOVERY_GITHUB_RESULT" == "success" ]]
           [[ "$ANDROID_PREPRODUCTION_REQUIRED" != "true" || "$ANDROID_PREPRODUCTION_RESULT" == "success" ]]
           [[ "$ANDROID_RELEASE_REQUIRED" != "true" || "$ANDROID_RELEASE_RESULT" == "success" ]]
           [[ "$RELAY_REQUIRED" != "true" || "$RELAY_RESULT" == "success" ]]
