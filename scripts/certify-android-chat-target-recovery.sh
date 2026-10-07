@@ -675,7 +675,12 @@ main() {
     echo "Human boundary: authenticate ChatGPT manually inside BKE Worker Recovery Cert."
     echo "Do not paste credentials, cookies, OAuth codes, MFA codes, or security-challenge data into this terminal."
     read -r -p "Press Enter after the ChatGPT composer is visibly usable: " _
-    wait_for_text "CHAT: READY" 60 "$xml_file" || fail "ChatGPT did not reach READY"
+    "${ADB[@]}" shell am force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"
+    launch_sidecar
+    wait_for_text "BROWSER: ATTACHED" 30 "$xml_file" ||
+      fail "sidecar browser did not reattach after initial human authentication restart"
+    wait_for_text "CHAT: READY" 60 "$xml_file" ||
+      fail "ChatGPT did not reach READY after initial human authentication restart"
   fi
 
   restart_and_require_ready "$xml_file"
