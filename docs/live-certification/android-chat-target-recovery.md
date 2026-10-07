@@ -91,21 +91,15 @@ Recovery CI has two mirrored paths:
 - `android-recovery` is the fast local-base authority. It checks the exact head and all recovery/operator/signing contracts without installing the Android SDK, invoking Gradle, building an APK, or uploading an artifact. This is the normal gate before a local operator build.
 - `android-recovery-github` is the slow GitHub-base path. It runs the same recovery contracts, then installs the Android toolchain, builds the recovery APK, verifies PREPRODUCTION signing/provenance, and uploads the GitHub artifact. Run it only when GitHub-built APK proof is actually required.
 
-The normal bandwidth-efficient loop is therefore:
+The canonical operator entrypoint is one command:
 
 ```bash
-gh workflow run certify.yml --repo jan2xo/bke-worker --ref <branch> \
-  -f source_sha=<exact-head> -f modules=android-recovery -f publish_preproduction=false
-bash scripts/build-android-recovery-local.sh
-bash scripts/certify-android-chat-target-recovery.sh
+bash scripts/run-android-recovery-certification.sh
 ```
 
-The operator path intentionally separates source sync/local APK construction from the live device ceremony:
+The runner synchronizes the clean PR branch to the exact live PR head, reuses an already-successful exact-head `android-recovery` run when available, otherwise dispatches and watches that workflow itself, builds the exact-head LOCAL_CERTIFICATION APK only when missing, and then launches the human-authenticated recovery ceremony. Each dispatched run is bound to the new workflow run ID created by that invocation before its jobs are trusted.
 
-```bash
-bash scripts/build-android-recovery-local.sh
-bash scripts/certify-android-chat-target-recovery.sh
-```
+The lower-level workflow-dispatch, builder, and ceremony commands remain available for debugging individual stages, but they are no longer the normal operator UX.
 
 The local builder defaults Gradle to offline mode so an already-warmed Android/Gradle cache does not consume network bandwidth. If required dependencies are missing, the operator can explicitly allow dependency resolution with `BKE_ANDROID_GRADLE_OFFLINE=0` when connectivity is acceptable.
 
