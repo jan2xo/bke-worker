@@ -291,7 +291,23 @@ try_real_tab_kill() {
 
 require_no_worker_assignment() {
   local worker_matches
-  worker_matches="$(gh pr list --repo "$REPOSITORY" --state open --search "label:$WORKER_LABEL" --json number --jq '.[].number')"
+  worker_matches="$(
+    gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,labels |
+      WORKER_LABEL="$WORKER_LABEL" python3 -c '
+import json
+import os
+import sys
+
+worker_label = os.environ["WORKER_LABEL"]
+rows = json.load(sys.stdin)
+matches = []
+for row in rows:
+    labels = [label.get("name") for label in row.get("labels", [])]
+    if worker_label in labels:
+        matches.append(str(row["number"]))
+print("\n".join(matches))
+'
+  )"
   [[ -z "$worker_matches" ]] || fail "$WORKER_LABEL is already assigned to open PR(s): $worker_matches"
 
   local labels

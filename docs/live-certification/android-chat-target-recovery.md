@@ -126,6 +126,11 @@ an explicit operator reject/recovery before stopping the relay and releasing the
 temporary assignment. An interrupted/ambiguous run fails closed rather than
 silently clearing ownership.
 
+Assignment release verification reads the labels returned directly with the current
+open-PR list and does not use GitHub search qualifiers. This avoids a false conflict
+immediately after the temporary certification label is removed while preserving
+fail-closed behavior for a genuinely active assignment.
+
 The script sources the PREPRODUCTION relay master key only from the authorized
 local secret file, derives a worker-bound token without printing it, transfers
 that token to the debuggable sidecar without writing it to GitHub, and removes

@@ -465,6 +465,17 @@ for token in (
 
 assert 'relay_url="${relay_origin/https:\\/\\//wss:\\/\\/}/relay/$WORKER_ID"' not in operator_script
 
+ownership_start = operator_script.index("require_no_worker_assignment()")
+ownership_end = operator_script.index("ensure_worker_label_exists()", ownership_start)
+ownership_block = operator_script[ownership_start:ownership_end]
+assert '--search "label:$WORKER_LABEL"' not in ownership_block
+for token in (
+    'gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,labels',
+    'WORKER_LABEL="$WORKER_LABEL" python3 -c',
+    'if worker_label in labels:',
+):
+    assert token in ownership_block, token
+
 
 for forbidden in (
     'uninstall "$PRIMARY_PACKAGE"',
