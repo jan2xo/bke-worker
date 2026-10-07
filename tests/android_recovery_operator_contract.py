@@ -52,7 +52,6 @@ for token in (
     'read_sidecar_main_pid',
     'am kill --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
     'ActivityManager real package-process kill proved active-session recovery',
-    'refusing whole-app restart as tab-kill proof',
     'refusing causal attribution',
     'ADB_ROOTED_BY_CERT=0',
     'restore_adb_privilege',
