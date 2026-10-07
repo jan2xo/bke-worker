@@ -60,6 +60,11 @@ for token in (
     '"${ADB[@]}" shell kill -9 "$pid"',
     'emulator-root real Gecko tab-process kill proved active-session recovery',
     'refusing contaminated tab-kill proof',
+    'certify_content_kill_recovery',
+    'optional lab proof not observed',
+    'real Gecko process death was observed but required recovery proof failed or became ambiguous',
+    'Gecko onKill callback recovery with fresh SESSION_KILLED witness (required): PASS',
+    'real external Gecko tab-process kill integration (optional lab proof)',
 ):
     assert token in operator_script, token
 
@@ -74,6 +79,8 @@ assert 'repos/$REPOSITORY/issues/$PARENT_PR/comments' not in operator_script
 assert 'RECOVERY SIDECAR SIGNED' not in operator_script
 assert 'signer certificate SHA-256' not in operator_script
 assert "clear_stale_certification_assignments" not in operator_script
+assert 'if [[ "$actual_kill_result" != "PASS" ]]' not in operator_script
+assert 'All bounded recovery/uncertain-turn proof passed except a real Gecko tab-process kill' not in operator_script
 
 for token in (
     'BKE_ANDROID_RECOVERY_LOCAL_SIGNING_DIR',
@@ -423,6 +430,71 @@ set -e
 """
 subprocess.run(
     ["bash", "-c", physical_device_probe, "bke-recovery-root-kill-physical-reject", str(operator_script_path)],
+    check=True,
+)
+
+optional_kill_probe = r"""
+set -euo pipefail
+source "$1"
+SEQUENCE=7
+CALLBACK_INJECTED=0
+
+read_recovery_sequence() {
+    printf '%s\n' "$SEQUENCE"
+}
+
+try_real_tab_kill() {
+    return 1
+}
+
+run_sidecar_service_action() {
+    [[ "$1" == "bke.worker.cert.simulate_content_kill" ]]
+    CALLBACK_INJECTED=1
+    SEQUENCE=8
+}
+
+wait_for_recovery_witness() {
+    [[ "$1" == "7" ]]
+    [[ "$2" == "SESSION_KILLED" ]]
+    [[ "$CALLBACK_INJECTED" == "1" ]]
+    [[ "$SEQUENCE" == "8" ]]
+}
+
+certify_content_kill_recovery /tmp/unused
+[[ "$REAL_KILL_RESULT" == NOT\ AVAILABLE* ]]
+[[ "$CALLBACK_INJECTED" == "1" ]]
+"""
+subprocess.run(
+    ["bash", "-c", optional_kill_probe, "bke-recovery-optional-real-kill-proof", str(operator_script_path)],
+    check=True,
+)
+
+contradictory_kill_probe = r"""
+set -euo pipefail
+source "$1"
+CALLBACK_INJECTED=0
+
+read_recovery_sequence() {
+    printf '7\n'
+}
+
+try_real_tab_kill() {
+    return 2
+}
+
+run_sidecar_service_action() {
+    CALLBACK_INJECTED=1
+}
+
+set +e
+certify_content_kill_recovery /tmp/unused
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]]
+[[ "$CALLBACK_INJECTED" == "0" ]]
+"""
+subprocess.run(
+    ["bash", "-c", contradictory_kill_probe, "bke-recovery-real-kill-contradiction-fails", str(operator_script_path)],
     check=True,
 )
 

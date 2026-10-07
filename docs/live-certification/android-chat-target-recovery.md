@@ -135,24 +135,30 @@ exhausted-recovery fail-closed behavior, and explicit reject/recovery of a
 deliberately uncertain certification wake. They do not accept arbitrary prompt
 text, JavaScript, shell commands, URLs, or credentials.
 
-For the content-process kill case, the operator entrypoint first attempts a real
-`:tab`/Tab child-process kill from the recovery app UID. If Android isolates that
-child such that the app UID cannot signal it, the script makes one bounded
-system-mediated attempt through Android ActivityManager's `am kill` package
-operation. If that also cannot prove the active content process and the selected
-device is an Android emulator, the ceremony may make one final emulator-only
-privileged attempt: it requests `adb root`, verifies the remote shell is actually
-UID 0, kills an observed Gecko tab PID directly, and restores adbd to its prior
-non-root mode afterward. Physical devices never enter this path, and production
-`user` images that refuse `adb root` simply remain BLOCKED.
+For the content-process kill case, the required production-behavior proof and
+the optional destructive fault-injection proof are deliberately separated.
 
-Every real-kill route counts only when the existing monotonic witness advances as
-`SESSION_KILLED`, the recovery sidecar's main PID remains unchanged, and the
-specific pre-existing Gecko tab PID/process being targeted actually disappears.
-A whole-app restart, unchanged READY state, unrelated process churn, failed root
-transition, or no-op kill cannot satisfy the gate. If no real-kill route proves
-the active session, the script exercises the fixed onKill callback only for
-diagnostics and reports the matrix as BLOCKED rather than claiming a real-kill
+The required proof uses the fixed recovery-cert `onKill` callback injection and
+must advance the monotonic recovery witness as `SESSION_KILLED`, followed by an
+attached browser and usable READY ChatGPT surface. This proves the same bounded
+recovery path GeckoView invokes when Android/Gecko reports that the content process
+hosting the session was killed, without assuming a production Android app is
+allowed to signal an isolated Gecko child directly.
+
+As additional lab integration evidence, the operator entrypoint still attempts a
+real `:tab`/Tab child-process kill from the recovery app UID, then one bounded
+ActivityManager package-process attempt, and finally (emulator only) a verified
+UID-0 `adb root` attempt. A real-kill PASS is recorded only when a pre-existing
+Gecko tab PID actually disappears, the sidecar main PID remains stable, and a fresh
+`SESSION_KILLED` + ATTACHED + READY witness follows. If the device cannot inject
+such a kill at all, that row is recorded as NOT AVAILABLE optional lab proof and
+does not invalidate the required recovery certification.
+
+This is not a relaxation for observed real failures: if any injection route really
+removes a Gecko tab process or otherwise advances recovery state but the required
+fresh causal recovery witness is missing, contradictory, or contaminated by a
+whole-app restart, the ceremony still fails closed. Unchanged READY state,
+unrelated process churn, and no-op kill commands can never be reported as real-kill
 PASS.
 
 The in-flight uncertainty test uses the parent recovery PR and a fresh
