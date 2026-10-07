@@ -99,17 +99,19 @@ The local ledger helper binds the reported sidecar head to that already-verified
 exact parent head, so a blocked live proof can still write a non-empty durable
 checkpoint instead of failing while formatting the comment.
 
-The certification entrypoint discovers the exact parent head and verifies that the required branch-local recovery certification workflow succeeded on that exact revision. It then consumes only a locally built recovery APK from `artifacts/android-recovery-local/<exact-sha>/`; remote GitHub artifact download is deliberately disabled. The local APK is independently checked for exact-head provenance, package identity, debuggable recovery-cert status, and the PREPRODUCTION signer before installation. The existing `com.bke.worker.gecko` installation is preserved, and prompting occurs only at the human ChatGPT authentication boundary.
+The certification entrypoint discovers the exact parent head and verifies that the required branch-local recovery certification workflow succeeded on that exact revision. It then consumes only a locally built recovery APK from `artifacts/android-recovery-local/<exact-sha>/`; remote GitHub artifact download is deliberately disabled. The local APK is independently checked for exact-head provenance, package identity, debuggable recovery-cert status, and the stable local certification signer before installation. The existing `com.bke.worker.gecko` installation is preserved, and prompting occurs only at the human ChatGPT authentication boundary.
 
-The recovery APK uses the existing PREPRODUCTION Android signing authority, never the
-production signing key. The PREPRODUCTION certificate SHA-256 fingerprint is public
-verification metadata pinned in `android-gecko/preproduction-signing-cert.sha256`; CI
-and the local builder both require the produced APK signer to match that same pinned
-fingerprint, while the keystore and passwords remain secret. After the one-time migration from the legacy ephemeral CI debug
-signature, the entrypoint uses `adb install -r` so
-`com.bke.worker.gecko.recoverycert` app data, its Gecko profile, and the
-human-authenticated ChatGPT session survive later certification rebuilds. Uninstall is
-allowed only when Android explicitly reports the legacy signature as incompatible.
+CI recovery signing still uses the PREPRODUCTION Android signing authority and remains
+bound to the repo-pinned PREPRODUCTION certificate fingerprint. The operator Mac does
+not need those GitHub signing passwords. On first local build,
+`scripts/build-android-recovery-local.sh` creates a dedicated recovery-only signing
+identity under `~/.bke-secrets/bke-worker-android-recovery-local/`, stores its keystore
+and generated password with restrictive local permissions, and records the local public
+certificate fingerprint as the local trust anchor. Later local builds reuse that same
+identity so `adb install -r` preserves the recovery sidecar data/profile after the
+one-time migration from the older signer. The local signer is certification-only and is
+never a production signing authority. Uninstall is allowed only when Android explicitly
+reports the previous sidecar signature as incompatible.
 
 Fixed recovery-cert actions are accepted only by a debuggable package whose
 application ID ends in `.recoverycert`. They are invoked through the
@@ -159,7 +161,7 @@ macOS system Bash used by the live device host.
 
 ## Independent-review negative-path hardening
 
-The live ceremony does not trust a PR checkpoint as sufficient proof. Before installation it independently verifies that the referenced branch-local certification run completed successfully on the exact parent SHA, including both the stable recovery build and required-certification aggregate. The bytes installed on the device come from the local exact-head builder instead of a GitHub artifact download. Its local manifest must bind the same source SHA, package identity, APK hash, PREPRODUCTION signing authority, and local-build certification state; the APK itself is independently checked against the certified PREPRODUCTION signer recorded in the PR checkpoint. The durable local-device ledger records the verified local APK revision and the exact certification run.
+The live ceremony does not trust a PR checkpoint as sufficient proof. Before installation it independently verifies that the branch-local recovery workflow_dispatch completed successfully on the exact parent SHA, including both the stable recovery build and required-certification aggregate. The bytes installed on the device come from the local exact-head builder instead of a GitHub artifact download. Its local manifest must bind the same source SHA, package identity, APK hash, LOCAL_CERTIFICATION signing authority, and local-build certification state; the APK itself is independently checked against the stable local signer fingerprint stored in the operator's protected local signing directory. The durable local-device ledger records the verified local APK revision and the exact certification run.
 
 Crash, content-process kill, NO_COMPOSER, and native-port recovery PASS require a fresh
 monotonic recovery-sequence witness with the expected initiating reason, followed by an
