@@ -84,22 +84,22 @@ Required later:
 Production remains locked.
 
 
-## One-command local certification
+## Local build + live certification
 
-The live device matrix is driven by the repository-owned operator entrypoint:
+The operator path intentionally separates source sync/local APK construction from the live device ceremony:
 
 ```bash
+bash scripts/build-android-recovery-local.sh
 bash scripts/certify-android-chat-target-recovery.sh
 ```
+
+The local builder defaults Gradle to offline mode so an already-warmed Android/Gradle cache does not consume network bandwidth. If required dependencies are missing, the operator can explicitly allow dependency resolution with `BKE_ANDROID_GRADLE_OFFLINE=0` when connectivity is acceptable.
 
 The local ledger helper binds the reported sidecar head to that already-verified
 exact parent head, so a blocked live proof can still write a non-empty durable
 checkpoint instead of failing while formatting the comment.
 
-The entrypoint discovers the exact parent head, downloads and verifies the
-stable-signed recovery APK built from that same exact revision, preserves the existing
-`com.bke.worker.gecko` installation, and prompts only at the human ChatGPT
-authentication boundary.
+The certification entrypoint discovers the exact parent head and verifies that the required branch-local recovery certification workflow succeeded on that exact revision. It then consumes only a locally built recovery APK from `artifacts/android-recovery-local/<exact-sha>/`; remote GitHub artifact download is deliberately disabled. The local APK is independently checked for exact-head provenance, package identity, debuggable recovery-cert status, and the PREPRODUCTION signer before installation. The existing `com.bke.worker.gecko` installation is preserved, and prompting occurs only at the human ChatGPT authentication boundary.
 
 The recovery APK uses the existing PREPRODUCTION Android signing authority, never the
 production signing key. After the one-time migration from the legacy ephemeral CI debug
@@ -126,9 +126,7 @@ The in-flight uncertainty test uses the parent recovery PR and a fresh
 certification-only worker ID for each ceremony run. The ID includes the exact-head
 prefix plus a run-local suffix, so every retry gets a fresh relay Durable Object and
 cannot inherit an `accepted`/`deferred` wake from an earlier aborted ceremony.
-Before claiming the PR, the script removes only stale labels reserved for prior recovery
-certification workers; any non-certification `bke-worker:*` assignment still fails
-closed. The script assigns the fresh temporary worker only for the bounded live proof,
+Before claiming the PR, any existing `bke-worker:*` assignment fails closed. The script never removes an existing owner merely because its label resembles a certification worker; ambiguous/interrupted ownership must be explicitly resolved first. The script assigns the fresh temporary worker only for the bounded live proof,
 waits for `CHAT: BUSY`, crashes the content process, requires
 `BLOCKED_UNCERTAIN_TURN`, waits to prove the state remains blocked, then performs
 an explicit operator reject/recovery before stopping the relay and releasing the
@@ -158,13 +156,7 @@ macOS system Bash used by the live device host.
 
 ## Independent-review negative-path hardening
 
-The live ceremony does not trust a PR checkpoint as sufficient artifact provenance.
-Before installation it now independently verifies that the referenced certification run
-completed successfully on the exact parent SHA, including both the stable recovery build
-and required-certification aggregate. The downloaded artifact manifest must bind the same
-source SHA and workflow run ID, the recovery-cert package identity, APK hash, signer
-certificate provenance, PREPRODUCTION signing authority, and recovery-cert certification
-state. The durable local-device ledger records that verified artifact revision and run.
+The live ceremony does not trust a PR checkpoint as sufficient proof. Before installation it independently verifies that the referenced branch-local certification run completed successfully on the exact parent SHA, including both the stable recovery build and required-certification aggregate. The bytes installed on the device come from the local exact-head builder instead of a GitHub artifact download. Its local manifest must bind the same source SHA, package identity, APK hash, PREPRODUCTION signing authority, and local-build certification state; the APK itself is independently checked against the certified PREPRODUCTION signer recorded in the PR checkpoint. The durable local-device ledger records the verified local APK revision and the exact certification run.
 
 Crash, content-process kill, NO_COMPOSER, and native-port recovery PASS require a fresh
 monotonic recovery-sequence witness with the expected initiating reason, followed by an
