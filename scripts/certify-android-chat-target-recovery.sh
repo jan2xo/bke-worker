@@ -439,10 +439,11 @@ ensure_worker_label_exists() {
 comment_parent() {
   local title="$1"
   local parent_head="$2"
-  local sidecar_head="$parent_head"
-  local apk_sha="$3"
-  local actual_kill="$4"
-  local uncertain="$5"
+  local sidecar_head="$3"
+  local run_id="$4"
+  local apk_sha="$5"
+  local actual_kill="$6"
+  local uncertain="$7"
   local device_model android_release
   device_model="$("${ADB[@]}" shell getprop ro.product.model | tr -d '\r')"
   android_release="$("${ADB[@]}" shell getprop ro.build.version.release | tr -d '\r')"
@@ -451,6 +452,7 @@ $title
 
 Parent exact head: \`$parent_head\`
 Sidecar exact head: \`$sidecar_head\`
+Sidecar certification run: \`$run_id\`
 Sidecar APK SHA-256: \`$apk_sha\`
 Device: \`$device_model\` / Android \`$android_release\`
 
@@ -493,7 +495,7 @@ main() {
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
 
-  local temp_dir comments_file proof apk run_id expected_apk_sha proof_head actual_apk_sha xml_file
+  local temp_dir comments_file proof apk artifact_manifest run_id expected_apk_sha proof_head actual_apk_sha artifact_source_sha xml_file
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bke-android-recovery-cert.XXXXXX")"
   comments_file="$temp_dir/comments.json"
   xml_file="$temp_dir/window.xml"
@@ -503,13 +505,19 @@ main() {
   proof="$(load_recovery_proof "$comments_file")"
   read -r proof_head run_id expected_apk_sha <<<"$proof"
   [[ "$proof_head" == "$parent_head" ]] || fail "latest stable recovery proof is stale: certified $proof_head, current $parent_head"
+  verify_recovery_run "$run_id" "$parent_head" || fail "recovery certification run failed exact-head verification"
 
-  cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK..."
+  cert_stage "artifact-download" "[5/10] Downloading and verifying stable-signed recovery APK..."
   gh run download "$run_id" --repo "$REPOSITORY" -n bke-worker-android-recovery-sidecar -D "$temp_dir/artifact" >/dev/null
   apk="$(find "$temp_dir/artifact" -type f -name '*.apk' -print -quit)"
+  artifact_manifest="$(find "$temp_dir/artifact" -type f -name 'manifest.json' -print -quit)"
   [[ -n "$apk" ]] || fail "certified sidecar artifact did not contain an APK"
+  [[ -n "$artifact_manifest" ]] || fail "certified sidecar artifact did not contain provenance manifest"
   actual_apk_sha="$(sha256_file "$apk")"
-  [[ "$actual_apk_sha" == "$expected_apk_sha" ]] || fail "sidecar APK SHA mismatch"
+  [[ "$actual_apk_sha" == "$expected_apk_sha" ]] || fail "sidecar APK SHA mismatch against signed PR checkpoint"
+  artifact_source_sha="$(verify_recovery_artifact_manifest "$artifact_manifest" "$actual_apk_sha" "$parent_head" "$run_id")" ||
+    fail "recovery artifact provenance verification failed"
+  [[ "$artifact_source_sha" == "$parent_head" ]] || fail "recovery artifact source is not exact parent head"
 
   cert_stage "sidecar-install" "[6/10] Installing stable-signed recovery sidecar..."
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "existing $PRIMARY_PACKAGE installation is required to prove side-by-side safety"
