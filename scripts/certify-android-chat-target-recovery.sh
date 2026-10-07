@@ -108,6 +108,18 @@ ensure_github_auth() {
   gh auth status --hostname github.com >/dev/null 2>&1 || fail "GitHub authentication is still unavailable"
 }
 
+require_relay_secret_file() {
+  if [[ -f "$SECRET_FILE" ]]; then
+    return
+  fi
+
+  if [[ -n "${BKE_WORKER_RELAY_SECRET_FILE:-}" ]]; then
+    fail "BKE_WORKER_RELAY_SECRET_FILE points to a missing file; set it to the authorized PREPRODUCTION relay env file or unset it to use the default"
+  fi
+
+  fail "default PREPRODUCTION relay secret file is missing at $SECRET_FILE"
+}
+
 ensure_trusted_worktree() {
   [[ -n "$ROOT_DIR" ]] || fail "run this script from a BKE Worker checkout"
   local top
@@ -460,12 +472,34 @@ REMOTE_SH
 try_real_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
-  local pid
-  pid="$("${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null | tr -d '\r' | awk -v pkg="$SIDECAR_PACKAGE" '$2 ~ ("^" pkg ":") && tolower($2) ~ /tab/ {print $1; exit}')"
-  [[ -n "$pid" ]] || return 1
+  local candidates pid observed_sequence
+  candidates="$("${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null |
+    tr -d '\r' |
+    awk -v pkg="$SIDECAR_PACKAGE" '$2 ~ ("^" pkg ":") && tolower($2) ~ /tab/ {print $1}' |
+    sort -rn)"
+  [[ -n "$candidates" ]] || return 1
 
-  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" kill -9 "$pid" >/dev/null 2>&1 || return 1
-  wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 60 "$xml_file"
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    if ! "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" kill -9 "$pid" >/dev/null 2>&1; then
+      continue
+    fi
+
+    if wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 45 "$xml_file"; then
+      echo "BKE CERT: real Gecko tab-process kill proved active-session recovery (pid=$pid)."
+      return 0
+    fi
+
+    observed_sequence="$(read_recovery_sequence "$xml_file" 2>/dev/null || true)"
+    if [[ "$observed_sequence" =~ ^[0-9]+$ ]] && (( observed_sequence > before_sequence )); then
+      echo "BKE CERT: tab-process kill changed recovery sequence without the required SESSION_KILLED READY witness; refusing further candidate kills." >&2
+      return 1
+    fi
+
+    echo "BKE CERT: tab-process candidate pid=$pid did not affect the active session; trying the next bounded candidate." >&2
+  done <<<"$candidates"
+
+  return 1
 }
 
 initialize_cert_worker_identity() {
@@ -563,6 +597,7 @@ main() {
     require_command "$command_name"
   done
   ensure_github_auth
+  require_relay_secret_file
   cert_stage "exact-head" "[2/10] Verifying exact PR #52 worktree..."
   ensure_trusted_worktree
 
@@ -683,7 +718,7 @@ main() {
   restart_and_require_ready "$xml_file"
 
   cert_stage "relay-config" "[8/10] Preparing PREPRODUCTION relay proof..."
-  [[ -f "$SECRET_FILE" ]] || fail "PREPRODUCTION relay secret file not found: $SECRET_FILE"
+  require_relay_secret_file
   chmod 600 "$SECRET_FILE" 2>/dev/null || true
   set -a
   # shellcheck disable=SC1090
