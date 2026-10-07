@@ -367,26 +367,30 @@ verify_local_recovery_apk() {
   [[ "$version_name" == *"-recoverycert" ]] || fail "local recovery APK version name mismatch: $version_name"
   [[ "$version_code" == "1" ]] || fail "local recovery APK version code mismatch: $version_code"
 }
-load_recovery_proof() {
-  local comments_file="$1"
-  gh api --paginate --slurp "repos/$REPOSITORY/issues/$PARENT_PR/comments?per_page=100" >"$comments_file"
-  python3 - "$comments_file" <<'PY'
+resolve_recovery_run() {
+  local parent_head="$1"
+  local head_ref="$2"
+  local runs_json
+  runs_json="$(gh run list \
+    --repo "$REPOSITORY" \
+    --workflow certify.yml \
+    --branch "$head_ref" \
+    --event workflow_dispatch \
+    --limit 50 \
+    --json databaseId,headSha,conclusion,createdAt)"
+
+  RUNS_JSON="$runs_json" python3 - "$parent_head" <<'PY'
 import json
-import re
+import os
 import sys
-from pathlib import Path
-pages = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-comments = [item for page in pages for item in page]
-for comment in reversed(comments):
-    body = comment.get("body") or ""
-    if "RECOVERY SIDECAR SIGNED" not in body:
-        continue
-    head = re.search(r"Exact head:\s*`([0-9a-f]{40})`", body)
-    run = re.search(r"Android Intent Certification\s*`([0-9]+)`", body)
-    if head and run:
-        print(head.group(1), run.group(1))
+
+expected_head = sys.argv[1]
+runs = json.loads(os.environ["RUNS_JSON"])
+for run in runs:
+    if run.get("headSha") == expected_head and run.get("conclusion") == "success":
+        print(run["databaseId"])
         raise SystemExit(0)
-raise SystemExit("No exact-head stable-signed recovery certification checkpoint found on parent PR")
+raise SystemExit("No successful workflow_dispatch recovery certification run found for exact parent head")
 PY
 }
 
@@ -550,8 +554,9 @@ main() {
 
   trap 'cert_exit_guard "$?"' EXIT
 
-  local parent_head current_head
+  local parent_head head_ref current_head
   parent_head="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
+  head_ref="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json headRefName --jq .headRefName)"
   current_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   [[ "$parent_head" == "$current_head" ]] || fail "local trusted head is not exact PR #$PARENT_PR head"
   initialize_cert_worker_identity "$parent_head"
@@ -559,17 +564,16 @@ main() {
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
 
-  local temp_dir comments_file proof apk artifact_manifest run_id proof_head actual_apk_sha artifact_source_sha local_build_dir xml_file
+  local temp_dir apk artifact_manifest run_id actual_apk_sha artifact_source_sha local_build_dir xml_file
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bke-android-recovery-cert.XXXXXX")"
-  comments_file="$temp_dir/comments.json"
   xml_file="$temp_dir/window.xml"
   OPERATOR_TEMP_DIRS+=("$temp_dir")
 
-  cert_stage "sidecar-proof" "[4/10] Resolving certified sidecar proof..."
-  proof="$(load_recovery_proof "$comments_file")"
-  read -r proof_head run_id <<<"$proof"
-  [[ "$proof_head" == "$parent_head" ]] || fail "latest stable recovery proof is stale: certified $proof_head, current $parent_head"
-  verify_recovery_run "$run_id" "$parent_head" || fail "recovery certification run failed exact-head verification"
+  cert_stage "sidecar-proof" "[4/10] Resolving exact-head recovery certification run..."
+  run_id="$(resolve_recovery_run "$parent_head" "$head_ref")" ||
+    fail "no successful exact-head recovery certification run is available"
+  verify_recovery_run "$run_id" "$parent_head" ||
+    fail "recovery certification run failed exact-head verification"
 
   cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."
   if [[ -z "$LOCAL_BUILD_ROOT" ]]; then
