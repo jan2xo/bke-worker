@@ -477,11 +477,17 @@ jobs:
               tr -d ':[:space:]'
           )"
           EXPECTED_SIGNER="$(
+            tr '[:upper:]' '[:lower:]' < android-gecko/preproduction-signing-cert.sha256 |
+              tr -d ':[:space:]'
+          )"
+          SECRET_SIGNER="$(
             printf '%s' "$BKE_ANDROID_PREPRODUCTION_CERT_SHA256" |
               tr '[:upper:]' '[:lower:]' |
               tr -d ':[:space:]'
           )"
+          [[ "$EXPECTED_SIGNER" =~ ^[0-9a-f]{64}$ ]]
           [[ "$SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$SECRET_SIGNER" = "$EXPECTED_SIGNER"
           test "$SIGNER_SHA256" = "$EXPECTED_SIGNER"
 
           DEBUGGABLE="$(apkanalyzer manifest debuggable "$APK" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
