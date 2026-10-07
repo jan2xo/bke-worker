@@ -42,8 +42,17 @@ for token in (
     'terminal FAILED continued scheduling recovery after exhaustion',
     'explicitly resolve and release the existing owner before rerunning',
     'status --porcelain --untracked-files=no',
+    'force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
+    'sidecar browser did not reattach after human authentication restart',
+    'ChatGPT did not reach READY after human authentication restart',
 ):
     assert token in operator_script, token
+
+human_start = operator_script.index('Human boundary: complete ChatGPT authentication/security checks inside BKE Worker Recovery Cert.')
+human_end = operator_script.index('read_recovery_sequence()', human_start)
+human_block = operator_script[human_start:human_end]
+assert human_block.index('Press Enter after the ChatGPT composer is visibly usable') < human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"')
+assert human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"') < human_block.index('ChatGPT did not reach READY after human authentication restart')
 
 assert 'gh run download "$run_id"' not in operator_script
 assert 'repos/$REPOSITORY/issues/$PARENT_PR/comments' not in operator_script
