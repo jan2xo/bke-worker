@@ -440,7 +440,6 @@ for token in (
     'gh pr edit "$PARENT_PR"',
     'fail "unable to create certification worker label"',
     'fail "unable to assign certification worker label"',
-    'clear_stale_certification_assignments',
     '--add-label "$WORKER_LABEL"',
     '--remove-label "$WORKER_LABEL"',
     'BKE_WORKER_RELAY_TOKEN_KEY',
