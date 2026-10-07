@@ -2,7 +2,7 @@
   "version": 1,
   "instruction_source": {
     "repo": "jan2xo/bke-autonomous-engineering",
-    "ref": "1395d61933ac1c02fdeb26d6ec50f7766852c909"
+    "ref": "40c0a51d14e4bddc4ac84d77f886481dded010dd"
   },
   "intent_path": ".bke/intent.json",
   "instruction_catalog_path": ".bke/instructions/catalog.json",
