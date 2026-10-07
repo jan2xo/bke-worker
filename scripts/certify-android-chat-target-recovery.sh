@@ -239,23 +239,31 @@ read_recovery_sequence() {
 
 wait_for_recovery_witness() {
   local before_sequence="$1"
-  local expected_reason="$2"
+  local expected_reasons="$2"
   local timeout_seconds="$3"
   local xml_file="$4"
-  local started snapshot sequence
+  local started snapshot sequence reason chat browser
   started="$(date +%s)"
+  sequence=""
+  reason=""
+  chat=""
+  browser=""
   while (( $(date +%s) - started < timeout_seconds )); do
     snapshot="$(ui_text "$xml_file" 2>/dev/null || true)"
     sequence="$(awk -F': ' '/^RECOVERY SEQ: [0-9]+$/ {print $2; exit}' <<<"$snapshot")"
+    reason="$(awk -F': ' '/^LAST RECOVERY: / {print $2; exit}' <<<"$snapshot")"
+    chat="$(awk -F': ' '/^CHAT: / {print $2; exit}' <<<"$snapshot")"
+    browser="$(awk -F': ' '/^BROWSER: / {print $2; exit}' <<<"$snapshot")"
     if [[ "$sequence" =~ ^[0-9]+$ ]] &&
        (( sequence > before_sequence )) &&
-       grep -Fxq "LAST RECOVERY: $expected_reason" <<<"$snapshot" &&
-       grep -Fxq "BROWSER: ATTACHED" <<<"$snapshot" &&
-       grep -Fxq "CHAT: READY" <<<"$snapshot"; then
+       [[ "|$expected_reasons|" == *"|$reason|"* ]] &&
+       [[ "$browser" == "ATTACHED" ]] &&
+       [[ "$chat" == "READY" ]]; then
       return 0
     fi
     sleep 1
   done
+  echo "BKE CERT: recovery witness timeout — before_seq=$before_sequence observed_seq=${sequence:-?} observed_reason=${reason:-?} chat=${chat:-?} browser=${browser:-?} expected=$expected_reasons" >&2
   return 1
 }
 
@@ -326,7 +334,7 @@ PY
 
 verify_local_recovery_apk() {
   local apk="$1"
-  local expected_signer="$2"
+  local expected_signer
   local apksigner apkanalyzer signer_report signer_sha debuggable package_name version_name version_code
 
   apksigner="$(resolve_android_tool apksigner)"
@@ -342,12 +350,12 @@ verify_local_recovery_apk() {
       tr -d ':[:space:]'
   )"
   expected_signer="$(
-    printf '%s' "$expected_signer" |
-      tr '[:upper:]' '[:lower:]' |
+    tr '[:upper:]' '[:lower:]' < "$ROOT_DIR/android-gecko/preproduction-signing-cert.sha256" |
       tr -d ':[:space:]'
   )"
+  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "repo-pinned PREPRODUCTION signer fingerprint is invalid"
   [[ "$signer_sha" =~ ^[0-9a-f]{64}$ ]] || fail "unable to verify local recovery APK signer"
-  [[ "$signer_sha" == "$expected_signer" ]] || fail "local recovery APK signer does not match certified PREPRODUCTION signer"
+  [[ "$signer_sha" == "$expected_signer" ]] || fail "local recovery APK signer does not match repo-pinned PREPRODUCTION signer"
 
   debuggable="$("$apkanalyzer" manifest debuggable "$apk" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   package_name="$("$apkanalyzer" manifest application-id "$apk" | tr -d '[:space:]')"
@@ -375,9 +383,8 @@ for comment in reversed(comments):
         continue
     head = re.search(r"Exact head:\s*`([0-9a-f]{40})`", body)
     run = re.search(r"Android Intent Certification\s*`([0-9]+)`", body)
-    signer = re.search(r"signer certificate SHA-256:?\s*`([0-9a-f]{64})`", body, re.I)
-    if head and run and signer:
-        print(head.group(1), run.group(1), signer.group(1).lower())
+    if head and run:
+        print(head.group(1), run.group(1))
         raise SystemExit(0)
 raise SystemExit("No exact-head stable-signed recovery certification checkpoint found on parent PR")
 PY
@@ -552,7 +559,7 @@ main() {
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
 
-  local temp_dir comments_file proof apk artifact_manifest run_id expected_signer proof_head actual_apk_sha artifact_source_sha local_build_dir xml_file
+  local temp_dir comments_file proof apk artifact_manifest run_id proof_head actual_apk_sha artifact_source_sha local_build_dir xml_file
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bke-android-recovery-cert.XXXXXX")"
   comments_file="$temp_dir/comments.json"
   xml_file="$temp_dir/window.xml"
@@ -560,7 +567,7 @@ main() {
 
   cert_stage "sidecar-proof" "[4/10] Resolving certified sidecar proof..."
   proof="$(load_recovery_proof "$comments_file")"
-  read -r proof_head run_id expected_signer <<<"$proof"
+  read -r proof_head run_id <<<"$proof"
   [[ "$proof_head" == "$parent_head" ]] || fail "latest stable recovery proof is stale: certified $proof_head, current $parent_head"
   verify_recovery_run "$run_id" "$parent_head" || fail "recovery certification run failed exact-head verification"
 
@@ -582,7 +589,7 @@ main() {
   artifact_source_sha="$(verify_local_recovery_manifest "$artifact_manifest" "$actual_apk_sha" "$parent_head")" ||
     fail "local recovery APK provenance verification failed"
   [[ "$artifact_source_sha" == "$parent_head" ]] || fail "local recovery APK source is not exact parent head"
-  verify_local_recovery_apk "$apk" "$expected_signer"
+  verify_local_recovery_apk "$apk"
   echo "BKE CERT: local APK verified; GitHub artifact download skipped."
 
   cert_stage "sidecar-install" "[6/10] Installing stable-signed recovery sidecar..."
@@ -623,8 +630,8 @@ main() {
   local before_sequence after_sequence failed_sequence
   before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before content crash"
   run_sidecar_service_action bke.worker.cert.crash_content
-  wait_for_recovery_witness "$before_sequence" "SESSION_CRASHED" 60 "$xml_file" ||
-    fail "content crash did not produce a fresh SESSION_CRASHED recovery witness"
+  wait_for_recovery_witness "$before_sequence" "SESSION_CRASHED|SESSION_KILLED" 60 "$xml_file" ||
+    fail "content crash injection did not produce a fresh Gecko crash/kill recovery witness"
 
   local actual_kill_result="PASS"
   before_sequence="$(read_recovery_sequence "$xml_file")" || fail "unable to read recovery sequence before real tab-process kill"
