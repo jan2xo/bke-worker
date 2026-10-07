@@ -18,6 +18,10 @@ for token in (
     "BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD",
     "BKE_ANDROID_PREPRODUCTION_CERT_SHA256",
     "bke-worker-recovery-preproduction.jks",
+    "BKE_ANDROID_RECOVERY_KEYSTORE_PATH",
+    "BKE_ANDROID_RECOVERY_STORE_PASSWORD",
+    "BKE_ANDROID_RECOVERY_KEY_ALIAS",
+    "BKE_ANDROID_RECOVERY_KEY_PASSWORD",
     "python3 tests/android_recovery_signing_contract.py",
     "python3 tests/android_recovery_operator_contract.py",
     "gradle -p android-gecko :app:assembleRecovery --stacktrace",
@@ -43,7 +47,12 @@ for token in (
     'versionNameSuffix = "-recoverycert"',
     'manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"',
     "isDebuggable = true",
-    'signingConfig = signingConfigs.getByName("preproduction")',
+    'create("recovery")',
+    'providers.environmentVariable("BKE_ANDROID_RECOVERY_KEYSTORE_PATH")',
+    'providers.environmentVariable("BKE_ANDROID_RECOVERY_STORE_PASSWORD")',
+    'providers.environmentVariable("BKE_ANDROID_RECOVERY_KEY_ALIAS")',
+    'providers.environmentVariable("BKE_ANDROID_RECOVERY_KEY_PASSWORD")',
+    'signingConfig = signingConfigs.getByName("recovery")',
 ):
     assert token in gradle, token
 
