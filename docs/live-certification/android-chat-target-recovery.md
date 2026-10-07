@@ -92,13 +92,17 @@ The live device matrix is driven by the repository-owned operator entrypoint:
 bash scripts/certify-android-chat-target-recovery.sh
 ```
 
-The entrypoint discovers the exact parent/sidecar heads, downloads and verifies
-the certified sidecar APK, preserves the existing `com.bke.worker.gecko`
-installation, and prompts only at the human ChatGPT authentication boundary.
-The `com.bke.worker.gecko.recoverycert` package is disposable certification state:
-if an older recovery-cert build is already installed, the entrypoint removes only
-that exact package before installing the newly certified APK. This permits CI debug
-signing-key rotation without ever uninstalling or replacing the primary Worker package.
+The entrypoint discovers the exact parent head, downloads and verifies the
+stable-signed recovery APK built from that same exact revision, preserves the existing
+`com.bke.worker.gecko` installation, and prompts only at the human ChatGPT
+authentication boundary.
+
+The recovery APK uses the existing PREPRODUCTION Android signing authority, never the
+production signing key. After the one-time migration from the legacy ephemeral CI debug
+signature, the entrypoint uses `adb install -r` so
+`com.bke.worker.gecko.recoverycert` app data, its Gecko profile, and the
+human-authenticated ChatGPT session survive later certification rebuilds. Uninstall is
+allowed only when Android explicitly reports the legacy signature as incompatible.
 
 Fixed recovery-cert actions are accepted only by a debuggable package whose
 application ID ends in `.recoverycert`. They are invoked through the
@@ -114,8 +118,8 @@ that the app UID cannot kill it, the script exercises the fixed onKill callback
 path for diagnostics but reports the matrix as BLOCKED rather than claiming a
 real kill PASS.
 
-The in-flight uncertainty test uses certification-only PR #54 and worker ID
-`android-worker-recovery-cert`. The script assigns that worker only for the
+The in-flight uncertainty test uses the parent recovery PR and worker ID
+`android-worker-recovery-cert`. The script assigns that temporary worker only for the
 bounded live proof, waits for `CHAT: BUSY`, crashes the content process, requires
 `BLOCKED_UNCERTAIN_TURN`, waits to prove the state remains blocked, then performs
 an explicit operator reject/recovery before stopping the relay and releasing the

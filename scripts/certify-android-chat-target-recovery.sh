@@ -3,8 +3,6 @@ set -euo pipefail
 
 REPOSITORY="jan2xo/bke-worker"
 PARENT_PR=52
-SIDECAR_PR=54
-PARENT_BRANCH="fix/android-chat-target-recovery"
 SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"
 PRIMARY_PACKAGE="com.bke.worker.gecko"
 SERVICE_CLASS="com.bke.worker.gecko.AndroidGeckoWorkerService"
@@ -204,9 +202,9 @@ restart_and_require_ready() {
   fi
 }
 
-load_sidecar_proof() {
+load_recovery_proof() {
   local comments_file="$1"
-  gh api --paginate --slurp "repos/$REPOSITORY/issues/$SIDECAR_PR/comments?per_page=100" >"$comments_file"
+  gh api --paginate --slurp "repos/$REPOSITORY/issues/$PARENT_PR/comments?per_page=100" >"$comments_file"
   python3 - "$comments_file" <<'PY'
 import json
 import re
@@ -216,7 +214,7 @@ pages = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 comments = [item for page in pages for item in page]
 for comment in reversed(comments):
     body = comment.get("body") or ""
-    if "SIDECAR APK CERTIFIED" not in body:
+    if "RECOVERY SIDECAR SIGNED" not in body:
         continue
     head = re.search(r"Exact head:\s*`([0-9a-f]{40})`", body)
     run = re.search(r"Android Intent Certification\s*`([0-9]+)`", body)
@@ -224,7 +222,7 @@ for comment in reversed(comments):
     if head and run and apk:
         print(head.group(1), run.group(1), apk.group(1).lower())
         raise SystemExit(0)
-raise SystemExit("No exact-head certified sidecar APK checkpoint found on PR #54")
+raise SystemExit("No exact-head stable-signed recovery APK checkpoint found on parent PR")
 PY
 }
 
@@ -258,8 +256,8 @@ require_no_worker_assignment() {
   [[ -z "$worker_matches" ]] || fail "$WORKER_LABEL is already assigned to open PR(s): $worker_matches"
 
   local labels
-  labels="$(gh pr view "$SIDECAR_PR" --repo "$REPOSITORY" --json labels --jq '.labels[].name | select(startswith("bke-worker:"))')"
-  [[ -z "$labels" ]] || fail "PR #$SIDECAR_PR already has a worker assignment: $labels"
+  labels="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json labels --jq '.labels[].name | select(startswith("bke-worker:"))')"
+  [[ -z "$labels" ]] || fail "PR #$PARENT_PR already has a worker assignment: $labels"
 }
 
 ensure_worker_label_exists() {
@@ -272,10 +270,9 @@ ensure_worker_label_exists() {
 comment_parent() {
   local title="$1"
   local parent_head="$2"
-  local sidecar_head="$3"
-  local apk_sha="$4"
-  local actual_kill="$5"
-  local uncertain="$6"
+  local apk_sha="$3"
+  local actual_kill="$4"
+  local uncertain="$5"
   local device_model android_release
   device_model="$("${ADB[@]}" shell getprop ro.product.model | tr -d '\r')"
   android_release="$("${ADB[@]}" shell getprop ro.build.version.release | tr -d '\r')"
@@ -317,16 +314,10 @@ main() {
 
   trap 'cert_exit_guard "$?"' EXIT
 
-  local parent_head current_head sidecar_head sidecar_state sidecar_base
+  local parent_head current_head
   parent_head="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
   current_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   [[ "$parent_head" == "$current_head" ]] || fail "local trusted head is not exact PR #$PARENT_PR head"
-
-  sidecar_head="$(gh pr view "$SIDECAR_PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
-  sidecar_state="$(gh pr view "$SIDECAR_PR" --repo "$REPOSITORY" --json state --jq .state)"
-  sidecar_base="$(gh pr view "$SIDECAR_PR" --repo "$REPOSITORY" --json baseRefName --jq .baseRefName)"
-  [[ "$sidecar_state" == "OPEN" ]] || fail "certification sidecar PR #$SIDECAR_PR is not open"
-  [[ "$sidecar_base" == "$PARENT_BRANCH" ]] || fail "PR #$SIDECAR_PR is not based on $PARENT_BRANCH"
 
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
@@ -338,28 +329,36 @@ main() {
   OPERATOR_TEMP_DIRS+=("$temp_dir")
 
   cert_stage "sidecar-proof" "[4/10] Resolving certified sidecar proof..."
-  proof="$(load_sidecar_proof "$comments_file")"
+  proof="$(load_recovery_proof "$comments_file")"
   read -r proof_head run_id expected_apk_sha <<<"$proof"
-  [[ "$proof_head" == "$sidecar_head" ]] || fail "latest certified sidecar proof is stale: certified $proof_head, current $sidecar_head"
+  [[ "$proof_head" == "$parent_head" ]] || fail "latest stable recovery proof is stale: certified $proof_head, current $parent_head"
 
-  cert_stage "artifact-download" "[5/10] Downloading certified sidecar APK..."
-  gh run download "$run_id" --repo "$REPOSITORY" -n bke-worker-android-gecko-probe -D "$temp_dir/artifact" >/dev/null
+  cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK..."
+  gh run download "$run_id" --repo "$REPOSITORY" -n bke-worker-android-recovery-sidecar -D "$temp_dir/artifact" >/dev/null
   apk="$(find "$temp_dir/artifact" -type f -name '*.apk' -print -quit)"
   [[ -n "$apk" ]] || fail "certified sidecar artifact did not contain an APK"
   actual_apk_sha="$(sha256_file "$apk")"
   [[ "$actual_apk_sha" == "$expected_apk_sha" ]] || fail "sidecar APK SHA mismatch"
 
-  cert_stage "sidecar-install" "[6/10] Installing certified recovery sidecar..."
+  cert_stage "sidecar-install" "[6/10] Installing stable-signed recovery sidecar..."
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "existing $PRIMARY_PACKAGE installation is required to prove side-by-side safety"
 
   [[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]] || fail "refusing to replace unexpected sidecar package: $SIDECAR_PACKAGE"
-  if "${ADB[@]}" shell pm path "$SIDECAR_PACKAGE" >/dev/null 2>&1; then
-    echo "BKE CERT: replacing previous disposable recovery-cert package before certified install..."
-    "${ADB[@]}" uninstall "$SIDECAR_PACKAGE" >/dev/null || fail "unable to remove previous disposable recovery-cert package"
-    "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared while replacing recovery sidecar"
+
+  install_output=""
+  if ! install_output="$("${ADB[@]}" install -r "$apk" 2>&1)"; then
+    if grep -Fq "INSTALL_FAILED_UPDATE_INCOMPATIBLE" <<<"$install_output"; then
+      echo "BKE CERT: one-time migration from ephemeral recovery signature to stable PREPRODUCTION signing authority..."
+      "${ADB[@]}" uninstall "$SIDECAR_PACKAGE" >/dev/null || fail "unable to remove legacy recovery-cert package during signer migration"
+      "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared during recovery signer migration"
+      "${ADB[@]}" install "$apk" >/dev/null || fail "stable-signed recovery sidecar did not install after signer migration"
+      echo "BKE CERT: signer migration complete; future recovery builds can upgrade in place and preserve app data."
+    else
+      printf '%s\n' "$install_output" >&2
+      fail "stable-signed recovery sidecar install failed"
+    fi
   fi
 
-  "${ADB[@]}" install -r "$apk" >/dev/null
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "primary Worker disappeared during sidecar install"
   "${ADB[@]}" shell pm path "$SIDECAR_PACKAGE" >/dev/null 2>&1 || fail "recovery sidecar did not install"
 
@@ -429,12 +428,12 @@ main() {
   cert_stage "uncertain-turn" "[9/10] Running bounded uncertain-turn ownership proof..."
   require_no_worker_assignment
   ensure_worker_label_exists
-  gh pr edit "$SIDECAR_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null
+  gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null
 
   if ! wait_for_text "CHAT: BUSY" 30 "$xml_file"; then
     run_sidecar_service_action bke.worker.stop_relay || true
-    gh pr edit "$SIDECAR_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null || true
-    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$sidecar_head" "$actual_apk_sha" "$actual_kill_result" "BLOCKED — wake never reached CHAT: BUSY"
+    gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null || true
+    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$actual_apk_sha" "$actual_kill_result" "BLOCKED — wake never reached CHAT: BUSY"
     fail "bounded wake did not reach an active ChatGPT turn"
   fi
 
@@ -447,23 +446,23 @@ main() {
   wait_for_text "CHAT: READY" 45 "$xml_file" || fail "explicit uncertain-turn recovery did not return ChatGPT to READY"
   run_sidecar_service_action bke.worker.stop_relay
   wait_for_text "RELAY: STOPPED" 20 "$xml_file" || fail "relay did not stop before ownership release"
-  gh pr edit "$SIDECAR_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null
+  gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --remove-label "$WORKER_LABEL" >/dev/null
   require_no_worker_assignment
 
   cert_stage "ledger" "[10/10] Recording local certification checkpoint..."
   if [[ "$actual_kill_result" != "PASS" ]]; then
-    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$sidecar_head" "$actual_apk_sha" "$actual_kill_result" "PASS"
+    comment_parent "BKE EXECUTION CHECKPOINT — LOCAL RECOVERY CERTIFICATION BLOCKED" "$parent_head" "$actual_apk_sha" "$actual_kill_result" "PASS"
     CERT_FINAL_RESULT="BLOCKED"
     echo "BKE ANDROID RECOVERY CERTIFICATION: BLOCKED"
     echo "All bounded recovery/uncertain-turn proof passed except a real Gecko tab-process kill, which this Android device denied."
     exit 2
   fi
 
-  comment_parent "BKE EXECUTION CHECKPOINT — LOCAL DEVICE CERTIFIED" "$parent_head" "$sidecar_head" "$actual_apk_sha" "PASS" "PASS"
+  comment_parent "BKE EXECUTION CHECKPOINT — LOCAL DEVICE CERTIFIED" "$parent_head" "$actual_apk_sha" "PASS" "PASS"
   CERT_FINAL_RESULT="PASS"
   echo "BKE ANDROID RECOVERY CERTIFICATION: PASS"
   echo "Parent exact head: $parent_head"
-  echo "Sidecar exact head: $sidecar_head"
+  echo "Stable recovery artifact head: $parent_head"
   echo "Production: LOCKED"
 }
 

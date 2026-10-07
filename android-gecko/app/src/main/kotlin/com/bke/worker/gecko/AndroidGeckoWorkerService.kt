@@ -160,6 +160,7 @@ class AndroidGeckoWorkerService : Service() {
     private var chatRecoveryAttempt = 0
     private var chatRecoveryGeneration = 0
     private var readinessWatchGeneration = 0
+    private var certificationNativePortLossArmed = false
 
     private val recentDeliveryIds = LinkedHashSet<String>()
     private var activeWake: RelayWake? = null
@@ -194,6 +195,15 @@ class AndroidGeckoWorkerService : Service() {
     private val messageDelegate = object : WebExtension.MessageDelegate {
         override fun onConnect(port: WebExtension.Port) {
             if (port.name != NATIVE_APP || port.sender.session !== workerSession) {
+                port.disconnect()
+                return
+            }
+
+            if (certificationNativePortLossArmed && certificationHooksAllowed()) {
+                Log.w(
+                    TAG,
+                    "Recovery certification: suppressing native-port reconnect until bounded recovery starts",
+                )
                 port.disconnect()
                 return
             }
@@ -406,7 +416,8 @@ class AndroidGeckoWorkerService : Service() {
                 )
             }
             ACTION_CERT_NATIVE_PORT_LOSS -> {
-                Log.w(TAG, "Recovery certification: forcing native-port loss")
+                Log.w(TAG, "Recovery certification: forcing persistent native-port loss")
+                certificationNativePortLossArmed = true
                 val port = workerPort
                 workerPort = null
                 runCatching { port?.disconnect() }
@@ -444,13 +455,20 @@ class AndroidGeckoWorkerService : Service() {
         val generation = ++readinessWatchGeneration
         mainHandler.postDelayed(
             {
-                if (!isRunning ||
-                    generation != readinessWatchGeneration ||
-                    workerPort != null ||
-                    activeWakeUncertain
-                ) {
+                if (!isRunning) {
+                    certificationNativePortLossArmed = false
                     return@postDelayed
                 }
+                if (generation != readinessWatchGeneration) {
+                    certificationNativePortLossArmed = false
+                    return@postDelayed
+                }
+                if (workerPort != null || activeWakeUncertain) {
+                    certificationNativePortLossArmed = false
+                    return@postDelayed
+                }
+
+                certificationNativePortLossArmed = false
                 scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")
             },
             NATIVE_PORT_RECOVERY_TIMEOUT_MS,

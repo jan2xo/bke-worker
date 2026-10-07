@@ -54,6 +54,7 @@ android {
             versionNameSuffix = "-recoverycert"
             manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("preproduction")
         }
 
         create("preproduction") {

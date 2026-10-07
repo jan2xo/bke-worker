@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       modules:
-        description: "Space-separated modules: core server chatgpt android android-preproduction android-release relay"
+        description: "Space-separated modules: core server chatgpt android android-recovery android-preproduction android-release relay"
         required: true
         default: core
         type: string
@@ -42,6 +42,7 @@ jobs:
       server: ${{ steps.plan.outputs.server }}
       chatgpt: ${{ steps.plan.outputs.chatgpt }}
       android: ${{ steps.plan.outputs.android }}
+      android_recovery: ${{ steps.plan.outputs.android_recovery }}
       android_preproduction: ${{ steps.plan.outputs.android_preproduction }}
       android_release: ${{ steps.plan.outputs.android_release }}
       relay: ${{ steps.plan.outputs.relay }}
@@ -87,11 +88,11 @@ jobs:
             const requested = new Set(
               rawModules.split(/\s+/).filter(Boolean)
             );
-            const allowedModules = new Set(["core", "server", "chatgpt", "android", "android-preproduction", "android-release", "relay"]);
+            const allowedModules = new Set(["core", "server", "chatgpt", "android", "android-recovery", "android-preproduction", "android-release", "relay"]);
             const unknown = [...requested].filter(module => !allowedModules.has(module));
             if (requested.size === 0 || unknown.length > 0) {
               core.setFailed(
-                `Certification modules must be one or more of core server chatgpt android android-preproduction android-release relay. Unknown: ${unknown.join(", ")}`
+                `Certification modules must be one or more of core server chatgpt android android-recovery android-preproduction android-release relay. Unknown: ${unknown.join(", ")}`
               );
               return;
             }
@@ -381,6 +382,153 @@ jobs:
         with:
           name: bke-worker-android-gecko-probe
           path: android-gecko/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Diff hygiene
+        run: git diff --check
+
+
+  android-recovery:
+    name: Android recovery sidecar stable signed build
+    needs: plan
+    if: needs.plan.outputs.android_recovery == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+      BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64: ${{ secrets.BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64 }}
+      BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD: ${{ secrets.BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD }}
+      BKE_ANDROID_PREPRODUCTION_KEY_ALIAS: ${{ secrets.BKE_ANDROID_PREPRODUCTION_KEY_ALIAS }}
+      BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD: ${{ secrets.BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD }}
+      BKE_ANDROID_PREPRODUCTION_CERT_SHA256: ${{ secrets.BKE_ANDROID_PREPRODUCTION_CERT_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 37.1
+        run: sdkmanager "platforms;android-37.1" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Require durable PREPRODUCTION recovery signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64
+            BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD
+            BKE_ANDROID_PREPRODUCTION_KEY_ALIAS
+            BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD
+            BKE_ANDROID_PREPRODUCTION_CERT_SHA256
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required GitHub PREPRODUCTION-signing secret: $name"
+              exit 1
+            fi
+          done
+
+          KEYSTORE_PATH="$RUNNER_TEMP/bke-worker-recovery-preproduction.jks"
+          printf '%s' "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Verify Android recovery signing contract
+        run: |
+          python3 tests/android_gecko_probe_contract.py
+          python3 tests/android_recovery_signing_contract.py
+
+      - name: Build stable-signed Android recovery sidecar
+        run: gradle -p android-gecko :app:assembleRecovery --stacktrace
+
+      - name: Verify recovery signature, identity, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android-gecko/app/build/outputs/apk/recovery/app-recovery.apk"
+          test -f "$APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/apksigner-recovery.txt"
+
+          SIGNER_SHA256="$(
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner-recovery.txt" |
+              head -n 1 |
+              tr '[:upper:]' '[:lower:]' |
+              tr -d ':[:space:]'
+          )"
+          EXPECTED_SIGNER="$(
+            printf '%s' "$BKE_ANDROID_PREPRODUCTION_CERT_SHA256" |
+              tr '[:upper:]' '[:lower:]' |
+              tr -d ':[:space:]'
+          )"
+          [[ "$SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$SIGNER_SHA256" = "$EXPECTED_SIGNER"
+
+          DEBUGGABLE="$(apkanalyzer manifest debuggable "$APK" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          test "$DEBUGGABLE" = "true"
+
+          PACKAGE_NAME="$(apkanalyzer manifest application-id "$APK" | tr -d '[:space:]')"
+          test "$PACKAGE_NAME" = "com.bke.worker.gecko.recoverycert"
+
+          VERSION_NAME="$(apkanalyzer manifest version-name "$APK" | tr -d '[:space:]')"
+          VERSION_CODE="$(apkanalyzer manifest version-code "$APK" | tr -d '[:space:]')"
+          [[ "$VERSION_NAME" == *"-recoverycert" ]]
+          test "$VERSION_CODE" = "1"
+
+          mkdir -p artifacts/android-recovery
+          OUTPUT_APK="artifacts/android-recovery/BKE.Worker.Android.RECOVERY-CERT.arm64-v${VERSION_NAME}.apk"
+          cp "$APK" "$OUTPUT_APK"
+          APK_SHA256="$(sha256sum "$OUTPUT_APK" | awk '{print $1}')"
+
+          SOURCE_SHA="$SOURCE_SHA" \
+          APK_SHA256="$APK_SHA256" \
+          SIGNER_SHA256="$SIGNER_SHA256" \
+          VERSION_NAME="$VERSION_NAME" \
+          VERSION_CODE="$VERSION_CODE" \
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "source_sha": os.environ["SOURCE_SHA"],
+              "component": "BKE Worker Android Recovery Cert",
+              "architecture": "arm64-v8a",
+              "version_name": os.environ["VERSION_NAME"],
+              "version_code": int(os.environ["VERSION_CODE"]),
+              "sha256": os.environ["APK_SHA256"],
+              "signer_certificate_sha256": os.environ["SIGNER_SHA256"],
+              "signing_authority": "PREPRODUCTION",
+              "certification_state": "recovery-cert-certified",
+          }
+          Path("artifacts/android-recovery/manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload stable-signed recovery sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: bke-worker-android-recovery-sidecar
+          path: artifacts/android-recovery
           if-no-files-found: error
           retention-days: 7
 
@@ -796,7 +944,7 @@ jobs:
   required-certification:
     name: Required certification
     if: always() && needs.plan.result == 'success'
-    needs: [plan, core, server, chatgpt, android, android-preproduction, android-release, relay]
+    needs: [plan, core, server, chatgpt, android, android-recovery, android-preproduction, android-release, relay]
     runs-on: ubuntu-latest
     steps:
       - name: Require requested exact-head proof
@@ -806,6 +954,7 @@ jobs:
           SERVER_REQUIRED: ${{ needs.plan.outputs.server }}
           CHATGPT_REQUIRED: ${{ needs.plan.outputs.chatgpt }}
           ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
+          ANDROID_RECOVERY_REQUIRED: ${{ needs.plan.outputs.android_recovery }}
           ANDROID_PREPRODUCTION_REQUIRED: ${{ needs.plan.outputs.android_preproduction }}
           ANDROID_RELEASE_REQUIRED: ${{ needs.plan.outputs.android_release }}
           RELAY_REQUIRED: ${{ needs.plan.outputs.relay }}
@@ -813,6 +962,7 @@ jobs:
           SERVER_RESULT: ${{ needs.server.result }}
           CHATGPT_RESULT: ${{ needs.chatgpt.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          ANDROID_RECOVERY_RESULT: ${{ needs.android-recovery.result }}
           ANDROID_PREPRODUCTION_RESULT: ${{ needs.android-preproduction.result }}
           ANDROID_RELEASE_RESULT: ${{ needs.android-release.result }}
           RELAY_RESULT: ${{ needs.relay.result }}
@@ -823,6 +973,7 @@ jobs:
           [[ "$SERVER_REQUIRED" != "true" || "$SERVER_RESULT" == "success" ]]
           [[ "$CHATGPT_REQUIRED" != "true" || "$CHATGPT_RESULT" == "success" ]]
           [[ "$ANDROID_REQUIRED" != "true" || "$ANDROID_RESULT" == "success" ]]
+          [[ "$ANDROID_RECOVERY_REQUIRED" != "true" || "$ANDROID_RECOVERY_RESULT" == "success" ]]
           [[ "$ANDROID_PREPRODUCTION_REQUIRED" != "true" || "$ANDROID_PREPRODUCTION_RESULT" == "success" ]]
           [[ "$ANDROID_RELEASE_REQUIRED" != "true" || "$ANDROID_RELEASE_RESULT" == "success" ]]
           [[ "$RELAY_REQUIRED" != "true" || "$RELAY_RESULT" == "success" ]]
