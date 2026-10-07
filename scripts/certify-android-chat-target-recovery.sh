@@ -311,7 +311,7 @@ if run.get("event") != "workflow_dispatch":
     raise SystemExit("Recovery certification run was not an explicit workflow_dispatch")
 
 jobs = {job.get("name"): job.get("conclusion") for job in run.get("jobs", [])}
-for name in ("Android recovery sidecar stable signed build", "Required certification"):
+for name in ("Android recovery local contract", "Required certification"):
     if jobs.get(name) != "success":
         raise SystemExit(f"Required recovery certification job did not pass: {name}")
 PY
@@ -396,7 +396,7 @@ verify_local_recovery_apk() {
 resolve_recovery_run() {
   local parent_head="$1"
   local head_ref="$2"
-  local runs_json
+  local runs_json candidate_id
   runs_json="$(gh run list \
     --repo "$REPOSITORY" \
     --workflow certify.yml \
@@ -405,7 +405,14 @@ resolve_recovery_run() {
     --limit 50 \
     --json databaseId,headSha,conclusion,createdAt)"
 
-  RUNS_JSON="$runs_json" python3 - "$parent_head" <<'PY'
+  while IFS= read -r candidate_id; do
+    [[ "$candidate_id" =~ ^[0-9]+$ ]] || continue
+    if verify_recovery_run "$candidate_id" "$parent_head" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate_id"
+      return 0
+    fi
+  done < <(
+    RUNS_JSON="$runs_json" python3 - "$parent_head" <<'PY'
 import json
 import os
 import sys
@@ -415,9 +422,10 @@ runs = json.loads(os.environ["RUNS_JSON"])
 for run in runs:
     if run.get("headSha") == expected_head and run.get("conclusion") == "success":
         print(run["databaseId"])
-        raise SystemExit(0)
-raise SystemExit("No successful workflow_dispatch recovery certification run found for exact parent head")
 PY
+  )
+
+  return 1
 }
 
 apply_relay_config_securely() {
