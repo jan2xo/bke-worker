@@ -8,7 +8,8 @@ PRIMARY_PACKAGE="com.bke.worker.gecko"
 SERVICE_CLASS="com.bke.worker.gecko.AndroidGeckoWorkerService"
 WORKER_ID=""
 WORKER_LABEL=""
-CERT_WORKER_PREFIX="android-recovery-cert-"
+CERT_WORKER_PREFIX="rc-"
+LEGACY_CERT_WORKER_PREFIX="android-recovery-cert-"
 LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"
 BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 SECRET_FILE="${BKE_WORKER_RELAY_SECRET_FILE:-$HOME/.bke-secrets/bke-worker-cloudflare-preproduction.env}"
@@ -300,6 +301,7 @@ initialize_cert_worker_identity() {
   WORKER_LABEL="bke-worker:${WORKER_ID}"
 
   [[ "${#WORKER_ID}" -le 63 ]] || fail "certification worker id is too long"
+  [[ "${#WORKER_LABEL}" -le 50 ]] || fail "certification worker label is too long"
   case "$WORKER_ID" in
     ""|*[!a-z0-9-]*)
       fail "certification worker id is invalid"
@@ -315,6 +317,7 @@ clear_stale_certification_assignments() {
       while IFS= read -r label; do
         [[ -n "$label" ]] || continue
         if [[ "$label" == "$LEGACY_CERT_WORKER_LABEL" ||
+              "$label" == "bke-worker:${LEGACY_CERT_WORKER_PREFIX}"* ||
               "$label" == "bke-worker:${CERT_WORKER_PREFIX}"* ]]; then
           printf '%s\n' "$label"
         fi
@@ -359,7 +362,7 @@ ensure_worker_label_exists() {
   if gh label list --repo "$REPOSITORY" --limit 200 --json name --jq '.[].name' | grep -Fxq "$WORKER_LABEL"; then
     return
   fi
-  gh label create "$WORKER_LABEL" --repo "$REPOSITORY" --color "1D76DB" --description "BKE recovery certification worker" >/dev/null
+  gh label create "$WORKER_LABEL" --repo "$REPOSITORY" --color "1D76DB" --description "BKE recovery certification worker" >/dev/null || fail "unable to create certification worker label"
 }
 
 comment_parent() {
@@ -530,7 +533,7 @@ main() {
   clear_stale_certification_assignments
   require_no_worker_assignment
   ensure_worker_label_exists
-  gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null
+  gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null || fail "unable to assign certification worker label"
 
   if ! wait_for_text "CHAT: BUSY" 30 "$xml_file"; then
     run_sidecar_service_action bke.worker.stop_relay || true
