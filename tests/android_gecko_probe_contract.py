@@ -397,6 +397,8 @@ for token in (
     'OPERATOR_TEMP_DIRS=()',
     'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
+    'for path in "${OPERATOR_TEMP_DIRS[@]-}"; do',
+    'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then',
     'cert_exit_guard',
     'local sidecar_head="$parent_head"',
     'script exited without final certification result',
@@ -476,7 +478,7 @@ identity_start = operator_script.index("initialize_cert_worker_identity()")
 identity_end = operator_script.index("require_no_worker_assignment()", identity_start)
 identity_block = operator_script[identity_start:identity_end]
 for token in (
-    'WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$"',
+    'WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$$"',
     'WORKER_LABEL="bke-worker:${WORKER_ID}"',
     '[[ "${#WORKER_ID}" -le 63 ]]',
     '"$label" == "$LEGACY_CERT_WORKER_LABEL"',
@@ -485,6 +487,26 @@ for token in (
     assert token in identity_block, token
 
 assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
+
+subprocess.run(
+    [
+        "bash",
+        "-c",
+        r"""
+set -euo pipefail
+source "$1"
+cleanup_operator_temp_dirs
+initialize_cert_worker_identity "0123456789abcdef0123456789abcdef01234567"
+[[ "$WORKER_ID" =~ ^android-recovery-cert-01234567-[0-9]+-[0-9]+$ ]]
+[[ "$WORKER_ID" != *'$'* ]]
+[[ "$WORKER_LABEL" == "bke-worker:$WORKER_ID" ]]
+""",
+        "bke-android-recovery-contract",
+        str(operator_script_path),
+    ],
+    check=True,
+)
+
 
 ownership_start = operator_script.index("require_no_worker_assignment()")
 ownership_end = operator_script.index("ensure_worker_label_exists()", ownership_start)

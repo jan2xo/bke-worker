@@ -32,7 +32,7 @@ require_command() {
 
 cleanup_operator_temp_dirs() {
   local path
-  for path in "${OPERATOR_TEMP_DIRS[@]}"; do
+  for path in "${OPERATOR_TEMP_DIRS[@]-}"; do
     [[ -n "$path" ]] && rm -rf -- "$path"
   done
   OPERATOR_TEMP_DIRS=()
@@ -296,7 +296,7 @@ initialize_cert_worker_identity() {
   local short_head epoch
   short_head="${parent_head:0:8}"
   epoch="$(date +%s)"
-  WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$"
+  WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$$"
   WORKER_LABEL="bke-worker:${WORKER_ID}"
 
   [[ "${#WORKER_ID}" -le 63 ]] || fail "certification worker id is too long"
@@ -568,4 +568,6 @@ main() {
   echo "Production: LOCKED"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
