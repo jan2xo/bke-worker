@@ -64,6 +64,7 @@ for token in (
     'verify --verbose --print-certs',
     'manifest debuggable',
     'manifest application-id',
+    'preproduction-signing-cert.sha256',
     '"build_origin": "local-exact-head"',
     '"certification_state": "recovery-cert-local-build"',
     'artifacts/android-recovery-local',
