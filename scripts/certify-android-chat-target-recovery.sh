@@ -231,7 +231,18 @@ apply_relay_config_securely() {
   local token="$2"
   local token_file="files/bke-recovery-relay-token"
 
-  [[ "$relay_url" =~ ^wss://[A-Za-z0-9.-]+/relay/[A-Za-z0-9._-]+$ ]] || fail "refusing unsafe PREPRODUCTION relay URL"
+  local relay_rest relay_host
+  relay_rest="${relay_url#wss://}"
+  [[ "$relay_rest" != "$relay_url" ]] || fail "refusing unsafe PREPRODUCTION relay URL"
+  relay_host="${relay_rest%%/*}"
+  [[ -n "$relay_host" ]] || fail "refusing unsafe PREPRODUCTION relay URL"
+  case "$relay_host" in
+    *[!A-Za-z0-9.-]*)
+      fail "refusing unsafe PREPRODUCTION relay URL"
+      ;;
+  esac
+  [[ "$relay_host" == *.workers.dev ]] || fail "refusing unsafe PREPRODUCTION relay URL"
+  [[ "$relay_rest" == "$relay_host/relay/$WORKER_ID" ]] || fail "refusing unsafe PREPRODUCTION relay URL"
 
   # Keep every filesystem operation inside run-as. Avoid a compound adb shell
   # sh -c command: adb shell can consume the quoting boundary and execute
@@ -440,9 +451,12 @@ main() {
   local derived_token broker_url relay_origin relay_url
   derived_token="$(BKE_WORKER_RELAY_TOKEN_KEY="$BKE_WORKER_RELAY_TOKEN_KEY" node "$ROOT_DIR/cloudflare-relay/scripts/derive-worker-token.mjs" "$WORKER_ID")"
   broker_url="$(gh variable get "$BROKER_VARIABLE" --repo "$REPOSITORY" --json value --jq .value)"
+  broker_url="${broker_url%/}"
   [[ "$broker_url" == https://* ]] || fail "$BROKER_VARIABLE is not a valid PREPRODUCTION HTTPS origin"
   relay_origin="${broker_url%/github/app/install-token}"
-  relay_url="${relay_origin/https:\/\//wss:\/\/}/relay/$WORKER_ID"
+  relay_origin="${relay_origin%/}"
+  [[ "$relay_origin" == https://*.workers.dev ]] || fail "$BROKER_VARIABLE is not the expected PREPRODUCTION workers.dev origin"
+  relay_url="wss://${relay_origin#https://}/relay/$WORKER_ID"
 
   apply_relay_config_securely "$relay_url" "$derived_token"
   unset derived_token BKE_WORKER_RELAY_TOKEN_KEY BKE_WORKER_GITHUB_WEBHOOK_SECRET

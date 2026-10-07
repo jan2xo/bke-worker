@@ -445,6 +445,26 @@ for token in (
 assert 'shell run-as "$SIDECAR_PACKAGE" sh -c' not in relay_apply_block
 assert relay_apply_block.index('chmod 600 "$token_file"') < relay_apply_block.index('tee "$token_file"')
 
+assert '[[ "$relay_url" =~' not in relay_apply_block
+for token in (
+    'relay_rest="${relay_url#wss://}"',
+    'relay_host="${relay_rest%%/*}"',
+    '[[ "$relay_host" == *.workers.dev ]]',
+    '[[ "$relay_rest" == "$relay_host/relay/$WORKER_ID" ]]',
+):
+    assert token in relay_apply_block, token
+
+for token in (
+    'broker_url="${broker_url%/}"',
+    'relay_origin="${broker_url%/github/app/install-token}"',
+    'relay_origin="${relay_origin%/}"',
+    '[[ "$relay_origin" == https://*.workers.dev ]]',
+    'relay_url="wss://${relay_origin#https://}/relay/$WORKER_ID"',
+):
+    assert token in operator_script, token
+
+assert 'relay_url="${relay_origin/https:\\/\\//wss:\\/\\/}/relay/$WORKER_ID"' not in operator_script
+
 
 for forbidden in (
     'uninstall "$PRIMARY_PACKAGE"',

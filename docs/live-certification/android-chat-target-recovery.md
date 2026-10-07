@@ -136,6 +136,11 @@ It deliberately avoids compound `adb shell ... sh -c` commands so remote shell
 metacharacter parsing cannot escape the `run-as` boundary; the fixed apply script is
 fed over stdin and the bearer token never appears in the host command line.
 
+The PREPRODUCTION relay URL is normalized from the GitHub broker origin without
+slash-escaped parameter replacement and is validated with portable shell prefix,
+host, and exact-path checks. This keeps the operator ceremony compatible with the
+macOS system Bash used by the live device host.
+
 Production remains locked.
 
 
