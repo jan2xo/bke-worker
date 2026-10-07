@@ -390,7 +390,8 @@ for token in (
     '--user "$ANDROID_USER_ID"',
     'WORKER_ID=""',
     'WORKER_LABEL=""',
-    'CERT_WORKER_PREFIX="android-recovery-cert-"',
+    'CERT_WORKER_PREFIX="rc-"',
+    'LEGACY_CERT_WORKER_PREFIX="android-recovery-cert-"',
     'LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"',
     'initialize_cert_worker_identity "$parent_head"',
     'clear_stale_certification_assignments',
@@ -426,6 +427,8 @@ for token in (
     'bke.worker.cert.resolve_uncertain_reject',
     'CHAT: BLOCKED_UNCERTAIN_TURN',
     'gh pr edit "$PARENT_PR"',
+    'fail "unable to create certification worker label"',
+    'fail "unable to assign certification worker label"',
     'clear_stale_certification_assignments',
     '--add-label "$WORKER_LABEL"',
     '--remove-label "$WORKER_LABEL"',
@@ -481,7 +484,9 @@ for token in (
     'WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$$"',
     'WORKER_LABEL="bke-worker:${WORKER_ID}"',
     '[[ "${#WORKER_ID}" -le 63 ]]',
+    '[[ "${#WORKER_LABEL}" -le 50 ]]',
     '"$label" == "$LEGACY_CERT_WORKER_LABEL"',
+    '"$label" == "bke-worker:${LEGACY_CERT_WORKER_PREFIX}"*',
     '"$label" == "bke-worker:${CERT_WORKER_PREFIX}"*',
 ):
     assert token in identity_block, token
@@ -497,9 +502,10 @@ set -euo pipefail
 source "$1"
 cleanup_operator_temp_dirs
 initialize_cert_worker_identity "0123456789abcdef0123456789abcdef01234567"
-[[ "$WORKER_ID" =~ ^android-recovery-cert-01234567-[0-9]+-[0-9]+$ ]]
+[[ "$WORKER_ID" =~ ^rc-01234567-[0-9]+-[0-9]+$ ]]
 [[ "$WORKER_ID" != *'$'* ]]
 [[ "$WORKER_LABEL" == "bke-worker:$WORKER_ID" ]]
+[[ "${#WORKER_LABEL}" -le 50 ]]
 """,
         "bke-android-recovery-contract",
         str(operator_script_path),
