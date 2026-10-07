@@ -15,6 +15,9 @@ subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
 subprocess.run(["bash", "-n", str(builder_script_path)], check=True)
 
 for token in (
+    'resolve_recovery_run "$parent_head" "$head_ref"',
+    'gh run list',
+    '--event workflow_dispatch',
     'verify_recovery_run "$run_id" "$parent_head"',
     'gh run view "$run_id" --repo "$REPOSITORY" --json headSha,conclusion,event,jobs',
     '"Android recovery sidecar stable signed build"',
@@ -43,6 +46,8 @@ for token in (
     assert token in operator_script, token
 
 assert 'gh run download "$run_id"' not in operator_script
+assert 'repos/$REPOSITORY/issues/$PARENT_PR/comments' not in operator_script
+assert 'RECOVERY SIDECAR SIGNED' not in operator_script
 assert 'signer certificate SHA-256' not in operator_script
 assert "clear_stale_certification_assignments" not in operator_script
 
@@ -104,6 +109,34 @@ gh() {
 }
 verify_recovery_run "$2" "$3"
 """
+
+resolver_runs = [
+    {"databaseId": run_id, "headSha": head, "conclusion": "success", "createdAt": "2026-10-07T00:00:00Z"},
+    {"databaseId": run_id - 1, "headSha": "f" * 40, "conclusion": "success", "createdAt": "2026-10-06T00:00:00Z"},
+]
+resolver_probe = r"""
+set -euo pipefail
+source "$1"
+gh() {
+    if [[ "$1" == "run" && "$2" == "list" ]]; then
+        printf '%s\n' "$MOCK_RUNS_JSON"
+        return 0
+    fi
+    return 99
+}
+resolved="$(resolve_recovery_run "$2" "$3")"
+[[ "$resolved" == "$4" ]]
+"""
+resolver_env = dict(os.environ)
+resolver_env["MOCK_RUNS_JSON"] = json.dumps(resolver_runs)
+subprocess.run(
+    [
+        "bash", "-c", resolver_probe, "bke-recovery-run-resolver",
+        str(operator_script_path), head, "fix/android-chat-target-recovery", str(run_id),
+    ],
+    check=True,
+    env=resolver_env,
+)
 
 env = dict(os.environ)
 env["MOCK_RUN_JSON"] = json.dumps(good_run)
