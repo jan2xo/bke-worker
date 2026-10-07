@@ -79,9 +79,6 @@ load_signing_environment() {
     fail "missing BKE_ANDROID_PREPRODUCTION_KEY_ALIAS"
   [[ -n "${BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD:-}" ]] ||
     fail "missing BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD"
-  [[ "${BKE_ANDROID_PREPRODUCTION_CERT_SHA256:-}" =~ ^[0-9A-Fa-f:]{64,95}$ ]] ||
-    fail "missing or invalid BKE_ANDROID_PREPRODUCTION_CERT_SHA256"
-
   if [[ -n "${BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH:-}" ]]; then
     [[ -f "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH" ]] ||
       fail "BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH does not exist"
@@ -172,12 +169,23 @@ main() {
       tr -d ':[:space:]'
   )"
   expected_signer="$(
-    printf '%s' "$BKE_ANDROID_PREPRODUCTION_CERT_SHA256" |
-      tr '[:upper:]' '[:lower:]' |
+    tr '[:upper:]' '[:lower:]' < "$ROOT_DIR/android-gecko/preproduction-signing-cert.sha256" |
       tr -d ':[:space:]'
   )"
+  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "repo-pinned PREPRODUCTION signer fingerprint is invalid"
   [[ "$signer_sha" =~ ^[0-9a-f]{64}$ ]] || fail "unable to verify recovery APK signer"
-  [[ "$signer_sha" == "$expected_signer" ]] || fail "recovery APK signer is not PREPRODUCTION authority"
+  [[ "$signer_sha" == "$expected_signer" ]] || fail "recovery APK signer is not repo-pinned PREPRODUCTION authority"
+
+  if [[ -n "${BKE_ANDROID_PREPRODUCTION_CERT_SHA256:-}" ]]; then
+    local environment_signer
+    environment_signer="$(
+      printf '%s' "$BKE_ANDROID_PREPRODUCTION_CERT_SHA256" |
+        tr '[:upper:]' '[:lower:]' |
+        tr -d ':[:space:]'
+    )"
+    [[ "$environment_signer" == "$expected_signer" ]] ||
+      fail "local PREPRODUCTION signer metadata conflicts with repo-pinned fingerprint"
+  fi
 
   debuggable="$("$apkanalyzer" manifest debuggable "$apk" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   package_name="$("$apkanalyzer" manifest application-id "$apk" | tr -d '[:space:]')"
