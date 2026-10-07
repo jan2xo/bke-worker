@@ -186,3 +186,20 @@ jobs:
         run: |
           python3 tests/operator_entrypoint_contract.py
           bash -n scripts/complete-github-app-actuator-preproduction.sh
+
+
+  bke-intent:
+    name: BKE pinned intent consumer proof
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve and execute pinned BKE intent
+        id: bke
+        uses: jan2xo/bke-autonomous-engineering/.github/actions/intent-ci@30021a7860c2b99e9af89336f3a53a3735f6a881
+        with:
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          run-id: ${{ github.run_id }}
