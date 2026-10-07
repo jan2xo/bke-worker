@@ -365,7 +365,9 @@ jobs:
           gradle-version: '9.5.0'
 
       - name: Verify Android Gecko probe contract
-        run: python3 tests/android_gecko_probe_contract.py
+        run: |
+          python3 tests/android_gecko_probe_contract.py
+          python3 tests/android_recovery_operator_contract.py
 
       - name: Verify UTM WSS relay smoke contract
         run: python3 tests/utm_relay_contract.py
@@ -452,6 +454,7 @@ jobs:
       - name: Verify Android recovery signing contract
         run: |
           python3 tests/android_gecko_probe_contract.py
+          python3 tests/android_recovery_operator_contract.py
           python3 tests/android_recovery_signing_contract.py
 
       - name: Build stable-signed Android recovery sidecar
