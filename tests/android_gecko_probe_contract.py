@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 
 root = Path(__file__).resolve().parents[1]
 base = root / "android-gecko/app/src/main"
 service = (base / "kotlin/com/bke/worker/gecko/AndroidGeckoWorkerService.kt").read_text(encoding="utf-8")
 activity = (base / "kotlin/com/bke/worker/gecko/MainActivity.kt").read_text(encoding="utf-8")
 runtime = (base / "kotlin/com/bke/worker/gecko/GeckoRuntimeProvider.kt").read_text(encoding="utf-8")
+operator_script_path = root / "scripts/certify-android-chat-target-recovery.sh"
+operator_script = operator_script_path.read_text(encoding="utf-8")
+subprocess.run(["bash", "-n", str(operator_script_path)], check=True)
 relay_protocol = (base / "kotlin/com/bke/worker/gecko/RelayProtocol.kt").read_text(encoding="utf-8")
 relay_client = (base / "kotlin/com/bke/worker/gecko/RelayWebSocketClient.kt").read_text(encoding="utf-8")
 relay_store = (base / "kotlin/com/bke/worker/gecko/RelayConfigStore.kt").read_text(encoding="utf-8")
@@ -44,12 +48,58 @@ for token in (
     "fun statusSnapshot(): AndroidWorkerStatusSnapshot",
     "chatGptState = workerState",
     "relayState = relayState",
+    "recoverySequence = recoverySequence",
+    "lastRecoveryReason = lastRecoveryReason",
     "RelayConfigStore(applicationContext)",
     "restoreRelayState()",
     "relayConfigStore.saveConfig(config)",
     "relayConfigStore.saveRelayRequested(true)",
     "relayConfigStore.saveRelayRequested(false)",
     "relayRequested = relayConfigStore.loadRelayRequested()",
+    'STATE_RECOVERING = "RECOVERING"',
+    'CERTIFICATION_PACKAGE_SUFFIX = ".recoverycert"',
+    'ACTION_CERT_CRASH_CONTENT = "bke.worker.cert.crash_content"',
+    'ACTION_CERT_SIMULATE_CONTENT_KILL = "bke.worker.cert.simulate_content_kill"',
+    'ACTION_CERT_NO_COMPOSER = "bke.worker.cert.no_composer"',
+    'ACTION_CERT_NATIVE_PORT_LOSS = "bke.worker.cert.native_port_loss"',
+    'ACTION_CERT_EXHAUST_RECOVERY = "bke.worker.cert.exhaust_recovery"',
+    '"bke.worker.cert.resolve_uncertain_reject"',
+    "ApplicationInfo.FLAG_DEBUGGABLE",
+    "packageName.endsWith(CERTIFICATION_PACKAGE_SUFFIX)",
+    'workerSession.loadUri("about:crashcontent")',
+    "contentDelegate.onKill(workerSession)",
+    '"recovery-cert-" + System.currentTimeMillis()',
+    "scheduleNativePortRecovery()",
+    'scheduleChatRecovery("CERTIFICATION_EXHAUSTED")',
+    'sendAck(active.deliveryId, "rejected")',
+    'scheduleChatRecovery("CERTIFICATION_UNCERTAIN_RESOLVED")',
+    'STATE_BLOCKED_UNCERTAIN = "BLOCKED_UNCERTAIN_TURN"',
+    "CHAT_RECOVERY_MAX_ATTEMPTS = 3",
+    "CHAT_READY_TIMEOUT_MS = 15_000L",
+    "NATIVE_PORT_RECOVERY_TIMEOUT_MS = 10_000L",
+    "nativePortRecoveryGeneration = 0",
+    "val generation = ++nativePortRecoveryGeneration",
+    "generation != nativePortRecoveryGeneration",
+    "nativePortRecoveryGeneration += 1",
+    "certificationNativePortLossArmed = false",
+    "certificationNativePortLossArmed = true",
+    "certificationNativePortLossArmed && certificationHooksAllowed()",
+    "suppressing native-port reconnect until bounded recovery starts",
+    'scheduleChatRecovery("SESSION_CRASHED")',
+    'scheduleChatRecovery("SESSION_KILLED")',
+    'scheduleChatRecovery("NATIVE_PORT_DISCONNECTED")',
+    'scheduleChatReadyTimeout("NO_COMPOSER")',
+    "if (!workerSession.isOpen)",
+    "workerSession.open(runtime)",
+    "workerSession.loadUri(CHATGPT_URL)",
+    "activeWakeUncertain = true",
+    "workerState = if (activeWakeUncertain)",
+    "STATE_BLOCKED_UNCERTAIN",
+    'if (workerState == STATE_FAILED) {',
+    "Ignoring worker status after terminal ChatGPT recovery failure",
+    "workerState != STATE_RECOVERING && workerState != STATE_BLOCKED_UNCERTAIN",
+    "recoverySequence += 1",
+    "lastRecoveryReason = reason",
 ):
     assert token in service, token
 
@@ -74,6 +124,17 @@ for token in (
     "RELAY: ",
     "WORKER ID: ",
     "statusSnapshot()",
+    "LAST RECOVERY: ",
+    "RECOVERY SEQ: ",
+    "renderedRecoverySequence",
+    "reattachGeckoSurfaceAfterRecovery(snapshot.recoverySequence)",
+    "private fun reattachGeckoSurfaceAfterRecovery(recoverySequence: Int)",
+    "geckoView.releaseSession()",
+    "geckoView.setSession(session)",
+    "renderedRecoverySequence = recoverySequence",
+    "root.requestLayout()",
+    "geckoView.requestLayout()",
+    "geckoView.postInvalidateOnAnimation()",
     "startStatusUpdates()",
     "renderWorkerStatus()",
     "BKE WORKER",
@@ -111,7 +172,7 @@ for token in (
     'android:foregroundServiceType="specialUse"',
     'android:stopWithTask="false"',
     "android.permission.POST_NOTIFICATIONS",
-    'android:label="BKE Worker"',
+    'android:label="${appLabel}"',
     'android:theme="@style/BkeWorkerTheme"',
 ):
     assert token in manifest, token
@@ -209,6 +270,17 @@ for token in (
 
 assert 'implementation("com.squareup.okhttp3:okhttp:4.12.0")' in build
 
+for token in (
+    'manifestPlaceholders["appLabel"] = "BKE Worker"',
+    'create("recovery")',
+    'applicationIdSuffix = ".recoverycert"',
+    'versionNameSuffix = "-recoverycert"',
+    'manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"',
+    "isDebuggable = true",
+    'signingConfig = signingConfigs.getByName("preproduction")',
+):
+    assert token in build, token
+
 # Remote relay wake is metadata-only; it cannot carry arbitrary prompt/JS/shell commands.
 for forbidden in (
     'json.optString("prompt")',
@@ -269,4 +341,222 @@ assert ".putString(KEY_TOKEN_CIPHERTEXT, config.bearerToken)" not in relay_store
 assert ".putString(KEY_TOKEN_IV, config.bearerToken)" not in relay_store
 assert "bearerToken = plaintext.toString(Charsets.UTF_8)" in relay_store
 
+
+# Chat/browser recovery is bounded and must fail closed on an uncertain in-flight turn.
+assert "while (true)" not in service
+native_recovery_start = service.index("    private fun scheduleNativePortRecovery()")
+native_recovery_end = service.index("    private fun connectRelay()", native_recovery_start)
+native_recovery_block = service[native_recovery_start:native_recovery_end]
+assert "readinessWatchGeneration" not in native_recovery_block
+assert "nativePortRecoveryGeneration" in native_recovery_block
+failed_guard_index = service.index("if (workerState == STATE_FAILED) {", service.index("private fun handleWorkerStatus"))
+observed_state_index = service.index("val observedState = when", failed_guard_index)
+assert failed_guard_index < observed_state_index
+surface_recovery_start = activity.index("    private fun reattachGeckoSurfaceAfterRecovery")
+surface_recovery_end = activity.index("    private fun compactCardContainer", surface_recovery_start)
+surface_recovery_block = activity[surface_recovery_start:surface_recovery_end]
+assert "geckoView.releaseSession()" in surface_recovery_block
+assert "geckoView.setSession(session)" in surface_recovery_block
+assert surface_recovery_block.index("geckoView.releaseSession()") < surface_recovery_block.index("geckoView.setSession(session)")
+assert "CHAT_RECOVERY_MAX_ATTEMPTS = 3" in service
+assert "chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS" in service
+assert "previousState != STATE_NO_COMPOSER" in service
+assert "activeWake != null" in service
+assert "activeWakeUncertain = true" in service
+assert "active != null && !activeWakeUncertain" in service
+assert "workerState = if (activeWakeUncertain)" in service
+assert "STATE_BLOCKED_UNCERTAIN" in service
+assert "if (!isRunning || workerState == STATE_FAILED) return" in service
+assert "workerState == STATE_FAILED" in native_recovery_block
+assert "workerState == STATE_FAILED" in service[service.index("private fun scheduleChatReadyTimeout"):service.index("private fun markChatSurfaceResponsive")]
+assert "if (!activeWakeUncertain &&" in service
+assert "mainHandler.removeCallbacksAndMessages(null)" in service
+
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
+
+
+# Local recovery certification hooks are fixed-function, debug-sidecar-only,
+# and do not create a generic remote command surface.
+for forbidden in (
+    'ACTION_CERT_EVAL',
+    'ACTION_CERT_JAVASCRIPT',
+    'ACTION_CERT_SHELL',
+    'ACTION_CERT_PROMPT',
+):
+    assert forbidden not in service, forbidden
+
+for token in (
+    'REPOSITORY="jan2xo/bke-worker"',
+    'PARENT_PR=52',
+    'SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"',
+    'PRIMARY_PACKAGE="com.bke.worker.gecko"',
+    'ANDROID_USER_ID="$("${ADB[@]}" shell am get-current-user',
+    '--user "$ANDROID_USER_ID"',
+    'WORKER_ID=""',
+    'WORKER_LABEL=""',
+    'CERT_WORKER_PREFIX="rc-"',
+    'initialize_cert_worker_identity "$parent_head"',
+    'explicitly resolve and release the existing owner before rerunning',
+    'resolve_recovery_run "$parent_head" "$head_ref"',
+    'gh run list',
+    '--event workflow_dispatch',
+    'verify_recovery_run "$run_id" "$parent_head"',
+    'verify_local_recovery_manifest',
+    'verify_local_recovery_apk',
+    'LOCAL_CERT_FILE="$LOCAL_SIGNING_DIR/cert.sha256"',
+    'package_name',
+    'wait_for_recovery_witness',
+    'SESSION_CRASHED|SESSION_KILLED',
+    'SESSION_KILLED',
+    'CHAT_READY_TIMEOUT:NO_COMPOSER',
+    'terminal FAILED continued scheduling recovery after exhaustion',
+    'OPERATOR_TEMP_DIRS=()',
+    'CERT_FINAL_RESULT=""',
+    'cleanup_operator_temp_dirs',
+    'for path in "${OPERATOR_TEMP_DIRS[@]-}"; do',
+    'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then',
+    'cert_exit_guard',
+    'local sidecar_head="$3"',
+    'Sidecar certification run:',
+    'script exited without final certification result',
+    'cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."',
+    'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
+    'worktree add --quiet --detach',
+    'bash scripts/build-android-recovery-local.sh',
+    'remote artifact download is disabled',
+    'android-recovery-local',
+    'install -r',
+    '[[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]]',
+    'INSTALL_FAILED_UPDATE_INCOMPATIBLE',
+    'one-time migration to the stable LOCAL certification signer',
+    'uninstall "$SIDECAR_PACKAGE"',
+    'pm path "$PRIMARY_PACKAGE"',
+    'pm path "$SIDECAR_PACKAGE"',
+    'Human boundary: authenticate ChatGPT manually',
+    'force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"',
+    'sidecar browser did not reattach after human authentication restart',
+    'ChatGPT did not reach READY after human authentication restart',
+    'bke.worker.cert.crash_content',
+    'bke.worker.cert.simulate_content_kill',
+    'bke.worker.cert.no_composer',
+    'bke.worker.cert.native_port_loss',
+    'wait_for_recovery_witness "$before_sequence" "NATIVE_PORT_DISCONNECTED"',
+    'bke.worker.cert.exhaust_recovery',
+    'bke.worker.cert.resolve_uncertain_reject',
+    'CHAT: BLOCKED_UNCERTAIN_TURN',
+    'gh pr edit "$PARENT_PR"',
+    'fail "unable to create certification worker label"',
+    'fail "unable to assign certification worker label"',
+    '--add-label "$WORKER_LABEL"',
+    '--remove-label "$WORKER_LABEL"',
+    'BKE_WORKER_RELAY_TOKEN_KEY',
+    'derive-worker-token.mjs',
+    'Production: LOCKED',
+):
+    assert token in operator_script, token
+
+human_start = operator_script.index('Human boundary: complete ChatGPT authentication/security checks inside BKE Worker Recovery Cert.')
+human_end = operator_script.index('read_recovery_sequence()', human_start)
+human_block = operator_script[human_start:human_end]
+assert human_block.index('Press Enter after the ChatGPT composer is visibly usable') < human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"')
+assert human_block.index('force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"') < human_block.index('ChatGPT did not reach READY after human authentication restart')
+
+relay_apply_start = operator_script.index("apply_relay_config_securely()")
+relay_apply_end = operator_script.index("try_real_tab_kill()", relay_apply_start)
+relay_apply_block = operator_script[relay_apply_start:relay_apply_end]
+
+for token in (
+    'local token_file="files/bke-recovery-relay-token"',
+    'shell run-as "$SIDECAR_PACKAGE" mkdir -p files',
+    'shell run-as "$SIDECAR_PACKAGE" touch "$token_file"',
+    'shell run-as "$SIDECAR_PACKAGE" chmod 600 "$token_file"',
+    'printf \'%s\' "$token" | "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" tee "$token_file"',
+    'shell run-as "$SIDECAR_PACKAGE" sh -s',
+    "trap 'rm -f \"$token_file\"' 0 1 2 3 15",
+    '--es bke.worker.relay_token "$token"',
+):
+    assert token in relay_apply_block, token
+
+assert 'shell run-as "$SIDECAR_PACKAGE" sh -c' not in relay_apply_block
+assert relay_apply_block.index('chmod 600 "$token_file"') < relay_apply_block.index('tee "$token_file"')
+
+assert '[[ "$relay_url" =~' not in relay_apply_block
+for token in (
+    'relay_rest="${relay_url#wss://}"',
+    'relay_host="${relay_rest%%/*}"',
+    '[[ "$relay_host" == *.workers.dev ]]',
+    '[[ "$relay_rest" == "$relay_host/relay/$WORKER_ID" ]]',
+):
+    assert token in relay_apply_block, token
+
+for token in (
+    'broker_url="${broker_url%/}"',
+    'relay_origin="${broker_url%/github/app/install-token}"',
+    'relay_origin="${relay_origin%/}"',
+    '[[ "$relay_origin" == https://*.workers.dev ]]',
+    'relay_url="wss://${relay_origin#https://}/relay/$WORKER_ID"',
+):
+    assert token in operator_script, token
+
+assert 'relay_url="${relay_origin/https:\\/\\//wss:\\/\\/}/relay/$WORKER_ID"' not in operator_script
+
+identity_start = operator_script.index("initialize_cert_worker_identity()")
+identity_end = operator_script.index("require_no_worker_assignment()", identity_start)
+identity_block = operator_script[identity_start:identity_end]
+for token in (
+    'WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$$"',
+    'WORKER_LABEL="bke-worker:${WORKER_ID}"',
+    '[[ "${#WORKER_ID}" -le 63 ]]',
+    '[[ "${#WORKER_LABEL}" -le 50 ]]',
+):
+    assert token in identity_block, token
+
+assert "clear_stale_certification_assignments" not in operator_script
+assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
+assert 'gh run download "$run_id"' not in operator_script
+assert 'repos/$REPOSITORY/issues/$PARENT_PR/comments' not in operator_script
+assert 'RECOVERY SIDECAR SIGNED' not in operator_script
+assert 'signer certificate SHA-256' not in operator_script
+assert 'status --porcelain --untracked-files=no' in operator_script
+
+subprocess.run(
+    [
+        "bash",
+        "-c",
+        r"""
+set -euo pipefail
+source "$1"
+cleanup_operator_temp_dirs
+initialize_cert_worker_identity "0123456789abcdef0123456789abcdef01234567"
+[[ "$WORKER_ID" =~ ^rc-01234567-[0-9]+-[0-9]+$ ]]
+[[ "$WORKER_ID" != *'$'* ]]
+[[ "$WORKER_LABEL" == "bke-worker:$WORKER_ID" ]]
+[[ "${#WORKER_LABEL}" -le 50 ]]
+""",
+        "bke-android-recovery-contract",
+        str(operator_script_path),
+    ],
+    check=True,
+)
+
+
+ownership_start = operator_script.index("require_no_worker_assignment()")
+ownership_end = operator_script.index("ensure_worker_label_exists()", ownership_start)
+ownership_block = operator_script[ownership_start:ownership_end]
+assert '--search "label:$WORKER_LABEL"' not in ownership_block
+for token in (
+    'gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,labels',
+    'WORKER_LABEL="$WORKER_LABEL" python3 -c',
+    'if worker_label in labels:',
+):
+    assert token in ownership_block, token
+
+
+for forbidden in (
+    'uninstall "$PRIMARY_PACKAGE"',
+    'pm uninstall "$PRIMARY_PACKAGE"',
+    'set -x',
+    'eval ',
+    'production deploy',
+):
+    assert forbidden not in operator_script, forbidden

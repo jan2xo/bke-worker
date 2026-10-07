@@ -11,6 +11,15 @@ val preproductionKeyAlias =
 val preproductionKeyPassword =
     providers.environmentVariable("BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD").orNull
 
+val recoveryKeystorePath =
+    providers.environmentVariable("BKE_ANDROID_RECOVERY_KEYSTORE_PATH").orNull
+val recoveryStorePassword =
+    providers.environmentVariable("BKE_ANDROID_RECOVERY_STORE_PASSWORD").orNull
+val recoveryKeyAlias =
+    providers.environmentVariable("BKE_ANDROID_RECOVERY_KEY_ALIAS").orNull
+val recoveryKeyPassword =
+    providers.environmentVariable("BKE_ANDROID_RECOVERY_KEY_PASSWORD").orNull
+
 android {
     namespace = "com.bke.worker.gecko"
     compileSdk {
@@ -25,6 +34,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.0.1-probe"
+        manifestPlaceholders["appLabel"] = "BKE Worker"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -40,11 +50,29 @@ android {
             keyAlias = preproductionKeyAlias
             keyPassword = preproductionKeyPassword
         }
+
+        create("recovery") {
+            if (!recoveryKeystorePath.isNullOrBlank()) {
+                storeFile = file(recoveryKeystorePath)
+            }
+            storePassword = recoveryStorePassword
+            keyAlias = recoveryKeyAlias
+            keyPassword = recoveryKeyPassword
+        }
     }
 
     buildTypes {
         getByName("debug") {
             isDebuggable = true
+        }
+
+        create("recovery") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".recoverycert"
+            versionNameSuffix = "-recoverycert"
+            manifestPlaceholders["appLabel"] = "BKE Worker Recovery Cert"
+            isDebuggable = true
+            signingConfig = signingConfigs.getByName("recovery")
         }
 
         create("preproduction") {

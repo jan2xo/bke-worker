@@ -26,6 +26,7 @@ import android.widget.TextView
 import org.mozilla.geckoview.GeckoView
 
 class MainActivity : Activity() {
+    private lateinit var root: LinearLayout
     private lateinit var geckoView: GeckoView
     private lateinit var status: TextView
     private lateinit var workerIdInput: EditText
@@ -35,6 +36,7 @@ class MainActivity : Activity() {
     private var workerService: AndroidGeckoWorkerService? = null
     private var bound = false
     private var browserAttached = false
+    private var renderedRecoverySequence = 0
 
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusPoll = object : Runnable {
@@ -68,7 +70,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(COLOR_BACKGROUND)
             setPadding(dp(18), dp(18), dp(18), dp(20))
@@ -114,7 +116,7 @@ class MainActivity : Activity() {
         val statusCard = compactCardContainer()
         statusCard.addView(cardEyebrow("LIVE STATUS"))
         status = TextView(this).apply {
-            text = "BROWSER: DETACHED\nCHAT: STARTING\nRELAY: STOPPED\nWORKER ID: android-worker-a"
+            text = "BROWSER: DETACHED\nCHAT: STARTING\nRELAY: STOPPED\nLAST RECOVERY: NONE\nRECOVERY SEQ: 0\nWORKER ID: android-worker-a"
             textSize = 12f
             setTextColor(COLOR_TEXT_SECONDARY)
             typeface = Typeface.MONOSPACE
@@ -317,6 +319,8 @@ class MainActivity : Activity() {
                 appendLine("BROWSER: " + if (browserAttached) "ATTACHED" else "DETACHED")
                 appendLine("CHAT: STARTING")
                 appendLine("RELAY: STOPPED")
+                appendLine("LAST RECOVERY: NONE")
+                appendLine("RECOVERY SEQ: 0")
                 append("WORKER ID: android-worker-a")
             }
             return
@@ -326,7 +330,37 @@ class MainActivity : Activity() {
             appendLine("BROWSER: " + if (browserAttached) "ATTACHED" else "DETACHED")
             appendLine("CHAT: " + snapshot.chatGptState)
             appendLine("RELAY: " + snapshot.relayState)
+            appendLine("LAST RECOVERY: " + (snapshot.lastRecoveryReason ?: "NONE"))
+            appendLine("RECOVERY SEQ: " + snapshot.recoverySequence)
             append("WORKER ID: " + snapshot.workerId)
+        }
+
+        if (snapshot.recoverySequence > renderedRecoverySequence &&
+            (snapshot.chatGptState == "READY" || snapshot.chatGptState == "BUSY")
+        ) {
+            reattachGeckoSurfaceAfterRecovery(snapshot.recoverySequence)
+        }
+    }
+
+    private fun reattachGeckoSurfaceAfterRecovery(recoverySequence: Int) {
+        val session = workerService?.session() ?: return
+        geckoView.post {
+            runCatching {
+                geckoView.releaseSession()
+                geckoView.setSession(session)
+                root.requestLayout()
+                root.invalidate()
+                geckoView.requestLayout()
+                geckoView.invalidate()
+                geckoView.postInvalidateOnAnimation()
+            }.onSuccess {
+                browserAttached = true
+                renderedRecoverySequence = recoverySequence
+            }.onFailure {
+                browserAttached = false
+                status.text =
+                    "BROWSER: ATTACH_FAILED\nCHAT: UNKNOWN\nRELAY: UNKNOWN\nWORKER ID: —"
+            }
         }
     }
 
