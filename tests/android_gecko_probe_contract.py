@@ -366,6 +366,10 @@ assert "activeWakeUncertain = true" in service
 assert "active != null && !activeWakeUncertain" in service
 assert "workerState = if (activeWakeUncertain)" in service
 assert "STATE_BLOCKED_UNCERTAIN" in service
+assert "if (!isRunning || workerState == STATE_FAILED) return" in service
+assert "workerState == STATE_FAILED" in native_recovery_block
+assert "workerState == STATE_FAILED" in service[service.index("private fun scheduleChatReadyTimeout"):service.index("private fun markChatSurfaceResponsive")]
+assert "if (!activeWakeUncertain &&" in service
 assert "mainHandler.removeCallbacksAndMessages(null)" in service
 
 print("BKE Worker Android Gecko relay-ready dispatch contract: PASS")
@@ -391,20 +395,27 @@ for token in (
     'WORKER_ID=""',
     'WORKER_LABEL=""',
     'CERT_WORKER_PREFIX="rc-"',
-    'LEGACY_CERT_WORKER_PREFIX="android-recovery-cert-"',
-    'LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"',
     'initialize_cert_worker_identity "$parent_head"',
-    'clear_stale_certification_assignments',
-    '[[ -n "$stale" ]] || return 0',
+    'explicitly resolve and release the existing owner before rerunning',
+    'verify_recovery_run "$run_id" "$parent_head"',
+    'verify_recovery_artifact_manifest',
+    'workflow_run_id',
+    'package_name',
+    'wait_for_recovery_witness',
+    'SESSION_CRASHED',
+    'SESSION_KILLED',
+    'CHAT_READY_TIMEOUT:NO_COMPOSER',
+    'terminal FAILED continued scheduling recovery after exhaustion',
     'OPERATOR_TEMP_DIRS=()',
     'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
     'for path in "${OPERATOR_TEMP_DIRS[@]-}"; do',
     'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then',
     'cert_exit_guard',
-    'local sidecar_head="$parent_head"',
+    'local sidecar_head="$3"',
+    'Sidecar certification run:',
     'script exited without final certification result',
-    'cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK..."',
+    'cert_stage "artifact-download" "[5/10] Downloading and verifying stable-signed recovery APK..."',
     'bke-worker-android-recovery-sidecar',
     'RECOVERY SIDECAR SIGNED',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
@@ -423,7 +434,7 @@ for token in (
     'bke.worker.cert.no_composer',
     'bke.worker.cert.native_port_loss',
     'LAST RECOVERY: NATIVE_PORT_DISCONNECTED',
-    'native-port loss did not traverse bounded recovery',
+    'NATIVE_PORT_DISCONNECTED',
     'bke.worker.cert.exhaust_recovery',
     'bke.worker.cert.resolve_uncertain_reject',
     'CHAT: BLOCKED_UNCERTAIN_TURN',
@@ -486,12 +497,10 @@ for token in (
     'WORKER_LABEL="bke-worker:${WORKER_ID}"',
     '[[ "${#WORKER_ID}" -le 63 ]]',
     '[[ "${#WORKER_LABEL}" -le 50 ]]',
-    '"$label" == "$LEGACY_CERT_WORKER_LABEL"',
-    '"$label" == "bke-worker:${LEGACY_CERT_WORKER_PREFIX}"*',
-    '"$label" == "bke-worker:${CERT_WORKER_PREFIX}"*',
 ):
     assert token in identity_block, token
 
+assert "clear_stale_certification_assignments" not in operator_script
 assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
 
 subprocess.run(
@@ -509,27 +518,6 @@ initialize_cert_worker_identity "0123456789abcdef0123456789abcdef01234567"
 [[ "${#WORKER_LABEL}" -le 50 ]]
 """,
         "bke-android-recovery-contract",
-        str(operator_script_path),
-    ],
-    check=True,
-)
-
-subprocess.run(
-    [
-        "bash",
-        "-c",
-        r"""
-set -euo pipefail
-source "$1"
-gh() {
-    if [[ "$1" == "pr" && "$2" == "view" ]]; then
-        return 0
-    fi
-    return 99
-}
-clear_stale_certification_assignments
-""",
-        "bke-android-recovery-empty-stale-labels",
         str(operator_script_path),
     ],
     check=True,
