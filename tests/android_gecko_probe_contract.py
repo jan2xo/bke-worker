@@ -397,6 +397,9 @@ for token in (
     'CERT_WORKER_PREFIX="rc-"',
     'initialize_cert_worker_identity "$parent_head"',
     'explicitly resolve and release the existing owner before rerunning',
+    'resolve_recovery_run "$parent_head" "$head_ref"',
+    'gh run list',
+    '--event workflow_dispatch',
     'verify_recovery_run "$run_id" "$parent_head"',
     'verify_local_recovery_manifest',
     'verify_local_recovery_apk',
@@ -417,7 +420,6 @@ for token in (
     'Sidecar certification run:',
     'script exited without final certification result',
     'cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."',
-    'RECOVERY SIDECAR SIGNED',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
     'bash scripts/build-android-recovery-local.sh',
@@ -503,6 +505,8 @@ for token in (
 assert "clear_stale_certification_assignments" not in operator_script
 assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
 assert 'gh run download "$run_id"' not in operator_script
+assert 'repos/$REPOSITORY/issues/$PARENT_PR/comments' not in operator_script
+assert 'RECOVERY SIDECAR SIGNED' not in operator_script
 assert 'signer certificate SHA-256' not in operator_script
 assert 'status --porcelain --untracked-files=no' in operator_script
 
