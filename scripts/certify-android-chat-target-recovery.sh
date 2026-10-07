@@ -324,7 +324,7 @@ clear_stale_certification_assignments() {
       done
   )"
 
-  [[ -n "$stale" ]] || return
+  [[ -n "$stale" ]] || return 0
   echo "BKE CERT: clearing stale certification-only worker assignment(s) from prior aborted ceremony..."
   while IFS= read -r label; do
     [[ -n "$label" ]] || continue
