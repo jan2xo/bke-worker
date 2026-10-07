@@ -449,7 +449,13 @@ jobs:
           KEYSTORE_PATH="$RUNNER_TEMP/bke-worker-recovery-preproduction.jks"
           printf '%s' "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
           chmod 600 "$KEYSTORE_PATH"
-          echo "BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          {
+            echo "BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH=$KEYSTORE_PATH"
+            echo "BKE_ANDROID_RECOVERY_KEYSTORE_PATH=$KEYSTORE_PATH"
+            echo "BKE_ANDROID_RECOVERY_STORE_PASSWORD=$BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD"
+            echo "BKE_ANDROID_RECOVERY_KEY_ALIAS=$BKE_ANDROID_PREPRODUCTION_KEY_ALIAS"
+            echo "BKE_ANDROID_RECOVERY_KEY_PASSWORD=$BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Verify Android recovery signing contract
         run: |
