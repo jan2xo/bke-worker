@@ -83,8 +83,13 @@ for forbidden in (
     "wrangler deploy",
     "production deploy",
     "set -x",
+    "trap cleanup EXIT",
+    '; cleanup\' EXIT',
 ):
     assert forbidden not in builder_script, forbidden
+
+assert 'trap \'rm -f -- "$signer_report"\' EXIT' in builder_script
+assert 'rm -f -- "$signer_report"\n  trap - EXIT' in builder_script
 
 head = "0123456789abcdef0123456789abcdef01234567"
 run_id = 123456789
