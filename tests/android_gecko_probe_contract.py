@@ -426,6 +426,26 @@ for token in (
 ):
     assert token in operator_script, token
 
+relay_apply_start = operator_script.index("apply_relay_config_securely()")
+relay_apply_end = operator_script.index("try_real_tab_kill()", relay_apply_start)
+relay_apply_block = operator_script[relay_apply_start:relay_apply_end]
+
+for token in (
+    'local token_file="files/bke-recovery-relay-token"',
+    'shell run-as "$SIDECAR_PACKAGE" mkdir -p files',
+    'shell run-as "$SIDECAR_PACKAGE" touch "$token_file"',
+    'shell run-as "$SIDECAR_PACKAGE" chmod 600 "$token_file"',
+    'printf \'%s\' "$token" | "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" tee "$token_file"',
+    'shell run-as "$SIDECAR_PACKAGE" sh -s',
+    "trap 'rm -f \"$token_file\"' 0 1 2 3 15",
+    '--es bke.worker.relay_token "$token"',
+):
+    assert token in relay_apply_block, token
+
+assert "sh -c" not in relay_apply_block
+assert relay_apply_block.index('chmod 600 "$token_file"') < relay_apply_block.index('tee "$token_file"')
+
+
 for forbidden in (
     'uninstall "$PRIMARY_PACKAGE"',
     'pm uninstall "$PRIMARY_PACKAGE"',

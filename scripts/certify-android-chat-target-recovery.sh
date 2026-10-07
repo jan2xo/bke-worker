@@ -229,11 +229,39 @@ PY
 apply_relay_config_securely() {
   local relay_url="$1"
   local token="$2"
-  printf '%s' "$token" | "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" \
-    sh -c 'umask 077; mkdir -p files; cat > files/bke-recovery-relay-token'
+  local token_file="files/bke-recovery-relay-token"
 
-  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" sh -c \
-    "token=\$(cat files/bke-recovery-relay-token); am start-foreground-service --user '$ANDROID_USER_ID' -n '$SIDECAR_PACKAGE/$SERVICE_CLASS' -a bke.worker.apply_relay_config --es bke.worker.worker_id '$WORKER_ID' --es bke.worker.relay_url '$relay_url' --es bke.worker.relay_token \"\$token\" >/dev/null; rm -f files/bke-recovery-relay-token"
+  [[ "$relay_url" =~ ^wss://[A-Za-z0-9.-]+/relay/[A-Za-z0-9._-]+$ ]] || fail "refusing unsafe PREPRODUCTION relay URL"
+
+  # Keep every filesystem operation inside run-as. Avoid a compound adb shell
+  # sh -c command: adb shell can consume the quoting boundary and execute
+  # metacharacters/redirections as the shell user outside the app data directory.
+  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" mkdir -p files
+  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" touch "$token_file"
+  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" chmod 600 "$token_file"
+  printf '%s' "$token" | "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" tee "$token_file" >/dev/null
+
+  # Feed a fixed script over stdin to the app-UID shell. The bearer token is read
+  # only from the app-private file and never appears in the host command line.
+  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" sh -s \
+    "$ANDROID_USER_ID" "$SIDECAR_PACKAGE/$SERVICE_CLASS" "$WORKER_ID" "$relay_url" <<'REMOTE_SH'
+set -eu
+android_user_id="$1"
+component="$2"
+worker_id="$3"
+relay_url="$4"
+token_file="files/bke-recovery-relay-token"
+trap 'rm -f "$token_file"' 0 1 2 3 15
+token="$(cat "$token_file")"
+
+am start-foreground-service \
+  --user "$android_user_id" \
+  -n "$component" \
+  -a bke.worker.apply_relay_config \
+  --es bke.worker.worker_id "$worker_id" \
+  --es bke.worker.relay_url "$relay_url" \
+  --es bke.worker.relay_token "$token" >/dev/null
+REMOTE_SH
 }
 
 try_real_tab_kill() {

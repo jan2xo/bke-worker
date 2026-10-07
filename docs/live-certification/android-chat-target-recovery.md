@@ -131,6 +131,11 @@ local secret file, derives a worker-bound token without printing it, transfers
 that token to the debuggable sidecar without writing it to GitHub, and removes
 the temporary app-private token file immediately after configuration.
 
+The relay-token transfer keeps file creation and reads inside the recovery app UID.
+It deliberately avoids compound `adb shell ... sh -c` commands so remote shell
+metacharacter parsing cannot escape the `run-as` boundary; the fixed apply script is
+fed over stdin and the bearer token never appears in the host command line.
+
 Production remains locked.
 
 
