@@ -393,6 +393,7 @@ for token in (
     'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
     'cert_exit_guard',
+    'local sidecar_head="$parent_head"',
     'script exited without final certification result',
     'cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK..."',
     'bke-worker-android-recovery-sidecar',

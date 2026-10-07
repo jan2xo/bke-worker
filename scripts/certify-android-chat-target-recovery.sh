@@ -325,6 +325,7 @@ ensure_worker_label_exists() {
 comment_parent() {
   local title="$1"
   local parent_head="$2"
+  local sidecar_head="$parent_head"
   local apk_sha="$3"
   local actual_kill="$4"
   local uncertain="$5"

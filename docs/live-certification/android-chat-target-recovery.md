@@ -92,6 +92,10 @@ The live device matrix is driven by the repository-owned operator entrypoint:
 bash scripts/certify-android-chat-target-recovery.sh
 ```
 
+The local ledger helper binds the reported sidecar head to that already-verified
+exact parent head, so a blocked live proof can still write a non-empty durable
+checkpoint instead of failing while formatting the comment.
+
 The entrypoint discovers the exact parent head, downloads and verifies the
 stable-signed recovery APK built from that same exact revision, preserves the existing
 `com.bke.worker.gecko` installation, and prompts only at the human ChatGPT
