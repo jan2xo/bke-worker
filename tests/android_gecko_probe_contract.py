@@ -358,7 +358,7 @@ for token in (
     'cleanup_operator_temp_dirs',
     'cert_exit_guard',
     'script exited without final certification result',
-    'cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK...",
+    'cert_stage "artifact-download" "[5/10] Downloading stable-signed recovery APK..."',
     'bke-worker-android-recovery-sidecar',
     'RECOVERY SIDECAR SIGNED',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
