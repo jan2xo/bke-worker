@@ -20,7 +20,7 @@ for token in (
     '--event workflow_dispatch',
     'verify_recovery_run "$run_id" "$parent_head"',
     'gh run view "$run_id" --repo "$REPOSITORY" --json headSha,conclusion,event,jobs',
-    '"Android recovery sidecar stable signed build"',
+    '"Android recovery local contract"',
     '"Required certification"',
     'verify_local_recovery_manifest',
     'verify_local_recovery_apk',
@@ -110,7 +110,7 @@ good_run = {
     "conclusion": "success",
     "event": "workflow_dispatch",
     "jobs": [
-        {"name": "Android recovery sidecar stable signed build", "conclusion": "success"},
+        {"name": "Android recovery local contract", "conclusion": "success"},
         {"name": "Required certification", "conclusion": "success"},
     ],
 }
@@ -140,6 +140,10 @@ gh() {
         printf '%s\n' "$MOCK_RUNS_JSON"
         return 0
     fi
+    if [[ "$1" == "run" && "$2" == "view" ]]; then
+        printf '%s\n' "$MOCK_RUN_JSON"
+        return 0
+    fi
     return 99
 }
 resolved="$(resolve_recovery_run "$2" "$3")"
@@ -147,6 +151,7 @@ resolved="$(resolve_recovery_run "$2" "$3")"
 """
 resolver_env = dict(os.environ)
 resolver_env["MOCK_RUNS_JSON"] = json.dumps(resolver_runs)
+resolver_env["MOCK_RUN_JSON"] = json.dumps(good_run)
 subprocess.run(
     [
         "bash", "-c", resolver_probe, "bke-recovery-run-resolver",
