@@ -122,9 +122,14 @@ that the app UID cannot kill it, the script exercises the fixed onKill callback
 path for diagnostics but reports the matrix as BLOCKED rather than claiming a
 real kill PASS.
 
-The in-flight uncertainty test uses the parent recovery PR and worker ID
-`android-worker-recovery-cert`. The script assigns that temporary worker only for the
-bounded live proof, waits for `CHAT: BUSY`, crashes the content process, requires
+The in-flight uncertainty test uses the parent recovery PR and a fresh
+certification-only worker ID for each ceremony run. The ID includes the exact-head
+prefix plus a run-local suffix, so every retry gets a fresh relay Durable Object and
+cannot inherit an `accepted`/`deferred` wake from an earlier aborted ceremony.
+Before claiming the PR, the script removes only stale labels reserved for prior recovery
+certification workers; any non-certification `bke-worker:*` assignment still fails
+closed. The script assigns the fresh temporary worker only for the bounded live proof,
+waits for `CHAT: BUSY`, crashes the content process, requires
 `BLOCKED_UNCERTAIN_TURN`, waits to prove the state remains blocked, then performs
 an explicit operator reject/recovery before stopping the relay and releasing the
 temporary assignment. An interrupted/ambiguous run fails closed rather than

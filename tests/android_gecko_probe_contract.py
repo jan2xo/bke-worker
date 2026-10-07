@@ -388,7 +388,12 @@ for token in (
     'PRIMARY_PACKAGE="com.bke.worker.gecko"',
     'ANDROID_USER_ID="$("${ADB[@]}" shell am get-current-user',
     '--user "$ANDROID_USER_ID"',
-    'WORKER_ID="android-worker-recovery-cert"',
+    'WORKER_ID=""',
+    'WORKER_LABEL=""',
+    'CERT_WORKER_PREFIX="android-recovery-cert-"',
+    'LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"',
+    'initialize_cert_worker_identity "$parent_head"',
+    'clear_stale_certification_assignments',
     'OPERATOR_TEMP_DIRS=()',
     'CERT_FINAL_RESULT=""',
     'cleanup_operator_temp_dirs',
@@ -419,6 +424,7 @@ for token in (
     'bke.worker.cert.resolve_uncertain_reject',
     'CHAT: BLOCKED_UNCERTAIN_TURN',
     'gh pr edit "$PARENT_PR"',
+    'clear_stale_certification_assignments',
     '--add-label "$WORKER_LABEL"',
     '--remove-label "$WORKER_LABEL"',
     'BKE_WORKER_RELAY_TOKEN_KEY',
@@ -465,6 +471,20 @@ for token in (
     assert token in operator_script, token
 
 assert 'relay_url="${relay_origin/https:\\/\\//wss:\\/\\/}/relay/$WORKER_ID"' not in operator_script
+
+identity_start = operator_script.index("initialize_cert_worker_identity()")
+identity_end = operator_script.index("require_no_worker_assignment()", identity_start)
+identity_block = operator_script[identity_start:identity_end]
+for token in (
+    'WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$"',
+    'WORKER_LABEL="bke-worker:${WORKER_ID}"',
+    '[[ "${#WORKER_ID}" -le 63 ]]',
+    '"$label" == "$LEGACY_CERT_WORKER_LABEL"',
+    '"$label" == "bke-worker:${CERT_WORKER_PREFIX}"*',
+):
+    assert token in identity_block, token
+
+assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
 
 ownership_start = operator_script.index("require_no_worker_assignment()")
 ownership_end = operator_script.index("ensure_worker_label_exists()", ownership_start)

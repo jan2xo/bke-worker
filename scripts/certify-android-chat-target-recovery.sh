@@ -6,8 +6,10 @@ PARENT_PR=52
 SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"
 PRIMARY_PACKAGE="com.bke.worker.gecko"
 SERVICE_CLASS="com.bke.worker.gecko.AndroidGeckoWorkerService"
-WORKER_ID="android-worker-recovery-cert"
-WORKER_LABEL="bke-worker:${WORKER_ID}"
+WORKER_ID=""
+WORKER_LABEL=""
+CERT_WORKER_PREFIX="android-recovery-cert-"
+LEGACY_CERT_WORKER_LABEL="bke-worker:android-worker-recovery-cert"
 BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 SECRET_FILE="${BKE_WORKER_RELAY_SECRET_FILE:-$HOME/.bke-secrets/bke-worker-cloudflare-preproduction.env}"
 TRUSTED_WORKTREE="${BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE:-0}"
@@ -289,6 +291,44 @@ try_real_tab_kill() {
   return 1
 }
 
+initialize_cert_worker_identity() {
+  local parent_head="$1"
+  local short_head epoch
+  short_head="${parent_head:0:8}"
+  epoch="$(date +%s)"
+  WORKER_ID="${CERT_WORKER_PREFIX}${short_head}-${epoch}-$"
+  WORKER_LABEL="bke-worker:${WORKER_ID}"
+
+  [[ "${#WORKER_ID}" -le 63 ]] || fail "certification worker id is too long"
+  case "$WORKER_ID" in
+    ""|*[!a-z0-9-]*)
+      fail "certification worker id is invalid"
+      ;;
+  esac
+}
+
+clear_stale_certification_assignments() {
+  local labels stale
+  labels="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json labels --jq '.labels[].name')"
+  stale="$(
+    printf '%s\n' "$labels" |
+      while IFS= read -r label; do
+        [[ -n "$label" ]] || continue
+        if [[ "$label" == "$LEGACY_CERT_WORKER_LABEL" ||
+              "$label" == "bke-worker:${CERT_WORKER_PREFIX}"* ]]; then
+          printf '%s\n' "$label"
+        fi
+      done
+  )"
+
+  [[ -n "$stale" ]] || return
+  echo "BKE CERT: clearing stale certification-only worker assignment(s) from prior aborted ceremony..."
+  while IFS= read -r label; do
+    [[ -n "$label" ]] || continue
+    gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --remove-label "$label" >/dev/null
+  done <<<"$stale"
+}
+
 require_no_worker_assignment() {
   local worker_matches
   worker_matches="$(
@@ -374,6 +414,7 @@ main() {
   parent_head="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
   current_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   [[ "$parent_head" == "$current_head" ]] || fail "local trusted head is not exact PR #$PARENT_PR head"
+  initialize_cert_worker_identity "$parent_head"
 
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
@@ -486,6 +527,7 @@ main() {
   wait_for_text "RELAY: CONNECTED" 45 "$xml_file" || fail "process recreation did not restore requested relay connection"
 
   cert_stage "uncertain-turn" "[9/10] Running bounded uncertain-turn ownership proof..."
+  clear_stale_certification_assignments
   require_no_worker_assignment
   ensure_worker_label_exists
   gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --add-label "$WORKER_LABEL" >/dev/null
