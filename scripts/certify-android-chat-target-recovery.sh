@@ -12,6 +12,7 @@ CERT_WORKER_PREFIX="rc-"
 BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
 SECRET_FILE="${BKE_WORKER_RELAY_SECRET_FILE:-$HOME/.bke-secrets/bke-worker-cloudflare-preproduction.env}"
 TRUSTED_WORKTREE="${BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE:-0}"
+LOCAL_BUILD_ROOT="${BKE_ANDROID_RECOVERY_LOCAL_OUTPUT_ROOT:-}"
 OPERATOR_TEMP_DIRS=()
 CERT_STAGE="bootstrap"
 CERT_FINAL_RESULT=""
@@ -72,6 +73,30 @@ sha256_file() {
   fi
 }
 
+resolve_android_tool() {
+  local tool="$1"
+  if command -v "$tool" >/dev/null 2>&1; then
+    command -v "$tool"
+    return
+  fi
+
+  local sdk_root candidate
+  for sdk_root in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "$HOME/Library/Android/sdk"; do
+    [[ -n "$sdk_root" && -d "$sdk_root" ]] || continue
+    if [[ "$tool" == "apksigner" ]]; then
+      candidate="$(find "$sdk_root/build-tools" -type f -name apksigner 2>/dev/null | sort | tail -n 1)"
+    else
+      candidate="$(find "$sdk_root/cmdline-tools" -type f -path '*/bin/apkanalyzer' 2>/dev/null | sort | tail -n 1)"
+    fi
+    if [[ -n "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  fail "Android SDK tool not found: $tool"
+}
+
 ensure_github_auth() {
   if gh auth status --hostname github.com >/dev/null 2>&1; then
     return
@@ -95,13 +120,13 @@ ensure_trusted_worktree() {
 
   if [[ "$TRUSTED_WORKTREE" == "1" ]]; then
     [[ "$(git -C "$top" rev-parse HEAD)" == "$remote_head" ]] || fail "trusted worktree is not exact PR #$PARENT_PR head"
-    [[ -z "$(git -C "$top" status --porcelain)" ]] || fail "trusted worktree is dirty"
+    [[ -z "$(git -C "$top" status --porcelain --untracked-files=no)" ]] || fail "trusted worktree has tracked changes"
     return
   fi
 
   git -C "$top" fetch --quiet origin "pull/$PARENT_PR/head"
 
-  if [[ "$(git -C "$top" rev-parse HEAD)" == "$remote_head" && -z "$(git -C "$top" status --porcelain)" ]]; then
+  if [[ "$(git -C "$top" rev-parse HEAD)" == "$remote_head" && -z "$(git -C "$top" status --porcelain --untracked-files=no)" ]]; then
     return
   fi
 
@@ -260,46 +285,80 @@ for name in ("Android recovery sidecar stable signed build", "Required certifica
 PY
 }
 
-verify_recovery_artifact_manifest() {
+verify_local_recovery_manifest() {
   local manifest_file="$1"
   local actual_apk_sha="$2"
   local parent_head="$3"
-  local run_id="$4"
-  python3 - "$manifest_file" "$actual_apk_sha" "$parent_head" "$run_id" <<'PY'
+  python3 - "$manifest_file" "$actual_apk_sha" "$parent_head" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-manifest_path, actual_apk_sha, expected_head, run_id = sys.argv[1:]
+manifest_path, actual_apk_sha, expected_head = sys.argv[1:]
 manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 
 required = {
     "source_sha": expected_head,
-    "workflow_run_id": int(run_id),
+    "build_origin": "local-exact-head",
     "component": "BKE Worker Android Recovery Cert",
     "package_name": "com.bke.worker.gecko.recoverycert",
     "architecture": "arm64-v8a",
     "sha256": actual_apk_sha,
     "signing_authority": "PREPRODUCTION",
-    "certification_state": "recovery-cert-certified",
+    "certification_state": "recovery-cert-local-build",
 }
 for key, expected in required.items():
     if manifest.get(key) != expected:
-        raise SystemExit(f"Recovery artifact provenance mismatch for {key}")
+        raise SystemExit(f"Local recovery provenance mismatch for {key}")
 
 if manifest.get("version_code") != 1:
-    raise SystemExit("Recovery artifact version_code mismatch")
+    raise SystemExit("Local recovery version_code mismatch")
 if not str(manifest.get("version_name", "")).endswith("-recoverycert"):
-    raise SystemExit("Recovery artifact version_name mismatch")
+    raise SystemExit("Local recovery version_name mismatch")
 signer = str(manifest.get("signer_certificate_sha256", "")).lower()
 if not re.fullmatch(r"[0-9a-f]{64}", signer):
-    raise SystemExit("Recovery artifact signer provenance is invalid")
+    raise SystemExit("Local recovery signer provenance is invalid")
 
 print(manifest["source_sha"])
 PY
 }
 
+verify_local_recovery_apk() {
+  local apk="$1"
+  local expected_signer="$2"
+  local apksigner apkanalyzer signer_report signer_sha debuggable package_name version_name version_code
+
+  apksigner="$(resolve_android_tool apksigner)"
+  apkanalyzer="$(resolve_android_tool apkanalyzer)"
+  signer_report="$(mktemp "${TMPDIR:-/tmp}/bke-recovery-signer.XXXXXX.txt")"
+  OPERATOR_TEMP_DIRS+=("$signer_report")
+
+  "$apksigner" verify --verbose --print-certs "$apk" >"$signer_report"
+  signer_sha="$(
+    sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$signer_report" |
+      head -n 1 |
+      tr '[:upper:]' '[:lower:]' |
+      tr -d ':[:space:]'
+  )"
+  expected_signer="$(
+    printf '%s' "$expected_signer" |
+      tr '[:upper:]' '[:lower:]' |
+      tr -d ':[:space:]'
+  )"
+  [[ "$signer_sha" =~ ^[0-9a-f]{64}$ ]] || fail "unable to verify local recovery APK signer"
+  [[ "$signer_sha" == "$expected_signer" ]] || fail "local recovery APK signer does not match certified PREPRODUCTION signer"
+
+  debuggable="$("$apkanalyzer" manifest debuggable "$apk" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  package_name="$("$apkanalyzer" manifest application-id "$apk" | tr -d '[:space:]')"
+  version_name="$("$apkanalyzer" manifest version-name "$apk" | tr -d '[:space:]')"
+  version_code="$("$apkanalyzer" manifest version-code "$apk" | tr -d '[:space:]')"
+
+  [[ "$debuggable" == "true" ]] || fail "local recovery APK is not debuggable"
+  [[ "$package_name" == "$SIDECAR_PACKAGE" ]] || fail "local recovery APK package mismatch: $package_name"
+  [[ "$version_name" == *"-recoverycert" ]] || fail "local recovery APK version name mismatch: $version_name"
+  [[ "$version_code" == "1" ]] || fail "local recovery APK version code mismatch: $version_code"
+}
 load_recovery_proof() {
   local comments_file="$1"
   gh api --paginate --slurp "repos/$REPOSITORY/issues/$PARENT_PR/comments?per_page=100" >"$comments_file"
@@ -316,11 +375,11 @@ for comment in reversed(comments):
         continue
     head = re.search(r"Exact head:\s*`([0-9a-f]{40})`", body)
     run = re.search(r"Android Intent Certification\s*`([0-9]+)`", body)
-    apk = re.search(r"(?:extracted )?APK SHA-256:?\s*`([0-9a-f]{64})`", body, re.I)
-    if head and run and apk:
-        print(head.group(1), run.group(1), apk.group(1).lower())
+    signer = re.search(r"signer certificate SHA-256:?\s*`([0-9a-f]{64})`", body, re.I)
+    if head and run and signer:
+        print(head.group(1), run.group(1), signer.group(1).lower())
         raise SystemExit(0)
-raise SystemExit("No exact-head stable-signed recovery APK checkpoint found on parent PR")
+raise SystemExit("No exact-head stable-signed recovery certification checkpoint found on parent PR")
 PY
 }
 
@@ -493,7 +552,7 @@ main() {
   cert_stage "device" "[3/10] Selecting authorized Android target..."
   select_device
 
-  local temp_dir comments_file proof apk artifact_manifest run_id expected_apk_sha proof_head actual_apk_sha artifact_source_sha xml_file
+  local temp_dir comments_file proof apk artifact_manifest run_id expected_signer proof_head actual_apk_sha artifact_source_sha local_build_dir xml_file
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bke-android-recovery-cert.XXXXXX")"
   comments_file="$temp_dir/comments.json"
   xml_file="$temp_dir/window.xml"
@@ -501,21 +560,30 @@ main() {
 
   cert_stage "sidecar-proof" "[4/10] Resolving certified sidecar proof..."
   proof="$(load_recovery_proof "$comments_file")"
-  read -r proof_head run_id expected_apk_sha <<<"$proof"
+  read -r proof_head run_id expected_signer <<<"$proof"
   [[ "$proof_head" == "$parent_head" ]] || fail "latest stable recovery proof is stale: certified $proof_head, current $parent_head"
   verify_recovery_run "$run_id" "$parent_head" || fail "recovery certification run failed exact-head verification"
 
-  cert_stage "artifact-download" "[5/10] Downloading and verifying stable-signed recovery APK..."
-  gh run download "$run_id" --repo "$REPOSITORY" -n bke-worker-android-recovery-sidecar -D "$temp_dir/artifact" >/dev/null
-  apk="$(find "$temp_dir/artifact" -type f -name '*.apk' -print -quit)"
-  artifact_manifest="$(find "$temp_dir/artifact" -type f -name 'manifest.json' -print -quit)"
-  [[ -n "$apk" ]] || fail "certified sidecar artifact did not contain an APK"
-  [[ -n "$artifact_manifest" ]] || fail "certified sidecar artifact did not contain provenance manifest"
+  cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."
+  if [[ -z "$LOCAL_BUILD_ROOT" ]]; then
+    LOCAL_BUILD_ROOT="$ROOT_DIR/artifacts/android-recovery-local"
+  fi
+  local_build_dir="$LOCAL_BUILD_ROOT/$parent_head"
+  apk="$(find "$local_build_dir" -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+  artifact_manifest="$local_build_dir/manifest.json"
+
+  if [[ -z "$apk" || ! -f "$artifact_manifest" ]]; then
+    echo "BKE CERT: local exact-head recovery build is missing."
+    echo "Run: BKE_ANDROID_RECOVERY_EXPECTED_SHA=$parent_head bash scripts/build-android-recovery-local.sh"
+    fail "local recovery APK is required; remote artifact download is disabled"
+  fi
+
   actual_apk_sha="$(sha256_file "$apk")"
-  [[ "$actual_apk_sha" == "$expected_apk_sha" ]] || fail "sidecar APK SHA mismatch against signed PR checkpoint"
-  artifact_source_sha="$(verify_recovery_artifact_manifest "$artifact_manifest" "$actual_apk_sha" "$parent_head" "$run_id")" ||
-    fail "recovery artifact provenance verification failed"
-  [[ "$artifact_source_sha" == "$parent_head" ]] || fail "recovery artifact source is not exact parent head"
+  artifact_source_sha="$(verify_local_recovery_manifest "$artifact_manifest" "$actual_apk_sha" "$parent_head")" ||
+    fail "local recovery APK provenance verification failed"
+  [[ "$artifact_source_sha" == "$parent_head" ]] || fail "local recovery APK source is not exact parent head"
+  verify_local_recovery_apk "$apk" "$expected_signer"
+  echo "BKE CERT: local APK verified; GitHub artifact download skipped."
 
   cert_stage "sidecar-install" "[6/10] Installing stable-signed recovery sidecar..."
   "${ADB[@]}" shell pm path "$PRIMARY_PACKAGE" >/dev/null 2>&1 || fail "existing $PRIMARY_PACKAGE installation is required to prove side-by-side safety"
