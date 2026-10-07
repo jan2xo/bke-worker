@@ -102,7 +102,10 @@ checkpoint instead of failing while formatting the comment.
 The certification entrypoint discovers the exact parent head and verifies that the required branch-local recovery certification workflow succeeded on that exact revision. It then consumes only a locally built recovery APK from `artifacts/android-recovery-local/<exact-sha>/`; remote GitHub artifact download is deliberately disabled. The local APK is independently checked for exact-head provenance, package identity, debuggable recovery-cert status, and the PREPRODUCTION signer before installation. The existing `com.bke.worker.gecko` installation is preserved, and prompting occurs only at the human ChatGPT authentication boundary.
 
 The recovery APK uses the existing PREPRODUCTION Android signing authority, never the
-production signing key. After the one-time migration from the legacy ephemeral CI debug
+production signing key. The PREPRODUCTION certificate SHA-256 fingerprint is public
+verification metadata pinned in `android-gecko/preproduction-signing-cert.sha256`; CI
+and the local builder both require the produced APK signer to match that same pinned
+fingerprint, while the keystore and passwords remain secret. After the one-time migration from the legacy ephemeral CI debug
 signature, the entrypoint uses `adb install -r` so
 `com.bke.worker.gecko.recoverycert` app data, its Gecko profile, and the
 human-authenticated ChatGPT session survive later certification rebuilds. Uninstall is
@@ -160,8 +163,12 @@ The live ceremony does not trust a PR checkpoint as sufficient proof. Before ins
 
 Crash, content-process kill, NO_COMPOSER, and native-port recovery PASS require a fresh
 monotonic recovery-sequence witness with the expected initiating reason, followed by an
-attached READY ChatGPT surface. An unchanged pre-existing READY surface is not accepted
-as recovery proof. Terminal FAILED is held beyond the readiness timeout and the recovery
+attached READY ChatGPT surface. The controlled `about:crashcontent` injection may surface
+through Gecko as either `SESSION_CRASHED` or `SESSION_KILLED`; either is accepted only
+when the recovery sequence advances after injection and the recovered surface is attached
+and READY. The independent real process-kill proof still requires a fresh
+`SESSION_KILLED` witness. An unchanged pre-existing READY surface is never accepted as
+recovery proof. Terminal FAILED is held beyond the readiness timeout and the recovery
 sequence must remain unchanged before the explicit process restart boundary.
 
 Existing `bke-worker:*` ownership is never removed merely because its label resembles a
