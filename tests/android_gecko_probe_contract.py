@@ -75,6 +75,10 @@ for token in (
     "CHAT_RECOVERY_MAX_ATTEMPTS = 3",
     "CHAT_READY_TIMEOUT_MS = 15_000L",
     "NATIVE_PORT_RECOVERY_TIMEOUT_MS = 10_000L",
+    "nativePortRecoveryGeneration = 0",
+    "val generation = ++nativePortRecoveryGeneration",
+    "generation != nativePortRecoveryGeneration",
+    "nativePortRecoveryGeneration += 1",
     "certificationNativePortLossArmed = false",
     "certificationNativePortLossArmed = true",
     "certificationNativePortLossArmed && certificationHooksAllowed()",
@@ -322,6 +326,11 @@ assert "bearerToken = plaintext.toString(Charsets.UTF_8)" in relay_store
 
 # Chat/browser recovery is bounded and must fail closed on an uncertain in-flight turn.
 assert "while (true)" not in service
+native_recovery_start = service.index("    private fun scheduleNativePortRecovery()")
+native_recovery_end = service.index("    private fun connectRelay()", native_recovery_start)
+native_recovery_block = service[native_recovery_start:native_recovery_end]
+assert "readinessWatchGeneration" not in native_recovery_block
+assert "nativePortRecoveryGeneration" in native_recovery_block
 assert "CHAT_RECOVERY_MAX_ATTEMPTS = 3" in service
 assert "chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS" in service
 assert "previousState != STATE_NO_COMPOSER" in service

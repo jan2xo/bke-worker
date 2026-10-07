@@ -160,6 +160,7 @@ class AndroidGeckoWorkerService : Service() {
     private var chatRecoveryAttempt = 0
     private var chatRecoveryGeneration = 0
     private var readinessWatchGeneration = 0
+    private var nativePortRecoveryGeneration = 0
     private var certificationNativePortLossArmed = false
 
     private val recentDeliveryIds = LinkedHashSet<String>()
@@ -211,6 +212,7 @@ class AndroidGeckoWorkerService : Service() {
             workerPort?.disconnect()
             workerPort = port
             port.setDelegate(portDelegate)
+            nativePortRecoveryGeneration += 1
             readinessWatchGeneration += 1
             scheduleChatReadyTimeout("NATIVE_PORT_CONNECTED")
             maybeDispatchPendingWake()
@@ -314,6 +316,7 @@ class AndroidGeckoWorkerService : Service() {
         relayClient = null
         chatRecoveryGeneration += 1
         readinessWatchGeneration += 1
+        nativePortRecoveryGeneration += 1
         mainHandler.removeCallbacksAndMessages(null)
         workerPort?.disconnect()
         workerPort = null
@@ -452,14 +455,14 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun scheduleNativePortRecovery() {
-        val generation = ++readinessWatchGeneration
+        val generation = ++nativePortRecoveryGeneration
         mainHandler.postDelayed(
             {
                 if (!isRunning) {
                     certificationNativePortLossArmed = false
                     return@postDelayed
                 }
-                if (generation != readinessWatchGeneration) {
+                if (generation != nativePortRecoveryGeneration) {
                     certificationNativePortLossArmed = false
                     return@postDelayed
                 }
@@ -524,6 +527,7 @@ class AndroidGeckoWorkerService : Service() {
 
         workerPort?.disconnect()
         workerPort = null
+        nativePortRecoveryGeneration += 1
         readinessWatchGeneration += 1
 
         if (chatRecoveryAttempt >= CHAT_RECOVERY_MAX_ATTEMPTS) {
