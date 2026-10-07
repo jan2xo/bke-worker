@@ -10,8 +10,11 @@ assert len(pinned_signer) == 64 and all(ch in "0123456789abcdef" for ch in pinne
 
 for token in (
     "android-recovery",
+    "android-recovery-github",
     "android_recovery:",
-    "name: Android recovery sidecar stable signed build",
+    "android_recovery_github:",
+    "name: Android recovery local contract",
+    "name: Android recovery GitHub signed APK build",
     "BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64",
     "BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD",
     "BKE_ANDROID_PREPRODUCTION_KEY_ALIAS",
@@ -38,6 +41,8 @@ for token in (
     "bke-worker-android-recovery-sidecar",
     "ANDROID_RECOVERY_REQUIRED:",
     "ANDROID_RECOVERY_RESULT:",
+    "ANDROID_RECOVERY_GITHUB_REQUIRED:",
+    "ANDROID_RECOVERY_GITHUB_RESULT:",
 ):
     assert token in workflow, token
 
@@ -56,9 +61,31 @@ for token in (
 ):
     assert token in gradle, token
 
-start = workflow.index("  android-recovery:")
+local_start = workflow.index("  android-recovery:")
+github_start = workflow.index("  android-recovery-github:")
 end = workflow.index("  android-preproduction:")
-job = workflow[start:end]
+local_job = workflow[local_start:github_start]
+job = workflow[github_start:end]
+
+for token in (
+    "name: Android recovery local contract",
+    "python3 tests/android_gecko_probe_contract.py",
+    "python3 tests/android_recovery_operator_contract.py",
+    "python3 tests/android_recovery_signing_contract.py",
+    "git diff --check",
+):
+    assert token in local_job, token
+
+for forbidden in (
+    "setup-java",
+    "setup-android",
+    "sdkmanager",
+    "setup-gradle",
+    "assembleRecovery",
+    "upload-artifact",
+    "BKE_ANDROID_PREPRODUCTION_",
+):
+    assert forbidden not in local_job, forbidden
 
 for forbidden in (
     "BKE_ANDROID_SIGNING_KEYSTORE_B64",
