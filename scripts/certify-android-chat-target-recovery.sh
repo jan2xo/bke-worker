@@ -226,7 +226,17 @@ restart_and_require_ready() {
     echo "Human boundary: complete ChatGPT authentication/security checks inside BKE Worker Recovery Cert."
     echo "The script will not type credentials, approve OAuth, answer MFA, or solve CAPTCHA."
     read -r -p "Press Enter after the ChatGPT composer is visibly usable: " _
-    wait_for_text "CHAT: READY" 60 "$xml_file" || fail "ChatGPT did not reach READY after human authentication"
+
+    # The service may have reached terminal FAILED while the human authentication
+    # boundary was open. FAILED is intentionally sticky, so use the existing
+    # explicit operator/process restart boundary after authentication. Gecko
+    # profile state survives the force-stop and no authentication data is automated.
+    "${ADB[@]}" shell am force-stop --user "$ANDROID_USER_ID" "$SIDECAR_PACKAGE"
+    launch_sidecar
+    wait_for_text "BROWSER: ATTACHED" 30 "$xml_file" ||
+      fail "sidecar browser did not reattach after human authentication restart"
+    wait_for_text "CHAT: READY" 60 "$xml_file" ||
+      fail "ChatGPT did not reach READY after human authentication restart"
   fi
 }
 
