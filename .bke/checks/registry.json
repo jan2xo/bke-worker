@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "repo.serial-dispatcher-contract",
+      "depends_on": [],
+      "executor": {
+        "kind": "command",
+        "argv": ["python3", "tests/serial_dispatcher_contract.py"]
+      },
+      "stage": "convergence",
+      "capsule_label": "serial-dispatcher-contract"
+    },
+    {
+      "id": "repo.operator-entrypoint-contract",
+      "depends_on": [],
+      "executor": {
+        "kind": "command",
+        "argv": ["python3", "tests/operator_entrypoint_contract.py"]
+      },
+      "stage": "convergence",
+      "capsule_label": "operator-entrypoint-contract"
+    }
+  ]
+}

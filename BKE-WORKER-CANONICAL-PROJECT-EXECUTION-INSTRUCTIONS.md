@@ -146,6 +146,46 @@ Do not use PR descriptions as chronological logs.
 
 Do not reuse merged/old feature branches for new intents.
 
+### Operator action entrypoints
+
+When a PR requires an owner/operator action on a local machine, cloud account,
+device, browser, or other human-controlled boundary, that PR must include or
+update **one repo-tracked operator entrypoint script** for the action.
+
+The operator-facing contract is:
+
+`bash <repo-tracked-script>`
+
+The operator must not be asked to copy/paste a sequence of setup commands or
+pre-export values that the script can discover or request itself.
+
+The entrypoint must:
+
+- discover reusable non-secret state, repository configuration, URLs, IDs, and
+  prerequisites itself whenever they are derivable;
+- invoke provider CLIs from the repository-owned configuration root that defines
+  the intended environment, never from an incidental operator working directory;
+- prompt **inside the script, at the point of need**, only for information that
+  genuinely requires human input;
+- use human-interactive official login/auth flows when authentication is
+  missing, without automating credentials, OAuth approval, MFA, CAPTCHA, or
+  security challenges;
+- never print secret contents and never persist a secret except directly into an
+  explicitly authorized encrypted secret boundary;
+- isolate execution from dirty/non-main local work when a temporary clean
+  worktree pinned to exact fetched `origin/main` can be established safely;
+- otherwise fail closed on wrong repository/environment, inability to establish
+  trusted code/state, uncertain ownership, or failed post-action verification;
+- perform the bounded action, verify the expected result, and write a safe
+  durable GitHub checkpoint when that checkpoint is part of the intent;
+- preserve production/security locks.
+
+PR bodies must declare whether an operator action is required, the one-command
+entrypoint, and the human-only inputs (if any). If no human-only input is needed,
+the script should run without asking questions.
+
+Detailed convention: `docs/operator-entrypoints.md`.
+
 ## 5. MULTI-WORKER OWNERSHIP REQUIREMENTS
 
 Core rule:
@@ -286,7 +326,11 @@ Unless explicitly authorized:
 - no production browser-profile migration;
 - no force push;
 - no weakening of human-auth boundaries;
-- no raw secret material in GitHub source/history, logs, PR comments, artifacts, or ChatGPT prompts;\n- encrypted GitHub Actions/Environment secrets are an authorized storage boundary only for explicitly owner-authorized PREPRODUCTION Android signing material; production signing remains separately locked.
+- no raw secret material in GitHub source/history, logs, PR comments, artifacts, or ChatGPT prompts;
+- encrypted GitHub Actions/Environment secrets are an authorized storage boundary only for explicitly owner-authorized PREPRODUCTION Android signing material; production signing remains separately locked;
+- encrypted Cloudflare Worker secrets are an authorized storage boundary for the explicitly owner-authorized PREPRODUCTION BKE Worker GitHub App identity/private key used by the bounded dispatcher token broker;
+- GitHub Actions may receive only the short-lived GitHub App installation token minted for the trusted default-branch serial dispatcher; the App private key must never enter GitHub Actions;
+- the GitHub App actuator must remain repository-scoped, minimum-permission, fail-closed, and must not become a parallel task database or planner.
 
 Preproduction certification must not be represented as production deployment.
 

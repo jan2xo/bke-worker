@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPOSITORY="jan2xo/bke-worker"
+WORKFLOW="serial-dispatcher.yml"
+CLOUDFLARE_ENV="preproduction"
+WRANGLER_VERSION="4.147.0"
+BROKER_VARIABLE="BKE_WORKER_GITHUB_APP_BROKER_URL"
+CERTIFICATION_ISSUE=55
+FROZEN_PR=48
+FROZEN_TASKS=(44 45 46)
+TRUSTED_WORKTREE="${BKE_OPERATOR_TRUSTED_WORKTREE:-0}"
+OPERATOR_TEMP_FILES=()
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$ROOT_DIR" ]] || {
+  echo "BKE OPERATOR FAIL-CLOSED: script is not inside a Git worktree" >&2
+  exit 3
+}
+ROOT_DIR="$(cd "$ROOT_DIR" && pwd -P)"
+CLOUDFLARE_DIR="$ROOT_DIR/cloudflare-relay"
+[[ -f "$CLOUDFLARE_DIR/wrangler.toml" ]] || {
+  echo "BKE OPERATOR FAIL-CLOSED: cloudflare-relay/wrangler.toml is missing" >&2
+  exit 3
+}
+cd "$ROOT_DIR"
+
+fail() {
+  echo "BKE OPERATOR FAIL-CLOSED: $*" >&2
+  exit 3
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command missing: $1"
+}
+
+cleanup_operator_temp_files() {
+  local path
+  for path in "${OPERATOR_TEMP_FILES[@]}"; do
+    [[ -n "$path" ]] && rm -f -- "$path"
+  done
+  OPERATOR_TEMP_FILES=()
+}
+
+wrangler() {
+  (
+    cd "$CLOUDFLARE_DIR"
+    npx --yes "wrangler@${WRANGLER_VERSION}" "$@"
+  )
+}
+
+ensure_human_auth() {
+  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    echo "GitHub human authentication is required."
+    gh auth login --hostname github.com --web
+  fi
+  gh auth status --hostname github.com >/dev/null 2>&1 ||
+    fail "GitHub authentication did not complete"
+
+  if ! wrangler whoami >/dev/null 2>&1; then
+    echo "Cloudflare human authentication is required."
+    wrangler login
+  fi
+  wrangler whoami >/dev/null 2>&1 ||
+    fail "Cloudflare authentication did not complete"
+}
+
+ensure_trusted_main_or_isolate() {
+  local top origin local_sha remote_sha api_sha current_branch dirty
+  local tmp_root worktree_dir child_status
+
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$top" ]] || fail "unable to resolve the current Git worktree"
+  top="$(cd "$top" && pwd -P)"
+  [[ "$top" == "$ROOT_DIR" ]] || fail "script root does not match the active Git worktree"
+
+  origin="$(git remote get-url origin 2>/dev/null || true)"
+  [[ "$origin" == *"github.com"* && "$origin" == *"jan2xo/bke-worker"* ]] ||
+    fail "origin is not jan2xo/bke-worker"
+
+  git fetch origin main
+  remote_sha="$(git rev-parse refs/remotes/origin/main)"
+  api_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
+  [[ "$remote_sha" == "$api_sha" ]] ||
+    fail "fetched origin/main does not match GitHub main"
+
+  local_sha="$(git rev-parse HEAD)"
+  current_branch="$(git branch --show-current)"
+  dirty="$(git status --porcelain)"
+
+  if [[ "$TRUSTED_WORKTREE" == "1" ]]; then
+    [[ -z "$dirty" ]] || fail "isolated trusted worktree became dirty"
+    [[ "$local_sha" == "$remote_sha" ]] ||
+      fail "isolated worktree is not exact origin/main"
+    echo "Trusted isolated main: $local_sha"
+    return
+  fi
+
+  if [[ "$current_branch" == "main" && -z "$dirty" && "$local_sha" == "$remote_sha" ]]; then
+    echo "Trusted main: $local_sha"
+    return
+  fi
+
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/bke-worker-operator.XXXXXX")"
+  worktree_dir="$tmp_root/repo"
+
+  echo "Local checkout is not a clean exact main; using an isolated trusted worktree."
+  echo "Your current branch and local changes will not be modified."
+
+  if ! git worktree add --detach "$worktree_dir" "$remote_sha" >/dev/null; then
+    rm -rf "$tmp_root"
+    fail "could not create isolated trusted worktree"
+  fi
+
+  set +e
+  BKE_OPERATOR_TRUSTED_WORKTREE=1     bash "$worktree_dir/scripts/complete-github-app-actuator-preproduction.sh" "$@"
+  child_status=$?
+  set -e
+
+  git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  rm -rf "$tmp_root"
+  exit "$child_status"
+}
+
+secret_names() {
+  wrangler secret list --env "$CLOUDFLARE_ENV"
+}
+
+ensure_actuator_secrets() {
+  local listed app_id pem_path
+
+  listed="$(secret_names)"
+
+  if ! grep -q "BKE_WORKER_GITHUB_APP_ID" <<<"$listed"; then
+    read -r -p "GitHub App ID: " app_id
+    [[ "$app_id" =~ ^[0-9]+$ ]] || fail "GitHub App ID must be numeric"
+    printf '%s' "$app_id" |
+      wrangler secret put BKE_WORKER_GITHUB_APP_ID --env "$CLOUDFLARE_ENV" >/dev/null
+  fi
+
+  listed="$(secret_names)"
+  if ! grep -q "BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM" <<<"$listed"; then
+    read -r -p "GitHub App private-key PEM path: " pem_path
+    pem_path="${pem_path/#\~/$HOME}"
+    [[ -f "$pem_path" ]] || fail "private-key PEM file not found"
+    chmod 600 "$pem_path"
+    cat "$pem_path" |
+      wrangler secret put BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM --env "$CLOUDFLARE_ENV" >/dev/null
+  fi
+}
+
+assert_frozen_queue() {
+  local number blocked worker_labels
+
+  for number in "${FROZEN_TASKS[@]}"; do
+    blocked="$(
+      gh issue view "$number" --repo "$REPOSITORY" --json state,labels \
+        --jq '(.state == "OPEN") and ([.labels[].name] | index("bke-task:blocked") != null)'
+    )"
+    [[ "$blocked" == "true" ]] ||
+      fail "task #$number is not open+blocked; frozen proof is unsafe"
+  done
+
+  worker_labels="$(
+    gh pr view "$FROZEN_PR" --repo "$REPOSITORY" --json state,labels \
+      --jq 'if .state != "OPEN" then -1 else [.labels[].name | select(startswith("bke-worker:"))] | length end'
+  )"
+  [[ "$worker_labels" == "0" ]] ||
+    fail "PR #$FROZEN_PR is not open+unassigned; frozen proof is unsafe"
+}
+
+snapshot_open_prs() {
+  gh pr list --repo "$REPOSITORY" --state open --limit 500 \
+    --json number,headRefName,labels \
+    --jq '.[] | "\(.number)\t\(.headRefName)\t\([.labels[].name] | sort | join(","))"' |
+    LC_ALL=C sort
+}
+
+ensure_broker_variable() {
+  local broker_url="${1:-}"
+  if [[ -z "$broker_url" ]]; then
+    broker_url="$(gh variable get "$BROKER_VARIABLE" --repo "$REPOSITORY" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$broker_url" ]]; then
+    read -r -p "PREPRODUCTION Worker origin (https://...workers.dev): " broker_url
+    [[ "$broker_url" =~ ^https://[^/]+$ ]] ||
+      fail "broker origin must be HTTPS origin only"
+    gh variable set "$BROKER_VARIABLE" --repo "$REPOSITORY" --body "$broker_url"
+  fi
+
+  [[ "$broker_url" =~ ^https://[^/]+$ ]] ||
+    fail "configured broker URL is invalid"
+
+  printf '%s' "$broker_url"
+}
+
+open_human_url() {
+  local url="$1"
+  if command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  if command -v gio >/dev/null 2>&1; then
+    gio open "$url" >/dev/null 2>&1 || true
+    return
+  fi
+  echo "Open in your browser: $url"
+}
+
+request_github_app_permission_repair() {
+  local permission_error="$1"
+
+  echo
+  echo "GitHub human approval is required."
+  echo "Detected: $permission_error"
+  echo
+  echo "In the BKE Worker GitHub App -> Permissions & events -> Repository permissions:"
+  echo "  Contents:      Read and write"
+  echo "  Issues:        Read and write"
+  echo "  Pull requests: Read and write"
+  echo
+  echo "Save the App permission changes, then approve the updated installation permissions if GitHub asks."
+  echo "Opening the two GitHub settings pages now..."
+
+  open_human_url "https://github.com/settings/apps"
+  open_human_url "https://github.com/settings/installations"
+
+  echo
+  read -r -p "After Save + installation approval are complete, press Enter to resume certification: " _
+
+  echo "Resuming from trusted PREPRODUCTION state..."
+  cleanup_operator_temp_files
+  trap - EXIT
+  exec bash "$ROOT_DIR/scripts/complete-github-app-actuator-preproduction.sh"
+}
+
+main() {
+  local deploy_log broker_url endpoint_status before_run_id run_id candidate
+  local proof_log before_heads after_heads before_prs after_prs main_sha
+
+  for cmd in git gh npx curl grep cmp mktemp tee; do
+    require_command "$cmd"
+  done
+
+  echo "BKE WORKER — GITHUB APP ACTUATOR PREPRODUCTION"
+  echo "One command owns discovery, execution, verification, and checkpointing."
+  echo
+
+  ensure_human_auth
+  ensure_trusted_main_or_isolate "$@"
+  ensure_actuator_secrets
+  assert_frozen_queue
+
+  before_heads="$(mktemp)"
+  after_heads="$(mktemp)"
+  before_prs="$(mktemp)"
+  after_prs="$(mktemp)"
+  deploy_log="$(mktemp)"
+  proof_log="$(mktemp)"
+  OPERATOR_TEMP_FILES=(
+    "$before_heads"
+    "$after_heads"
+    "$before_prs"
+    "$after_prs"
+    "$deploy_log"
+    "$proof_log"
+  )
+  trap cleanup_operator_temp_files EXIT
+
+  git ls-remote --heads origin | LC_ALL=C sort >"$before_heads"
+  snapshot_open_prs >"$before_prs"
+
+  echo
+  echo "Deploying Cloudflare PREPRODUCTION..."
+  wrangler deploy --env "$CLOUDFLARE_ENV" 2>&1 | tee "$deploy_log"
+
+  broker_url="$(ensure_broker_variable)"
+  endpoint_status="$(
+    curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+      "${broker_url%/}/github/app/install-token" || true
+  )"
+  [[ "$endpoint_status" == "405" ]] ||
+    fail "broker endpoint did not return expected GET=405 (got $endpoint_status)"
+
+  assert_frozen_queue
+
+  before_run_id="$(
+    gh run list --repo "$REPOSITORY" --workflow "$WORKFLOW" --event workflow_dispatch \
+      --limit 1 --json databaseId --jq '.[0].databaseId // 0'
+  )"
+
+  echo
+  echo "Triggering remote frozen-queue certification..."
+  gh workflow run "$WORKFLOW" --repo "$REPOSITORY" --ref main
+
+  run_id=""
+  for _ in {1..30}; do
+    candidate="$(
+      gh run list --repo "$REPOSITORY" --workflow "$WORKFLOW" --event workflow_dispatch \
+        --limit 1 --json databaseId --jq '.[0].databaseId // 0'
+    )"
+    if [[ "$candidate" != "0" && "$candidate" != "$before_run_id" ]]; then
+      run_id="$candidate"
+      break
+    fi
+    sleep 2
+  done
+  [[ -n "$run_id" ]] || fail "could not identify the new workflow_dispatch run"
+
+  if ! gh run watch "$run_id" --repo "$REPOSITORY" --exit-status; then
+    gh run view "$run_id" --repo "$REPOSITORY" --log-failed >"$proof_log" 2>&1 || true
+    cat "$proof_log"
+
+    if grep -Fq "GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:404" "$proof_log"; then
+      fail "BKE Worker GitHub App is not installed on jan2xo/bke-worker, or the App installation cannot see the repository. Install/repair the custom BKE Worker App installation, then rerun this same script."
+    fi
+    if grep -Fq "GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:401" "$proof_log"; then
+      fail "GitHub rejected the configured App identity. The Cloudflare App ID and private-key PEM do not authenticate as the same GitHub App."
+    fi
+    if grep -Fq "GITHUB_APP_PERMISSION_REQUIRED:" "$proof_log"; then
+      permission_error="$(
+        grep -o 'GITHUB_APP_PERMISSION_REQUIRED:[A-Za-z0-9_=;.-]*' "$proof_log" |
+          tail -n 1
+      )"
+      request_github_app_permission_repair "$permission_error"
+    fi
+    if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:403" "$proof_log"; then
+      fail "BKE Worker GitHub App is installed but GitHub denied the scoped token request. Verify the required repository permissions are approved on the installation."
+    fi
+    if grep -Fq "GITHUB_APP_TOKEN_MINT_FAILED:422" "$proof_log"; then
+      fail "GitHub rejected the scoped installation-token request as invalid. The broker already uses the immutable bke-worker repository ID and validates granted permissions; see the sanitized broker error above."
+    fi
+
+    fail "remote dispatcher proof failed; see the sanitized broker error above (run $run_id)"
+  fi
+
+  gh run view "$run_id" --repo "$REPOSITORY" --log >"$proof_log"
+
+  grep -Fq "BKE GitHub App installation token minted;" "$proof_log" ||
+    fail "run passed without visible App-token mint evidence"
+  grep -Fq '{"reason": "NO_RUNNABLE_TASK", "state": "WAITING"}' "$proof_log" ||
+    fail "run did not prove WAITING / NO_RUNNABLE_TASK"
+
+  git ls-remote --heads origin | LC_ALL=C sort >"$after_heads"
+  snapshot_open_prs >"$after_prs"
+
+  cmp -s "$before_heads" "$after_heads" ||
+    fail "branch refs changed during frozen proof"
+  cmp -s "$before_prs" "$after_prs" ||
+    fail "open PR/label state changed during frozen proof"
+
+  assert_frozen_queue
+
+  main_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
+  gh issue comment "$CERTIFICATION_ISSUE" --repo "$REPOSITORY" --body "$(
+    cat <<EOF
+BKE LOCAL CERTIFICATION F — ONE-COMMAND OPERATOR PROOF PASS
+
+- current main: \`$main_sha\`
+- Serial Master Queue Dispatcher run: \`$run_id\`
+- GitHub Actions OIDC -> Cloudflare PREPRODUCTION broker: PASS
+- BKE GitHub App installation token mint: PASS
+- dispatcher: \`WAITING / NO_RUNNABLE_TASK\`
+- frozen queue preserved: #44/#45/#46 remain blocked
+- PR #48 remains unassigned
+- branch refs unchanged
+- open PR/worker-label snapshot unchanged
+- production remains LOCKED
+
+No secret material is recorded in this checkpoint.
+EOF
+  )"
+
+  echo
+  echo "BKE GITHUB APP ACTUATOR CERTIFICATION: PASS"
+  echo "Run ID: $run_id"
+  echo "State: WAITING / NO_RUNNABLE_TASK"
+  echo "Mutation check: NO branch / PR / worker-assignment change"
+  echo "Production: LOCKED"
+}
+
+main "$@"

@@ -15,6 +15,8 @@ for (const token of [
   '[secrets]',
   '"BKE_WORKER_GITHUB_WEBHOOK_SECRET"',
   '"BKE_WORKER_RELAY_TOKEN_KEY"',
+  '"BKE_WORKER_GITHUB_APP_ID"',
+  '"BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM"',
   '[env.preproduction]',
   '[env.preproduction.secrets]',
 ]) {
@@ -26,6 +28,8 @@ for (const token of [
 for (const forbidden of [
   "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
   "BKE_WORKER_RELAY_TOKEN_KEY =",
+  "BKE_WORKER_GITHUB_APP_ID =",
+  "BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM =",
   "routes =",
   "route =",
   "[[migrations]]",

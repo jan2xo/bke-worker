@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "repo.worker-adoption",
+      "path": ".bke/instructions/worker-adoption.md"
+    }
+  ]
+}
