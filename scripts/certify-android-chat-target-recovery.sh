@@ -377,16 +377,13 @@ REMOTE_SH
 
 try_real_tab_kill() {
   local xml_file="$1"
+  local before_sequence="$2"
   local pid
   pid="$("${ADB[@]}" shell ps -A -o PID,NAME 2>/dev/null | tr -d '\r' | awk -v pkg="$SIDECAR_PACKAGE" '$2 ~ ("^" pkg ":") && tolower($2) ~ /tab/ {print $1; exit}')"
   [[ -n "$pid" ]] || return 1
 
-  if "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" kill -9 "$pid" >/dev/null 2>&1; then
-    wait_for_text "CHAT: RECOVERING" 15 "$xml_file" || true
-    wait_for_text "CHAT: READY" 45 "$xml_file"
-    return
-  fi
-  return 1
+  "${ADB[@]}" shell run-as "$SIDECAR_PACKAGE" kill -9 "$pid" >/dev/null 2>&1 || return 1
+  wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 60 "$xml_file"
 }
 
 initialize_cert_worker_identity() {
@@ -404,29 +401,6 @@ initialize_cert_worker_identity() {
       fail "certification worker id is invalid"
       ;;
   esac
-}
-
-clear_stale_certification_assignments() {
-  local labels stale
-  labels="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json labels --jq '.labels[].name')"
-  stale="$(
-    printf '%s\n' "$labels" |
-      while IFS= read -r label; do
-        [[ -n "$label" ]] || continue
-        if [[ "$label" == "$LEGACY_CERT_WORKER_LABEL" ||
-              "$label" == "bke-worker:${LEGACY_CERT_WORKER_PREFIX}"* ||
-              "$label" == "bke-worker:${CERT_WORKER_PREFIX}"* ]]; then
-          printf '%s\n' "$label"
-        fi
-      done
-  )"
-
-  [[ -n "$stale" ]] || return 0
-  echo "BKE CERT: clearing stale certification-only worker assignment(s) from prior aborted ceremony..."
-  while IFS= read -r label; do
-    [[ -n "$label" ]] || continue
-    gh pr edit "$PARENT_PR" --repo "$REPOSITORY" --remove-label "$label" >/dev/null
-  done <<<"$stale"
 }
 
 require_no_worker_assignment() {
@@ -452,7 +426,7 @@ print("\n".join(matches))
 
   local labels
   labels="$(gh pr view "$PARENT_PR" --repo "$REPOSITORY" --json labels --jq '.labels[].name | select(startswith("bke-worker:"))')"
-  [[ -z "$labels" ]] || fail "PR #$PARENT_PR already has a worker assignment: $labels"
+  [[ -z "$labels" ]] || fail "PR #$PARENT_PR already has a worker assignment; explicitly resolve and release the existing owner before rerunning: $labels"
 }
 
 ensure_worker_label_exists() {
