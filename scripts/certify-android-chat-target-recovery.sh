@@ -16,6 +16,7 @@ LOCAL_BUILD_ROOT="${BKE_ANDROID_RECOVERY_LOCAL_OUTPUT_ROOT:-}"
 LOCAL_SIGNING_DIR="${BKE_ANDROID_RECOVERY_LOCAL_SIGNING_DIR:-$HOME/.bke-secrets/bke-worker-android-recovery-local}"
 LOCAL_CERT_FILE="$LOCAL_SIGNING_DIR/cert.sha256"
 OPERATOR_TEMP_DIRS=()
+ADB_ROOTED_BY_CERT=0
 CERT_STAGE="bootstrap"
 CERT_FINAL_RESULT=""
 
@@ -30,6 +31,14 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command missing: $1"
+}
+
+restore_adb_privilege() {
+  if [[ "${ADB_ROOTED_BY_CERT:-0}" == "1" ]] && declare -p ADB >/dev/null 2>&1; then
+    "${ADB[@]}" unroot >/dev/null 2>&1 || true
+    "${ADB[@]}" wait-for-device >/dev/null 2>&1 || true
+    ADB_ROOTED_BY_CERT=0
+  fi
 }
 
 cleanup_operator_temp_dirs() {
@@ -48,6 +57,7 @@ cert_stage() {
 cert_exit_guard() {
   local rc="$1"
   trap - EXIT
+  restore_adb_privilege
   cleanup_operator_temp_dirs
 
   case "$CERT_FINAL_RESULT" in
@@ -511,7 +521,7 @@ try_activity_manager_tab_kill() {
   main_pid_after="$(read_sidecar_main_pid)"
   if [[ "$main_pid_after" != "$main_pid_before" ]]; then
     echo "BKE CERT: ActivityManager kill changed the main sidecar process; refusing whole-app restart as tab-kill proof." >&2
-    return 1
+    return 2
   fi
 
   after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
@@ -526,17 +536,86 @@ try_activity_manager_tab_kill() {
 
   if [[ "$lost_candidate" -ne 1 ]]; then
     echo "BKE CERT: ActivityManager witness advanced but no pre-existing Gecko tab PID disappeared; refusing causal attribution." >&2
-    return 1
+    return 2
   fi
 
   echo "BKE CERT: Android ActivityManager real package-process kill proved active-session recovery with main process preserved."
   return 0
 }
 
+try_root_emulator_tab_kill() {
+  local xml_file="$1"
+  local before_sequence="$2"
+  local qemu build_type main_pid_before main_pid_after candidates pid observed_sequence after_candidates
+
+  qemu="$("${ADB[@]}" shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r[:space:]')"
+  [[ "$qemu" == "1" ]] || return 1
+  build_type="$("${ADB[@]}" shell getprop ro.build.type 2>/dev/null | tr -d '\r[:space:]')"
+
+  main_pid_before="$(read_sidecar_main_pid)"
+  [[ "$main_pid_before" =~ ^[0-9]+$ ]] || return 1
+  candidates="$(list_gecko_tab_pids)"
+  [[ -n "$candidates" ]] || return 1
+
+  echo "BKE CERT: non-root kill paths did not prove the active tab; attempting emulator-only adb-root kill (build_type=${build_type:-unknown})." >&2
+  if ! "${ADB[@]}" root >/dev/null 2>&1; then
+    return 1
+  fi
+  "${ADB[@]}" wait-for-device >/dev/null 2>&1 || return 1
+  if [[ "$("${ADB[@]}" shell id -u 2>/dev/null | tr -d '\r[:space:]')" != "0" ]]; then
+    return 1
+  fi
+  ADB_ROOTED_BY_CERT=1
+
+  main_pid_after="$(read_sidecar_main_pid)"
+  if [[ "$main_pid_after" != "$main_pid_before" ]]; then
+    echo "BKE CERT: adb-root transition changed the main sidecar process; refusing contaminated tab-kill proof." >&2
+    restore_adb_privilege
+    return 1
+  fi
+
+  candidates="$(list_gecko_tab_pids)"
+  [[ -n "$candidates" ]] || {
+    restore_adb_privilege
+    return 1
+  }
+
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    if ! "${ADB[@]}" shell kill -9 "$pid" >/dev/null 2>&1; then
+      continue
+    fi
+
+    if wait_for_recovery_witness "$before_sequence" "SESSION_KILLED" 45 "$xml_file"; then
+      main_pid_after="$(read_sidecar_main_pid)"
+      after_candidates="$(list_gecko_tab_pids 2>/dev/null || true)"
+      if [[ "$main_pid_after" == "$main_pid_before" ]] && ! grep -Fxq "$pid" <<<"$after_candidates"; then
+        restore_adb_privilege
+        echo "BKE CERT: emulator-root real Gecko tab-process kill proved active-session recovery (pid=$pid)."
+        return 0
+      fi
+
+      echo "BKE CERT: emulator-root witness advanced without preserved main PID + killed candidate; refusing causal attribution." >&2
+      restore_adb_privilege
+      return 1
+    fi
+
+    observed_sequence="$(read_recovery_sequence "$xml_file" 2>/dev/null || true)"
+    if [[ "$observed_sequence" =~ ^[0-9]+$ ]] && (( observed_sequence > before_sequence )); then
+      echo "BKE CERT: emulator-root kill changed recovery sequence without the required SESSION_KILLED READY witness." >&2
+      restore_adb_privilege
+      return 1
+    fi
+  done <<<"$candidates"
+
+  restore_adb_privilege
+  return 1
+}
+
 try_real_tab_kill() {
   local xml_file="$1"
   local before_sequence="$2"
-  local candidates pid observed_sequence
+  local candidates pid observed_sequence am_result
   candidates="$(list_gecko_tab_pids)"
   [[ -n "$candidates" ]] || return 1
 
@@ -562,7 +641,15 @@ try_real_tab_kill() {
 
   candidates="$(list_gecko_tab_pids)"
   [[ -n "$candidates" ]] || return 1
-  try_activity_manager_tab_kill "$xml_file" "$before_sequence" "$candidates"
+
+  if try_activity_manager_tab_kill "$xml_file" "$before_sequence" "$candidates"; then
+    return 0
+  else
+    am_result=$?
+  fi
+  [[ "$am_result" -eq 1 ]] || return 1
+
+  try_root_emulator_tab_kill "$xml_file" "$before_sequence"
 }
 
 initialize_cert_worker_identity() {

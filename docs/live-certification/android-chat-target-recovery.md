@@ -139,11 +139,18 @@ For the content-process kill case, the operator entrypoint first attempts a real
 `:tab`/Tab child-process kill from the recovery app UID. If Android isolates that
 child such that the app UID cannot signal it, the script makes one bounded
 system-mediated attempt through Android ActivityManager's `am kill` package
-operation. That path counts only when the existing monotonic witness advances as
-`SESSION_KILLED`, the recovery sidecar's main PID remains unchanged, and at least
-one Gecko tab PID observed immediately before the command has disappeared. A
-whole-app restart, unchanged READY state, unrelated process churn, or a no-op
-ActivityManager request cannot satisfy the gate. If neither real-kill path proves
+operation. If that also cannot prove the active content process and the selected
+device is an Android emulator, the ceremony may make one final emulator-only
+privileged attempt: it requests `adb root`, verifies the remote shell is actually
+UID 0, kills an observed Gecko tab PID directly, and restores adbd to its prior
+non-root mode afterward. Physical devices never enter this path, and production
+`user` images that refuse `adb root` simply remain BLOCKED.
+
+Every real-kill route counts only when the existing monotonic witness advances as
+`SESSION_KILLED`, the recovery sidecar's main PID remains unchanged, and the
+specific pre-existing Gecko tab PID/process being targeted actually disappears.
+A whole-app restart, unchanged READY state, unrelated process churn, failed root
+transition, or no-op kill cannot satisfy the gate. If no real-kill route proves
 the active session, the script exercises the fixed onKill callback only for
 diagnostics and reports the matrix as BLOCKED rather than claiming a real-kill
 PASS.

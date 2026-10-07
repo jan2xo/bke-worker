@@ -51,6 +51,15 @@ for token in (
     'ActivityManager real package-process kill proved active-session recovery',
     'refusing whole-app restart as tab-kill proof',
     'refusing causal attribution',
+    'ADB_ROOTED_BY_CERT=0',
+    'restore_adb_privilege',
+    'getprop ro.kernel.qemu',
+    'getprop ro.build.type',
+    '"${ADB[@]}" root',
+    '"${ADB[@]}" shell id -u',
+    '"${ADB[@]}" shell kill -9 "$pid"',
+    'emulator-root real Gecko tab-process kill proved active-session recovery',
+    'refusing contaminated tab-kill proof',
 ):
     assert token in operator_script, token
 
@@ -315,6 +324,107 @@ bad = subprocess.run(
     ["bash", "-c", activity_manager_kill_probe, "bke-recovery-am-kill-restart-reject", str(operator_script_path), "1"],
 )
 assert bad.returncode != 0
+
+root_kill_probe = r"""
+set -euo pipefail
+source "$1"
+ADB=(adb_mock)
+ROOTED=0
+KILLED_PID=""
+MAIN_CHANGED="${2:-0}"
+
+adb_mock() {
+    if [[ "$1" == "root" ]]; then
+        ROOTED=1
+        return 0
+    fi
+    if [[ "$1" == "unroot" ]]; then
+        ROOTED=0
+        return 0
+    fi
+    if [[ "$1" == "wait-for-device" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "getprop" && "$3" == "ro.kernel.qemu" ]]; then
+        printf '1\n'
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "getprop" && "$3" == "ro.build.type" ]]; then
+        printf 'userdebug\n'
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "id" && "$3" == "-u" ]]; then
+        if [[ "$ROOTED" == "1" ]]; then printf '0\n'; else printf '2000\n'; fi
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "ps" ]]; then
+        if [[ -z "$KILLED_PID" ]]; then
+            printf '%s\n'               "PID NAME"               "100 com.bke.worker.gecko.recoverycert"               "200 com.bke.worker.gecko.recoverycert:tab0"
+        else
+            if [[ "$MAIN_CHANGED" == "1" ]]; then main_pid=101; else main_pid=100; fi
+            printf '%s\n'               "PID NAME"               "$main_pid com.bke.worker.gecko.recoverycert"               "201 com.bke.worker.gecko.recoverycert:tab1"
+        fi
+        return 0
+    fi
+    if [[ "$1" == "shell" && "$2" == "kill" && "$3" == "-9" ]]; then
+        [[ "$ROOTED" == "1" ]] || return 1
+        KILLED_PID="$4"
+        return 0
+    fi
+    return 99
+}
+
+wait_for_recovery_witness() {
+    [[ -n "$KILLED_PID" ]]
+}
+
+read_recovery_sequence() {
+    printf '7\n'
+}
+
+try_root_emulator_tab_kill /tmp/unused 7
+[[ "$ROOTED" == "0" ]]
+"""
+
+subprocess.run(
+    ["bash", "-c", root_kill_probe, "bke-recovery-root-kill-proof", str(operator_script_path), "0"],
+    check=True,
+)
+
+bad = subprocess.run(
+    ["bash", "-c", root_kill_probe, "bke-recovery-root-kill-main-restart-reject", str(operator_script_path), "1"],
+)
+assert bad.returncode != 0
+
+physical_device_probe = r"""
+set -euo pipefail
+source "$1"
+ADB=(adb_mock)
+ROOT_CALLED=0
+
+adb_mock() {
+    if [[ "$1" == "shell" && "$2" == "getprop" && "$3" == "ro.kernel.qemu" ]]; then
+        printf '0\n'
+        return 0
+    fi
+    if [[ "$1" == "root" ]]; then
+        ROOT_CALLED=1
+        return 0
+    fi
+    return 99
+}
+
+set +e
+try_root_emulator_tab_kill /tmp/unused 7
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]]
+[[ "$ROOT_CALLED" == "0" ]]
+"""
+subprocess.run(
+    ["bash", "-c", physical_device_probe, "bke-recovery-root-kill-physical-reject", str(operator_script_path)],
+    check=True,
+)
 
 with tempfile.TemporaryDirectory() as td:
     removal_marker = Path(td) / "removed"
