@@ -398,8 +398,9 @@ for token in (
     'initialize_cert_worker_identity "$parent_head"',
     'explicitly resolve and release the existing owner before rerunning',
     'verify_recovery_run "$run_id" "$parent_head"',
-    'verify_recovery_artifact_manifest',
-    'workflow_run_id',
+    'verify_local_recovery_manifest',
+    'verify_local_recovery_apk',
+    'expected_signer',
     'package_name',
     'wait_for_recovery_witness',
     'SESSION_CRASHED',
@@ -415,12 +416,14 @@ for token in (
     'local sidecar_head="$3"',
     'Sidecar certification run:',
     'script exited without final certification result',
-    'cert_stage "artifact-download" "[5/10] Downloading and verifying stable-signed recovery APK..."',
+    'cert_stage "local-apk" "[5/10] Verifying local exact-head recovery APK..."',
     'bke-worker-android-recovery-sidecar',
     'RECOVERY SIDECAR SIGNED',
     'BKE_ANDROID_RECOVERY_TRUSTED_WORKTREE=1',
     'worktree add --quiet --detach',
-    'gh run download "$run_id"',
+    'bash scripts/build-android-recovery-local.sh',
+    'remote artifact download is disabled',
+    'android-recovery-local',
     'install -r',
     '[[ "$SIDECAR_PACKAGE" == "com.bke.worker.gecko.recoverycert" ]]',
     'INSTALL_FAILED_UPDATE_INCOMPATIBLE',
@@ -500,6 +503,8 @@ for token in (
 
 assert "clear_stale_certification_assignments" not in operator_script
 assert 'WORKER_ID="android-worker-recovery-cert"' not in operator_script
+assert 'gh run download "$run_id"' not in operator_script
+assert 'status --porcelain --untracked-files=no' in operator_script
 
 subprocess.run(
     [
