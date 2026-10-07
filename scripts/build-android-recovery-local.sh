@@ -2,11 +2,14 @@
 set -euo pipefail
 
 SIDECAR_PACKAGE="com.bke.worker.gecko.recoverycert"
-SIGNING_ENV_FILE="${BKE_ANDROID_PREPRODUCTION_ENV_FILE:-$HOME/.bke-secrets/bke-worker-android-preproduction.env}"
 OUTPUT_ROOT="${BKE_ANDROID_RECOVERY_LOCAL_OUTPUT_ROOT:-}"
 EXPECTED_SHA="${BKE_ANDROID_RECOVERY_EXPECTED_SHA:-}"
 OFFLINE="${BKE_ANDROID_GRADLE_OFFLINE:-1}"
-TEMP_KEYSTORE=""
+LOCAL_SIGNING_DIR="${BKE_ANDROID_RECOVERY_LOCAL_SIGNING_DIR:-$HOME/.bke-secrets/bke-worker-android-recovery-local}"
+LOCAL_KEYSTORE="$LOCAL_SIGNING_DIR/recovery-local.p12"
+LOCAL_ENV_FILE="$LOCAL_SIGNING_DIR/signing.env"
+LOCAL_CERT_FILE="$LOCAL_SIGNING_DIR/cert.sha256"
+LOCAL_KEY_ALIAS="bke-worker-recovery-local"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null || true)"
@@ -15,13 +18,6 @@ fail() {
   echo "BKE ANDROID LOCAL RECOVERY BUILD: FAIL-CLOSED — $*" >&2
   exit 1
 }
-
-cleanup() {
-  if [[ -n "$TEMP_KEYSTORE" ]]; then
-    rm -f -- "$TEMP_KEYSTORE"
-  fi
-}
-trap cleanup EXIT
 
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
@@ -64,38 +60,71 @@ require_clean_tracked_source() {
     fail "tracked source has staged changes; commit/pull before building"
 }
 
-load_signing_environment() {
-  if [[ -f "$SIGNING_ENV_FILE" ]]; then
-    chmod 600 "$SIGNING_ENV_FILE" 2>/dev/null || true
-    set -a
-    # shellcheck disable=SC1090
-    source "$SIGNING_ENV_FILE"
-    set +a
+ensure_local_signing_identity() {
+  command -v keytool >/dev/null 2>&1 ||
+    fail "keytool is required to create the local recovery certification signer"
+  command -v python3 >/dev/null 2>&1 ||
+    fail "python3 is required to create the local recovery certification signer"
+
+  mkdir -p "$LOCAL_SIGNING_DIR"
+  chmod 700 "$LOCAL_SIGNING_DIR" 2>/dev/null || true
+
+  if [[ ! -f "$LOCAL_KEYSTORE" || ! -f "$LOCAL_ENV_FILE" ]]; then
+    local password
+    password="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(36))
+PY
+)"
+    [[ -n "$password" ]] || fail "unable to generate local recovery signing password"
+
+    umask 077
+    cat >"$LOCAL_ENV_FILE" <<EOF_LOCAL_SIGNING
+BKE_ANDROID_RECOVERY_STORE_PASSWORD=$password
+BKE_ANDROID_RECOVERY_KEY_ALIAS=$LOCAL_KEY_ALIAS
+BKE_ANDROID_RECOVERY_KEY_PASSWORD=$password
+EOF_LOCAL_SIGNING
+
+    keytool -genkeypair       -keystore "$LOCAL_KEYSTORE"       -storetype PKCS12       -storepass "$password"       -keypass "$password"       -alias "$LOCAL_KEY_ALIAS"       -keyalg RSA       -keysize 3072       -validity 3650       -dname "CN=BKE Worker Local Recovery Certification, OU=Recovery Certification, O=BKE, C=PH"       -noprompt >/dev/null 2>&1 ||
+      fail "unable to create local recovery certification keystore"
+
+    echo "BKE LOCAL BUILD: created stable local recovery certification signer."
   fi
 
-  [[ -n "${BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD:-}" ]] ||
-    fail "missing BKE_ANDROID_PREPRODUCTION_STORE_PASSWORD"
-  [[ -n "${BKE_ANDROID_PREPRODUCTION_KEY_ALIAS:-}" ]] ||
-    fail "missing BKE_ANDROID_PREPRODUCTION_KEY_ALIAS"
-  [[ -n "${BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD:-}" ]] ||
-    fail "missing BKE_ANDROID_PREPRODUCTION_KEY_PASSWORD"
-  if [[ -n "${BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH:-}" ]]; then
-    [[ -f "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH" ]] ||
-      fail "BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH does not exist"
-    return
-  fi
+  chmod 600 "$LOCAL_KEYSTORE" "$LOCAL_ENV_FILE" 2>/dev/null || true
 
-  [[ -n "${BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64:-}" ]] ||
-    fail "provide BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH or BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64"
+  set -a
+  # shellcheck disable=SC1090
+  source "$LOCAL_ENV_FILE"
+  set +a
 
-  umask 077
-  TEMP_KEYSTORE="$(mktemp "${TMPDIR:-/tmp}/bke-recovery-preproduction.XXXXXX.jks")"
-  if base64 --decode </dev/null >/dev/null 2>&1; then
-    printf '%s' "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64" | base64 --decode >"$TEMP_KEYSTORE"
+  [[ -n "${BKE_ANDROID_RECOVERY_STORE_PASSWORD:-}" ]] ||
+    fail "local recovery signing password is unavailable"
+  [[ -n "${BKE_ANDROID_RECOVERY_KEY_ALIAS:-}" ]] ||
+    fail "local recovery signing alias is unavailable"
+  [[ -n "${BKE_ANDROID_RECOVERY_KEY_PASSWORD:-}" ]] ||
+    fail "local recovery key password is unavailable"
+
+  export BKE_ANDROID_RECOVERY_KEYSTORE_PATH="$LOCAL_KEYSTORE"
+
+  local fingerprint
+  fingerprint="$(
+    keytool -J-Duser.language=en -list -v       -keystore "$LOCAL_KEYSTORE"       -storepass "$BKE_ANDROID_RECOVERY_STORE_PASSWORD"       -alias "$BKE_ANDROID_RECOVERY_KEY_ALIAS" 2>/dev/null |
+      awk -F': ' '/SHA256:/ {print tolower($2); exit}' |
+      tr -d ':[:space:]'
+  )"
+  [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] ||
+    fail "unable to derive local recovery signer fingerprint"
+
+  if [[ -f "$LOCAL_CERT_FILE" ]]; then
+    local trusted
+    trusted="$(tr '[:upper:]' '[:lower:]' <"$LOCAL_CERT_FILE" | tr -d ':[:space:]')"
+    [[ "$trusted" == "$fingerprint" ]] ||
+      fail "local recovery signer fingerprint changed unexpectedly"
   else
-    printf '%s' "$BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64" | base64 -D >"$TEMP_KEYSTORE"
+    printf '%s\n' "$fingerprint" >"$LOCAL_CERT_FILE"
+    chmod 600 "$LOCAL_CERT_FILE" 2>/dev/null || true
   fi
-  export BKE_ANDROID_PREPRODUCTION_KEYSTORE_PATH="$TEMP_KEYSTORE"
 }
 
 select_gradle() {
@@ -127,7 +156,7 @@ main() {
     OUTPUT_ROOT="$ROOT_DIR/artifacts/android-recovery-local"
   fi
 
-  load_signing_environment
+  ensure_local_signing_identity
   select_gradle
 
   local gradle_args
@@ -169,23 +198,12 @@ main() {
       tr -d ':[:space:]'
   )"
   expected_signer="$(
-    tr '[:upper:]' '[:lower:]' < "$ROOT_DIR/android-gecko/preproduction-signing-cert.sha256" |
+    tr '[:upper:]' '[:lower:]' < "$LOCAL_CERT_FILE" |
       tr -d ':[:space:]'
   )"
-  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "repo-pinned PREPRODUCTION signer fingerprint is invalid"
+  [[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || fail "local recovery signer trust fingerprint is invalid"
   [[ "$signer_sha" =~ ^[0-9a-f]{64}$ ]] || fail "unable to verify recovery APK signer"
-  [[ "$signer_sha" == "$expected_signer" ]] || fail "recovery APK signer is not repo-pinned PREPRODUCTION authority"
-
-  if [[ -n "${BKE_ANDROID_PREPRODUCTION_CERT_SHA256:-}" ]]; then
-    local environment_signer
-    environment_signer="$(
-      printf '%s' "$BKE_ANDROID_PREPRODUCTION_CERT_SHA256" |
-        tr '[:upper:]' '[:lower:]' |
-        tr -d ':[:space:]'
-    )"
-    [[ "$environment_signer" == "$expected_signer" ]] ||
-      fail "local PREPRODUCTION signer metadata conflicts with repo-pinned fingerprint"
-  fi
+  [[ "$signer_sha" == "$expected_signer" ]] || fail "recovery APK signer does not match the stable local certification signer"
 
   debuggable="$("$apkanalyzer" manifest debuggable "$apk" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   package_name="$("$apkanalyzer" manifest application-id "$apk" | tr -d '[:space:]')"
@@ -227,7 +245,7 @@ manifest = {
     "version_code": int(os.environ["VERSION_CODE"]),
     "sha256": os.environ["APK_SHA256"],
     "signer_certificate_sha256": os.environ["SIGNER_SHA256"],
-    "signing_authority": "PREPRODUCTION",
+    "signing_authority": "LOCAL_CERTIFICATION",
     "certification_state": "recovery-cert-local-build",
     "apk_file": Path(os.environ["OUTPUT_APK"]).name,
 }
@@ -241,7 +259,7 @@ PY
   echo "Source: $source_sha"
   echo "APK: $output_apk"
   echo "APK SHA-256: $apk_sha"
-  echo "Signer: PREPRODUCTION / $signer_sha"
+  echo "Signer: LOCAL_CERTIFICATION / $signer_sha"
   echo "Network artifact download: NONE"
 }
 
