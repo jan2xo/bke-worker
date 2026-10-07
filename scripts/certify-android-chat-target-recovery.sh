@@ -205,6 +205,103 @@ restart_and_require_ready() {
   fi
 }
 
+read_recovery_sequence() {
+  local xml_file="$1"
+  local snapshot seq
+  snapshot="$(ui_text "$xml_file")" || return 1
+  seq="$(awk -F': ' '/^RECOVERY SEQ: [0-9]+$/ {print $2; exit}' <<<"$snapshot")"
+  [[ "$seq" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$seq"
+}
+
+wait_for_recovery_witness() {
+  local before_sequence="$1"
+  local expected_reason="$2"
+  local timeout_seconds="$3"
+  local xml_file="$4"
+  local started snapshot sequence
+  started="$(date +%s)"
+  while (( $(date +%s) - started < timeout_seconds )); do
+    snapshot="$(ui_text "$xml_file" 2>/dev/null || true)"
+    sequence="$(awk -F': ' '/^RECOVERY SEQ: [0-9]+$/ {print $2; exit}' <<<"$snapshot")"
+    if [[ "$sequence" =~ ^[0-9]+$ ]] &&
+       (( sequence > before_sequence )) &&
+       grep -Fxq "LAST RECOVERY: $expected_reason" <<<"$snapshot" &&
+       grep -Fxq "BROWSER: ATTACHED" <<<"$snapshot" &&
+       grep -Fxq "CHAT: READY" <<<"$snapshot"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+verify_recovery_run() {
+  local run_id="$1"
+  local parent_head="$2"
+  local run_json
+  run_json="$(gh run view "$run_id" --repo "$REPOSITORY" --json headSha,conclusion,event,jobs)"
+  RUN_JSON="$run_json" python3 - "$parent_head" <<'PY'
+import json
+import os
+import sys
+
+expected_head = sys.argv[1]
+run = json.loads(os.environ["RUN_JSON"])
+if run.get("headSha") != expected_head:
+    raise SystemExit("Recovery certification run head does not match exact parent head")
+if run.get("conclusion") != "success":
+    raise SystemExit("Recovery certification run is not successful")
+if run.get("event") != "workflow_dispatch":
+    raise SystemExit("Recovery certification run was not an explicit workflow_dispatch")
+
+jobs = {job.get("name"): job.get("conclusion") for job in run.get("jobs", [])}
+for name in ("Android recovery sidecar stable signed build", "Required certification"):
+    if jobs.get(name) != "success":
+        raise SystemExit(f"Required recovery certification job did not pass: {name}")
+PY
+}
+
+verify_recovery_artifact_manifest() {
+  local manifest_file="$1"
+  local actual_apk_sha="$2"
+  local parent_head="$3"
+  local run_id="$4"
+  python3 - "$manifest_file" "$actual_apk_sha" "$parent_head" "$run_id" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest_path, actual_apk_sha, expected_head, run_id = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+required = {
+    "source_sha": expected_head,
+    "workflow_run_id": int(run_id),
+    "component": "BKE Worker Android Recovery Cert",
+    "package_name": "com.bke.worker.gecko.recoverycert",
+    "architecture": "arm64-v8a",
+    "sha256": actual_apk_sha,
+    "signing_authority": "PREPRODUCTION",
+    "certification_state": "recovery-cert-certified",
+}
+for key, expected in required.items():
+    if manifest.get(key) != expected:
+        raise SystemExit(f"Recovery artifact provenance mismatch for {key}")
+
+if manifest.get("version_code") != 1:
+    raise SystemExit("Recovery artifact version_code mismatch")
+if not str(manifest.get("version_name", "")).endswith("-recoverycert"):
+    raise SystemExit("Recovery artifact version_name mismatch")
+signer = str(manifest.get("signer_certificate_sha256", "")).lower()
+if not re.fullmatch(r"[0-9a-f]{64}", signer):
+    raise SystemExit("Recovery artifact signer provenance is invalid")
+
+print(manifest["source_sha"])
+PY
+}
+
 load_recovery_proof() {
   local comments_file="$1"
   gh api --paginate --slurp "repos/$REPOSITORY/issues/$PARENT_PR/comments?per_page=100" >"$comments_file"
