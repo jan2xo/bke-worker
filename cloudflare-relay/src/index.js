@@ -5,6 +5,7 @@ import {
 } from "./github-app.js";
 import {
   CONTROL_REPOSITORY,
+  normalizeRecoveryAssignments,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
   isValidWorkerId,
@@ -205,33 +206,34 @@ async function recoverAssignedPullRequests(env, workerId) {
       },
     },
   );
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !Array.isArray(payload)) {
+  const issuePayload = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(issuePayload)) {
     throw new Error(`GITHUB_ASSIGNMENT_RECOVERY_FAILED:${response.status}`);
   }
 
-  const assignments = payload
-    .filter((item) => item && item.pull_request && item.state === "open")
-    .map((item) => ({
-      number: Number(item.number),
-      headRef: typeof item.pull_request?.head?.ref === "string"
-        ? item.pull_request.head.ref
-        : "",
-      headSha: typeof item.pull_request?.head?.sha === "string"
-        ? item.pull_request.head.sha
-        : "",
-      labels: Array.isArray(item.labels)
-        ? item.labels.map((labelItem) => String(labelItem?.name || ""))
-        : [],
-    }))
-    .filter((item) =>
-      item.number > 0 &&
-      item.headRef &&
-      /^[0-9a-f]{40}$/.test(item.headSha) &&
-      item.labels.some((name) => name.toLowerCase() === `bke-worker:${workerId}`.toLowerCase())
-    );
+  const candidateNumbers = issuePayload
+    .filter((item) => item?.pull_request && item.state === "open")
+    .map((item) => Number(item.number))
+    .filter((number) => Number.isInteger(number) && number > 0);
 
-  return assignments;
+  const pullRequests = [];
+  for (const number of candidateNumbers) {
+    const pullResponse = await fetch(
+      `https://api.github.com/repos/${CONTROL_REPOSITORY}/pulls/${number}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${minted.token}`,
+          "user-agent": "bke-worker-relay",
+          "x-github-api-version": "2026-03-10",
+        },
+      },
+    );
+    const pullPayload = await pullResponse.json().catch(() => null);
+    if (pullResponse.ok && pullPayload) pullRequests.push(pullPayload);
+  }
+
+  return normalizeRecoveryAssignments(issuePayload, pullRequests, workerId);
 }
 
 async function handleRelayRecovery(request, env, workerId) {
@@ -397,6 +399,7 @@ export class WorkerSession extends DurableObject {
     const crossPrRecovery = active &&
       active.wake.pr_number !== wake.pr_number &&
       wake.reason === "github_pull_request_cross_pr_recovery";
+    const continuationWake = wake.reason === "github_pull_request_continuation";
     if (active && active.wake.pr_number !== wake.pr_number && !crossPrRecovery) {
       return json(
         {
@@ -435,6 +438,23 @@ export class WorkerSession extends DurableObject {
       wake.reason === "github_pull_request_labeled";
     const supersedesAmbiguousWake =
       supersedesStaleHead || explicitReassignmentRecovery;
+
+    if (continuationWake) {
+      if (active && active.wake.pr_number !== wake.pr_number) {
+        return json({
+          error: "CONTINUATION_PR_MISMATCH",
+          active_pr: active.wake.pr_number,
+          incoming_pr: wake.pr_number,
+        }, 409);
+      }
+      if (active && active.phase !== "queued") {
+        return json({
+          state: "continuation_blocked_uncertain",
+          delivery_id: wake.delivery_id,
+          active_delivery_id: active.wake.delivery_id,
+        }, 202);
+      }
+    }
 
     if (crossPrRecovery) {
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
