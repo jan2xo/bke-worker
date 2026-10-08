@@ -397,6 +397,60 @@ try {
     state: "completed",
   }));
 
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // Re-applying the worker assignment label is an explicit same-head recovery signal.
+  const ambiguous = await postWebhook({
+    deliveryId: "cloudflare-smoke-006",
+    action: "opened",
+    sha: "dddddddddddddddddddddddddddddddddddddddd",
+  });
+  assert.equal(ambiguous.status, 202);
+
+  const wake6 = JSON.parse(await ws.nextText());
+  assert.equal(wake6.delivery_id, "cloudflare-smoke-006");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake6.delivery_id,
+    state: "accepted",
+  }));
+
+  const recovered = await postWebhook({
+    deliveryId: "cloudflare-smoke-007",
+    action: "labeled",
+    sha: "dddddddddddddddddddddddddddddddddddddddd",
+  });
+  assert.equal(recovered.status, 202);
+  assert.equal(recovered.body.relay.state, "recovered_sent");
+  assert.equal(
+    recovered.body.relay.superseded_delivery_id,
+    "cloudflare-smoke-006",
+  );
+
+  const wake7 = JSON.parse(await ws.nextText());
+  assert.equal(wake7.delivery_id, "cloudflare-smoke-007");
+  assert.equal(wake7.expected_head_sha, "dddddddddddddddddddddddddddddddddddddddd");
+
+  // The late ACK from the explicitly recovered delivery is harmless.
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake6.delivery_id,
+    state: "completed",
+  }));
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake7.delivery_id,
+    state: "completed",
+  }));
+
   console.log("BKE Worker Cloudflare local runtime smoke: PASS");
 } finally {
   ws.close();
