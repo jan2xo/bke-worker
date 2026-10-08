@@ -275,7 +275,6 @@ for token in (
     "RelayProtocol.register",
     "RelayProtocol.ack",
     "parseRecovery(",
-    "github_pull_request_reconnect_recovery",
     "requestRecovery()",
     'header("Authorization", "Bearer " + config.bearerToken)',
     "scheduleReconnect",
