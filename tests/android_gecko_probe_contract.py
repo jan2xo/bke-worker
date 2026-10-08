@@ -119,7 +119,7 @@ assert "WakeLock" not in service
 assert "activeWakeUncertain = true" in service
 assert "workerState = STATE_BLOCKED_CONFLICT" in service
 assert "workerState = STATE_WAITING_FOR_ASSIGNMENT" in service
-assert "recovery.activePhase != "queued"" in service
+assert 'recovery.activePhase != "queued"' in service
 assert '.header("Authorization", "Bearer " + config.bearerToken)' in relay_client
 assert "GeckoRuntime.create(context.applicationContext)" in runtime
 
