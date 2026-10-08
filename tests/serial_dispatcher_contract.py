@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +125,88 @@ class RecordingLabelApi(dispatcher.GitHubApi):
 
 
 class SerialDispatcherTests(unittest.TestCase):
+    def test_execution_checklist_is_machine_recognizable(self):
+        body = """## BKE TASK CHECKLIST
+- [ ] **A1 — Authoritative assignment discovery.**
+- [x] **A2 — Zero / one / multiple assignment proof.**
+## Certification
+"""
+        entries = dispatcher.extract_execution_checklist(body)
+        self.assertEqual(entries[0][0], "A1")
+        self.assertFalse(entries[0][2])
+        self.assertEqual(entries[1][0], "A2")
+        self.assertTrue(entries[1][2])
+
+    def test_execution_checklist_requires_stable_items(self):
+        with self.assertRaisesRegex(dispatcher.DispatchError, "TASK_PR_CHECKLIST_MISSING"):
+            dispatcher.require_execution_checklist("## Task contract\nNo checklist")
+
+    def test_execution_checklist_rejects_duplicate_ids(self):
+        with self.assertRaisesRegex(dispatcher.DispatchError, "DUPLICATE_TASK_CHECKLIST_ITEM:A1"):
+            dispatcher.extract_execution_checklist(
+                "## BKE TASK CHECKLIST\n- [ ] **A1 — one**\n- [ ] **A1 — duplicate**"
+            )
+
+    def test_progress_lease_requires_unresolved_safe_work(self):
+        checklist = [("A1", "assignment", False), ("A2", "proof", True)]
+        now = datetime.now(timezone.utc)
+        self.assertFalse(
+            dispatcher.continuation_should_resume(
+                now=now,
+                head_sha="a" * 40,
+                checklist=checklist,
+                progress_at=now - timedelta(minutes=29),
+                active_certification=False,
+                terminal_or_blocked=False,
+                relay_uncertain=False,
+            )
+        )
+        self.assertTrue(
+            dispatcher.continuation_should_resume(
+                now=now,
+                head_sha="a" * 40,
+                checklist=checklist,
+                progress_at=now - timedelta(minutes=30),
+                active_certification=False,
+                terminal_or_blocked=False,
+                relay_uncertain=False,
+            )
+        )
+        for blocked in (True,):
+            self.assertFalse(
+                dispatcher.continuation_should_resume(
+                    now=now,
+                    head_sha="a" * 40,
+                    checklist=checklist,
+                    progress_at=now - timedelta(minutes=31),
+                    active_certification=False,
+                    terminal_or_blocked=blocked,
+                    relay_uncertain=False,
+                )
+            )
+
+    def test_continuation_generation_changes_only_on_meaningful_progress(self):
+        checklist = [("A1", "assignment", False)]
+        first = dispatcher.continuation_generation("a" * 40, checklist, "1")
+        same = dispatcher.continuation_generation("a" * 40, checklist, "1")
+        head_progress = dispatcher.continuation_generation("b" * 40, checklist, "1")
+        checkpoint_progress = dispatcher.continuation_generation("a" * 40, checklist, "2")
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, head_progress)
+        self.assertNotEqual(first, checkpoint_progress)
+
+    def test_continuation_marker_is_bounded_metadata(self):
+        marker = dispatcher.continuation_marker(
+            "android-worker-a",
+            82,
+            "a" * 40,
+            "0123456789abcdef01234567",
+        )
+        self.assertIn("BKE-CONTINUATION-RESUME", marker)
+        self.assertNotIn("prompt=", marker)
+        self.assertNotIn("javascript=", marker)
+        self.assertNotIn("shell=", marker)
+
     def test_control_label_contract_is_bounded(self):
         self.assertEqual(
             set(dispatcher.CONTROL_LABELS),
