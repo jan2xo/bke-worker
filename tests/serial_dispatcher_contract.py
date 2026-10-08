@@ -124,6 +124,28 @@ class RecordingLabelApi(dispatcher.GitHubApi):
 
 
 class SerialDispatcherTests(unittest.TestCase):
+    def test_execution_checklist_is_machine_recognizable(self):
+        body = """## BKE TASK CHECKLIST
+- [ ] **A1 — Authoritative assignment discovery.**
+- [x] **A2 — Zero / one / multiple assignment proof.**
+## Certification
+"""
+        entries = dispatcher.extract_execution_checklist(body)
+        self.assertEqual(entries[0][0], "A1")
+        self.assertFalse(entries[0][2])
+        self.assertEqual(entries[1][0], "A2")
+        self.assertTrue(entries[1][2])
+
+    def test_execution_checklist_requires_stable_items(self):
+        with self.assertRaisesRegex(dispatcher.DispatchError, "TASK_PR_CHECKLIST_MISSING"):
+            dispatcher.require_execution_checklist("## Task contract\nNo checklist")
+
+    def test_execution_checklist_rejects_duplicate_ids(self):
+        with self.assertRaisesRegex(dispatcher.DispatchError, "DUPLICATE_TASK_CHECKLIST_ITEM:A1"):
+            dispatcher.extract_execution_checklist(
+                "## BKE TASK CHECKLIST\n- [ ] **A1 — one**\n- [ ] **A1 — duplicate**"
+            )
+
     def test_control_label_contract_is_bounded(self):
         self.assertEqual(
             set(dispatcher.CONTROL_LABELS),
