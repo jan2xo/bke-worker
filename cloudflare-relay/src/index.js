@@ -545,9 +545,43 @@ export class WorkerSession extends DurableObject {
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
+    const plan = planRecovery(
+      assignments.map((assignment) => ({ ...assignment, workerId })),
+      active,
+    );
 
-    if (assignments.length === 0) {
+    if (plan.state === "conflict") {
+      if (active?.wake?.pr_number) {
+        try {
+          const minted = await mintInstallationToken(this.env);
+          await fetch(
+            `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${active.wake.pr_number}/comments`,
+            {
+              method: "POST",
+              headers: {
+                accept: "application/vnd.github+json",
+                authorization: `Bearer ${minted.token}`,
+                "content-type": "application/json",
+                "user-agent": "bke-worker-relay",
+                "x-github-api-version": "2026-03-10",
+              },
+              body: JSON.stringify({
+                body: `BKE RECOVERY CONFLICT — worker=${workerId}; open assigned PRs=${assignments.map((item) => "#" + item.number).join(", ")}. Worker remains fail-closed; no PR selected heuristically.`,
+              }),
+            },
+          );
+        } catch {
+          // Conflict remains fail-closed even if the durable checkpoint cannot be written.
+        }
+      }
+      return json({
+        state: "conflict",
+        worker_id: workerId,
+        assignments: assignments.map(({ number, headRef, headSha }) => ({ number, headRef, headSha })),
+      }, 409);
+    }
+
+    if (plan.state === "waiting_for_assignment") {
       await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
       return json({
@@ -556,40 +590,26 @@ export class WorkerSession extends DurableObject {
       }, 200);
     }
 
-    const assignment = assignments[0];
-    const sameActivePr = active?.wake?.pr_number === assignment.number;
-    const sameActiveHead = sameActivePr &&
-      active.wake.expected_head_sha === assignment.headSha;
-
-    if (sameActiveHead) {
+    const assignment = plan.assignment;
+    if (plan.state === "preserved_active_assignment") {
       return json({
-        state: "preserved_active_assignment",
+        state: plan.state,
         worker_id: workerId,
         assignment,
-        active_phase: active.phase,
-        delivery_id: active.wake.delivery_id,
+        active_phase: plan.activePhase,
+        delivery_id: plan.deliveryId,
       }, 200);
     }
 
-    const wake = {
-      protocol: 1,
-      type: "wake",
-      worker_id: workerId,
-      repo: CONTROL_REPOSITORY,
-      pr_number: assignment.number,
-      expected_head_sha: assignment.headSha,
-      reason: "github_pull_request_reconnect_recovery",
-      delivery_id: `recovery-${workerId}-${assignment.number}-${assignment.headSha}`,
-    };
-
-    if (active && sameActivePr && active.phase !== "queued") {
+    const wake = plan.wake;
+    if (plan.state === "head_converged_without_redelivery") {
       await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
         wake,
         phase: "recovery_required",
       });
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
       return json({
-        state: "head_converged_without_redelivery",
+        state: plan.state,
         worker_id: workerId,
         assignment,
         delivery_id: wake.delivery_id,
