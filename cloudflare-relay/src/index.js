@@ -5,6 +5,7 @@ import {
 } from "./github-app.js";
 import {
   CONTROL_REPOSITORY,
+  normalizeRecoveryAssignments,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
   isValidWorkerId,
@@ -205,33 +206,34 @@ async function recoverAssignedPullRequests(env, workerId) {
       },
     },
   );
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !Array.isArray(payload)) {
+  const issuePayload = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(issuePayload)) {
     throw new Error(`GITHUB_ASSIGNMENT_RECOVERY_FAILED:${response.status}`);
   }
 
-  const assignments = payload
-    .filter((item) => item && item.pull_request && item.state === "open")
-    .map((item) => ({
-      number: Number(item.number),
-      headRef: typeof item.pull_request?.head?.ref === "string"
-        ? item.pull_request.head.ref
-        : "",
-      headSha: typeof item.pull_request?.head?.sha === "string"
-        ? item.pull_request.head.sha
-        : "",
-      labels: Array.isArray(item.labels)
-        ? item.labels.map((labelItem) => String(labelItem?.name || ""))
-        : [],
-    }))
-    .filter((item) =>
-      item.number > 0 &&
-      item.headRef &&
-      /^[0-9a-f]{40}$/.test(item.headSha) &&
-      item.labels.some((name) => name.toLowerCase() === `bke-worker:${workerId}`.toLowerCase())
-    );
+  const candidateNumbers = issuePayload
+    .filter((item) => item?.pull_request && item.state === "open")
+    .map((item) => Number(item.number))
+    .filter((number) => Number.isInteger(number) && number > 0);
 
-  return assignments;
+  const pullRequests = [];
+  for (const number of candidateNumbers) {
+    const pullResponse = await fetch(
+      `https://api.github.com/repos/${CONTROL_REPOSITORY}/pulls/${number}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${minted.token}`,
+          "user-agent": "bke-worker-relay",
+          "x-github-api-version": "2026-03-10",
+        },
+      },
+    );
+    const pullPayload = await pullResponse.json().catch(() => null);
+    if (pullResponse.ok && pullPayload) pullRequests.push(pullPayload);
+  }
+
+  return normalizeRecoveryAssignments(issuePayload, pullRequests, workerId);
 }
 
 async function handleRelayRecovery(request, env, workerId) {
