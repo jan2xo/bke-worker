@@ -513,7 +513,38 @@ export class WorkerSession extends DurableObject {
     }
 
     if (assignments.length > 1) {
-      const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+      const checkpointPr = assignments[0]?.number;
+      if (checkpointPr) {
+        try {
+          const minted = await mintInstallationToken(this.env);
+          await fetch(
+            `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${checkpointPr}/comments`,
+            {
+              method: "POST",
+              headers: {
+                accept: "application/vnd.github+json",
+                authorization: `Bearer ${minted.token}`,
+                "content-type": "application/json",
+                "user-agent": "bke-worker-relay",
+                "x-github-api-version": "2026-03-10",
+              },
+              body: JSON.stringify({
+                body: `BKE RECOVERY CONFLICT — worker=${workerId}; open assigned PRs=${assignments.map((item) => "#" + item.number).join(", ")}. Worker remains fail-closed; no PR selected heuristically.`,
+              }),
+            },
+          );
+        } catch {
+          // Conflict remains fail-closed even if the durable checkpoint cannot be written.
+        }
+      }
+      return json({
+        state: "conflict",
+        worker_id: workerId,
+        assignments: assignments.map(({ number, headRef, headSha }) => ({ number, headRef, headSha })),
+      }, 409);
+    }
+
+    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
       if (active?.wake?.pr_number) {
         try {
           const minted = await mintInstallationToken(this.env);
@@ -549,37 +580,6 @@ export class WorkerSession extends DurableObject {
       assignments.map((assignment) => ({ ...assignment, workerId })),
       active,
     );
-
-    if (plan.state === "conflict") {
-      if (active?.wake?.pr_number) {
-        try {
-          const minted = await mintInstallationToken(this.env);
-          await fetch(
-            `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${active.wake.pr_number}/comments`,
-            {
-              method: "POST",
-              headers: {
-                accept: "application/vnd.github+json",
-                authorization: `Bearer ${minted.token}`,
-                "content-type": "application/json",
-                "user-agent": "bke-worker-relay",
-                "x-github-api-version": "2026-03-10",
-              },
-              body: JSON.stringify({
-                body: `BKE RECOVERY CONFLICT — worker=${workerId}; open assigned PRs=${assignments.map((item) => "#" + item.number).join(", ")}. Worker remains fail-closed; no PR selected heuristically.`,
-              }),
-            },
-          );
-        } catch {
-          // Conflict remains fail-closed even if the durable checkpoint cannot be written.
-        }
-      }
-      return json({
-        state: "conflict",
-        worker_id: workerId,
-        assignments: assignments.map(({ number, headRef, headSha }) => ({ number, headRef, headSha })),
-      }, 409);
-    }
 
     if (plan.state === "waiting_for_assignment") {
       await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
