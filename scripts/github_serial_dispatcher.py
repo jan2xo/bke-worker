@@ -200,7 +200,38 @@ def validate_orphan_materialization(
     return parent_sha
 
 
+def extract_execution_checklist(body: str) -> list[tuple[str, str, bool]]:
+    lines = body.splitlines()
+    in_section = False
+    entries: list[tuple[str, str, bool]] = []
+    seen: set[str] = set()
+    for line in lines:
+        if line.strip().lower() == "## bke task checklist":
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = re.match(r"^\s*[-*]\s+\[(?P<checked>[ xX])\]\s+\*\*(?P<id>[A-Z][A-Z0-9-]+)\s+—\s+(?P<text>.+?)\*\*\s*$", line)
+        if not match:
+            continue
+        item_id = match.group("id")
+        if item_id in seen:
+            raise DispatchError(f"DUPLICATE_TASK_CHECKLIST_ITEM:{item_id}")
+        seen.add(item_id)
+        entries.append((item_id, match.group("text").strip(), match.group("checked").lower() == "x"))
+    return entries
+
+
+def require_execution_checklist(body: str) -> None:
+    entries = extract_execution_checklist(body)
+    if not entries:
+        raise DispatchError("TASK_PR_CHECKLIST_MISSING_OR_UNPARSEABLE")
+
+
 def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
+    require_execution_checklist(task.body)
     return (
         "## BKE queued task\n\n"
         f"Materialized deterministically from task issue #{task.number} by the GitHub-native serial dispatcher.\n\n"
