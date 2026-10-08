@@ -1,0 +1,248 @@
+# Android ChatGPT target recovery — implementation wave
+
+## Parent mission
+
+This dependency exists for the single-worker roadmap in #39 and the live serial
+Task A ledger in #48.
+
+Owner direction for this wave:
+
+> implement first; certify dependencies one by one later.
+
+No explicit Intent Certification is invoked by this implementation wave.
+
+## Recovery behavior
+
+The Android Worker now keeps browser/ChatGPT recovery bounded and separate from
+GitHub ownership.
+
+### Gecko content process crash / kill
+
+GeckoView reports the session as closed/unusable after content-process crash or
+kill. The Worker keeps the same `GeckoSession` object attached to the UI and:
+
+1. enters `RECOVERING`;
+2. reopens the session against the existing `GeckoRuntime` when closed;
+3. rebinds the built-in Worker WebExtension native-message delegate;
+4. reloads `https://chatgpt.com/`;
+5. waits for a valid Worker status;
+6. retries at most three recovery attempts.
+
+After exhaustion, the Chat state becomes `FAILED`.
+
+### Composer unavailable
+
+A valid ChatGPT page that has no usable composer enters `NO_COMPOSER`.
+Recovery is triggered only after one bounded readiness window. Periodic
+WebExtension status reports do not reset that window indefinitely.
+
+### Native bridge disconnect
+
+The WebExtension already retries its native port. Android gives that reconnect a
+bounded grace window. If the native port remains disconnected, the same bounded
+ChatGPT recovery path is invoked.
+
+## Duplicate-dispatch boundary
+
+If a Gecko crash/kill happens while an accepted wake is still in flight, the
+Worker does not infer completion and does not redispatch automatically.
+
+Instead:
+
+`BLOCKED_UNCERTAIN_TURN`
+
+is surfaced and the active wake remains fail-closed. This avoids turning browser
+recovery into duplicate prompt delivery.
+
+## Authentication boundary
+
+Recovery may reopen/reload the existing human-authenticated ChatGPT surface.
+
+It does not:
+
+- enter credentials;
+- automate OAuth;
+- automate MFA;
+- solve CAPTCHA/security challenges;
+- synthesize a new login session.
+
+If ChatGPT no longer has a usable composer because authentication or a security
+challenge is required, bounded recovery eventually fails closed for human
+recovery.
+
+## Later certification
+
+Required later:
+
+- PR Guard;
+- `android` Intent Certification;
+- live device stop/start/reopen proof;
+- controlled crash/kill recovery proof;
+- controlled no-composer/native-port recovery proof;
+- active-turn uncertainty proof.
+
+Production remains locked.
+
+
+## Local build + live certification
+
+Recovery CI has two mirrored paths:
+
+- `android-recovery` is the fast local-base authority. It checks the exact head and all recovery/operator/signing contracts without installing the Android SDK, invoking Gradle, building an APK, or uploading an artifact. This is the normal gate before a local operator build.
+- `android-recovery-github` is the slow GitHub-base path. It runs the same recovery contracts, then installs the Android toolchain, builds the recovery APK, verifies PREPRODUCTION signing/provenance, and uploads the GitHub artifact. Run it only when GitHub-built APK proof is actually required.
+
+The canonical operator entrypoint is one command:
+
+```bash
+bash scripts/run-android-recovery-certification.sh
+```
+
+The runner synchronizes the clean PR branch to the exact live PR head, reuses an already-successful exact-head `android-recovery` run when available, otherwise dispatches and watches that workflow itself, builds the exact-head LOCAL_CERTIFICATION APK only when missing, and then launches the human-authenticated recovery ceremony. Each dispatched run is bound to the new workflow run ID created by that invocation before its jobs are trusted.
+
+The lower-level workflow-dispatch, builder, and ceremony commands remain available for debugging individual stages, but they are no longer the normal operator UX.
+
+The local builder defaults Gradle to offline mode so an already-warmed Android/Gradle cache does not consume network bandwidth. If required dependencies are missing, the operator can explicitly allow dependency resolution with `BKE_ANDROID_GRADLE_OFFLINE=0` when connectivity is acceptable.
+
+The local ledger helper binds the reported sidecar head to that already-verified
+exact parent head, so a blocked live proof can still write a non-empty durable
+checkpoint instead of failing while formatting the comment.
+
+The certification entrypoint discovers the exact parent head and verifies that the required branch-local recovery certification workflow succeeded on that exact revision. It then consumes only a locally built recovery APK from `artifacts/android-recovery-local/<exact-sha>/`; remote GitHub artifact download is deliberately disabled. The local APK is independently checked for exact-head provenance, package identity, debuggable recovery-cert status, and the stable local certification signer before installation. The existing `com.bke.worker.gecko` installation is preserved, and prompting occurs only at the human ChatGPT authentication boundary.
+
+CI recovery signing still uses the PREPRODUCTION Android signing authority and remains
+bound to the repo-pinned PREPRODUCTION certificate fingerprint. The operator Mac does
+not need those GitHub signing passwords. On first local build,
+`scripts/build-android-recovery-local.sh` creates a dedicated recovery-only signing
+identity under `~/.bke-secrets/bke-worker-android-recovery-local/`, stores its keystore
+and generated password with restrictive local permissions, and records the local public
+certificate fingerprint as the local trust anchor. Later local builds reuse that same
+identity so `adb install -r` preserves the recovery sidecar data/profile after the
+one-time migration from the older signer. The local signer is certification-only and is
+never a production signing authority. Uninstall is allowed only when Android explicitly
+reports the previous sidecar signature as incompatible.
+
+Fixed recovery-cert actions are accepted only by a debuggable package whose
+application ID ends in `.recoverycert`. They are invoked through the
+non-exported Worker service from the app UID and expose only bounded test
+operations: content crash, content-kill callback, NO_COMPOSER, native-port loss,
+exhausted-recovery fail-closed behavior, and explicit reject/recovery of a
+deliberately uncertain certification wake. They do not accept arbitrary prompt
+text, JavaScript, shell commands, URLs, or credentials.
+
+For the content-process kill case, the required production-behavior proof and
+the optional destructive fault-injection proof are deliberately separated.
+
+The required proof uses the fixed recovery-cert `onKill` callback injection and
+must advance the monotonic recovery witness as `SESSION_KILLED`, followed by an
+attached browser and usable READY ChatGPT surface. This proves the same bounded
+recovery path GeckoView invokes when Android/Gecko reports that the content process
+hosting the session was killed, without assuming a production Android app is
+allowed to signal an isolated Gecko child directly.
+
+As additional lab integration evidence, the operator entrypoint still attempts a
+real `:tab`/Tab child-process kill from the recovery app UID, then one bounded
+ActivityManager package-process attempt, and finally (emulator only) a verified
+UID-0 `adb root` attempt. A real-kill PASS is recorded only when a pre-existing
+Gecko tab PID actually disappears, the sidecar main PID remains stable, and a fresh
+`SESSION_KILLED` + ATTACHED + READY witness follows. If the device cannot inject
+such a kill at all, that row is recorded as NOT AVAILABLE optional lab proof and
+does not invalidate the required recovery certification.
+
+A generic `:tab` PID disappearance by itself is not enough to identify the
+content process hosting the tested GeckoSession; Gecko may have unrelated or
+preallocated tab children. Such a disappearance without a fresh recovery witness is
+therefore recorded as INCONCLUSIVE optional lab evidence, and the bounded candidate
+search may continue. It can never be reported as real-kill PASS.
+
+The ceremony still fails closed for an attributable recovery failure: if the
+monotonic witness advances specifically as `SESSION_KILLED` during real-kill
+injection but the browser does not return ATTACHED + READY, certification fails.
+Likewise, the required fixed `onKill` callback proof must independently produce a
+fresh `SESSION_KILLED` + ATTACHED + READY witness. Whole-app restart, unrelated
+recovery state, unchanged READY state, unrelated process churn, and no-op kill
+commands remain insufficient for real-kill PASS.
+
+The in-flight uncertainty test uses the parent recovery PR and a fresh
+certification-only worker ID for each ceremony run. The ID includes the exact-head
+prefix plus a run-local suffix, so every retry gets a fresh relay Durable Object and
+cannot inherit an `accepted`/`deferred` wake from an earlier aborted ceremony.
+Before claiming the PR, any existing `bke-worker:*` assignment fails closed. The script never removes an existing owner merely because its label resembles a certification worker; ambiguous/interrupted ownership must be explicitly resolved first. The script assigns the fresh temporary worker only for the bounded live proof,
+waits for `CHAT: BUSY`, crashes the content process, requires
+`BLOCKED_UNCERTAIN_TURN`, waits to prove the state remains blocked, then performs
+an explicit operator reject/recovery before stopping the relay and releasing the
+temporary assignment. An interrupted/ambiguous run fails closed rather than
+silently clearing ownership.
+
+Assignment release verification reads the labels returned directly with the current
+open-PR list and does not use GitHub search qualifiers. This avoids a false conflict
+immediately after the temporary certification label is removed while preserving
+fail-closed behavior for a genuinely active assignment.
+
+The script sources the PREPRODUCTION relay master key only from the authorized
+local secret file, derives a worker-bound token without printing it, transfers
+that token to the debuggable sidecar without writing it to GitHub, and removes
+the temporary app-private token file immediately after configuration.
+
+The relay-token transfer keeps file creation and reads inside the recovery app UID.
+It deliberately avoids compound `adb shell ... sh -c` commands so remote shell
+metacharacter parsing cannot escape the `run-as` boundary; the fixed apply script is
+fed over stdin and the bearer token never appears in the host command line.
+
+The PREPRODUCTION relay URL is normalized from the GitHub broker origin without
+slash-escaped parameter replacement and is validated with portable shell prefix,
+host, and exact-path checks. This keeps the operator ceremony compatible with the
+macOS system Bash used by the live device host.
+
+
+## Independent-review negative-path hardening
+
+The live ceremony does not trust a PR checkpoint as sufficient proof. Before installation it independently verifies that the branch-local recovery workflow_dispatch completed successfully on the exact parent SHA, including both the stable recovery build and required-certification aggregate. The bytes installed on the device come from the local exact-head builder instead of a GitHub artifact download. Its local manifest must bind the same source SHA, package identity, APK hash, LOCAL_CERTIFICATION signing authority, and local-build certification state; the APK itself is independently checked against the stable local signer fingerprint stored in the operator's protected local signing directory. The durable local-device ledger records the verified local APK revision and the exact certification run.
+
+Crash, content-process kill, NO_COMPOSER, and native-port recovery PASS require a fresh
+monotonic recovery-sequence witness with the expected initiating reason, followed by an
+attached READY ChatGPT surface. The controlled `about:crashcontent` injection may surface
+through Gecko as either `SESSION_CRASHED` or `SESSION_KILLED`; either is accepted only
+when the recovery sequence advances after injection and the recovered surface is attached
+and READY. The independent real process-kill proof still requires a fresh
+`SESSION_KILLED` witness. An unchanged pre-existing READY surface is never accepted as
+recovery proof. Terminal FAILED is held beyond the readiness timeout and the recovery
+sequence must remain unchanged before the explicit process restart boundary.
+
+Existing `bke-worker:*` ownership is never removed merely because its label resembles a
+prior certification worker. Any existing owner blocks a new ceremony until the operator
+explicitly resolves the prior relay/uncertain-turn state and releases that ownership.
+Interrupted ambiguous ceremonies therefore remain fail-closed.
+
+While an accepted wake is uncertain, `BLOCKED_UNCERTAIN_TURN` dominates raw BUSY,
+READY, and NO_COMPOSER page observations. Page readiness cannot clear or visually mask
+the delivery-ambiguity boundary; only the explicit reject/recovery certification action
+can resolve it.
+
+
+Production remains locked.
+
+
+## Recovery render and durable witness
+
+Recovery status includes a monotonic recovery sequence and the last initiating recovery
+reason. Live certification uses that durable witness for native-port loss instead of
+requiring a one-second poll to catch the transient `CHAT: RECOVERING` value.
+
+When a new recovery sequence reaches `CHAT: READY` or `CHAT: BUSY`, the Activity
+explicitly requests a root/GeckoView layout and invalidation pass. This prevents a
+recovered GeckoSession from remaining visually white until unrelated operator UI
+interaction (such as expanding Worker Configuration) forces a layout.
+
+
+## Terminal fail-closed and visible surface reattachment
+
+Once bounded ChatGPT recovery is exhausted and the Worker enters `CHAT: FAILED`,
+subsequent WebExtension status reports cannot promote the Worker back to READY/BUSY.
+The terminal failure is cleared only by the existing explicit process/operator restart
+boundary used by live certification.
+
+A logical READY after recovery is not sufficient proof that the visible GeckoView
+compositor is usable. For each new recovery sequence that reaches READY/BUSY, the
+Activity detaches and reattaches the same service-owned GeckoSession to GeckoView,
+then requests layout/invalidation. The GeckoSession itself is not closed or replaced,
+so its authenticated browser profile/session remains owned by the service.

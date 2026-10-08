@@ -284,11 +284,67 @@ try {
     delivery_id: wake.delivery_id,
     state: "accepted",
   }));
+
+  // A newer exact head for the same PR supersedes an ambiguous active wake.
+  const superseding = await postWebhook({
+    deliveryId: "cloudflare-smoke-002",
+    action: "synchronize",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  assert.equal(superseding.status, 202);
+  assert.equal(superseding.body.relay.state, "superseded_sent");
+  assert.equal(
+    superseding.body.relay.superseded_delivery_id,
+    "cloudflare-smoke-001",
+  );
+
+  const wake2 = JSON.parse(await ws.nextText());
+  assert.equal(wake2.delivery_id, "cloudflare-smoke-002");
+  assert.equal(wake2.expected_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+  // A late ACK from the superseded delivery must not kill the authoritative socket.
   ws.sendText(JSON.stringify({
     protocol: 1,
     type: "ack",
     worker_id: workerId,
     delivery_id: wake.delivery_id,
+    state: "completed",
+  }));
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake2.delivery_id,
+    state: "accepted",
+  }));
+
+  // Same-head re-evaluation is still serialized behind the active delivery.
+  const sameHead = await postWebhook({
+    deliveryId: "cloudflare-smoke-003",
+    action: "synchronize",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  assert.equal(sameHead.status, 202);
+  assert.equal(sameHead.body.relay.state, "queued_behind_active");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake2.delivery_id,
+    state: "completed",
+  }));
+
+  const wake3 = JSON.parse(await ws.nextText());
+  assert.equal(wake3.delivery_id, "cloudflare-smoke-003");
+  assert.equal(wake3.expected_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake3.delivery_id,
     state: "completed",
   }));
 
@@ -302,54 +358,12 @@ try {
   assert.equal(duplicate.status, 200);
   assert.equal(duplicate.body.relay.state, "duplicate");
 
-  const second = await postWebhook({
-    deliveryId: "cloudflare-smoke-002",
-    action: "synchronize",
-    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  });
-  assert.equal(second.status, 202);
-
-  const wake2 = JSON.parse(await ws.nextText());
-  assert.equal(wake2.delivery_id, "cloudflare-smoke-002");
-  assert.equal(wake2.expected_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-
-  ws.sendText(JSON.stringify({
-    protocol: 1,
-    type: "ack",
-    worker_id: workerId,
-    delivery_id: wake2.delivery_id,
-    state: "completed",
-  }));
-
-  await new Promise((resolve) => setTimeout(resolve, 100));
-
   const rejected = await postWebhook({
-    deliveryId: "cloudflare-smoke-003",
+    deliveryId: "cloudflare-smoke-004",
     action: "synchronize",
     sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   });
   assert.equal(rejected.status, 202);
-
-  const wake3 = JSON.parse(await ws.nextText());
-  assert.equal(wake3.delivery_id, "cloudflare-smoke-003");
-
-  ws.sendText(JSON.stringify({
-    protocol: 1,
-    type: "ack",
-    worker_id: workerId,
-    delivery_id: wake3.delivery_id,
-    state: "rejected",
-  }));
-
-  await new Promise((resolve) => setTimeout(resolve, 100));
-
-  const afterReject = await postWebhook({
-    deliveryId: "cloudflare-smoke-004",
-    action: "synchronize",
-    sha: "cccccccccccccccccccccccccccccccccccccccc",
-  });
-  assert.equal(afterReject.status, 202);
-  assert.notEqual(afterReject.body.relay.state, "queued_behind_active");
 
   const wake4 = JSON.parse(await ws.nextText());
   assert.equal(wake4.delivery_id, "cloudflare-smoke-004");
@@ -359,6 +373,27 @@ try {
     type: "ack",
     worker_id: workerId,
     delivery_id: wake4.delivery_id,
+    state: "rejected",
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const afterReject = await postWebhook({
+    deliveryId: "cloudflare-smoke-005",
+    action: "synchronize",
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+  });
+  assert.equal(afterReject.status, 202);
+  assert.notEqual(afterReject.body.relay.state, "queued_behind_active");
+
+  const wake5 = JSON.parse(await ws.nextText());
+  assert.equal(wake5.delivery_id, "cloudflare-smoke-005");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake5.delivery_id,
     state: "completed",
   }));
 

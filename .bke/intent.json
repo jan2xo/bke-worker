@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "autonomous-consumer-adoption",
+  "instructions": [
+    "core.github-truth",
+    "core.exact-head",
+    "core.consumer-contract",
+    "worker.ownership",
+    "worker.human-auth",
+    "ci.intentional-ci",
+    "ci.check-registry",
+    "ci.failure-capsule",
+    "ci.escalation",
+    "repo.worker-adoption"
+  ],
+  "certification": {
+    "required": [
+      "repo.serial-dispatcher-contract",
+      "repo.operator-entrypoint-contract"
+    ],
+    "optional": []
+  },
+  "failure_policy": {
+    "independent_checks_continue": true,
+    "dependent_checks_stop": true,
+    "always_publish_capsule": true
+  }
+}

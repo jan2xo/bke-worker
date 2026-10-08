@@ -5,6 +5,7 @@ root = Path(__file__).resolve().parents[1]
 relay = root / "cloudflare-relay"
 protocol = (relay / "src/protocol.js").read_text(encoding="utf-8")
 runtime = (relay / "src/index.js").read_text(encoding="utf-8")
+github_app = (relay / "src/github-app.js").read_text(encoding="utf-8")
 wrangler = (relay / "wrangler.toml").read_text(encoding="utf-8")
 readme = (relay / "README.md").read_text(encoding="utf-8")
 webhook_configurator = (
@@ -12,6 +13,9 @@ webhook_configurator = (
 ).read_text(encoding="utf-8")
 preproduction_creator = (
     relay / "scripts/create-preproduction-worker.sh"
+).read_text(encoding="utf-8")
+github_app_configurator = (
+    relay / "scripts/configure-github-app-actuator.sh"
 ).read_text(encoding="utf-8")
 android = (
     root
@@ -67,6 +71,10 @@ for token in (
     'contentLength > MAX_WEBHOOK_BYTES',
     'active?.phase === "queued"',
     'state: "coalesced_queued"',
+    'supersedesStaleHead',
+    'state: sent ? "superseded_sent" : "superseded_queued"',
+    'superseded_delivery_id',
+    'recent.includes(ack.delivery_id)',
     'phase: "queued"',
     'phase: "sent"',
     'ack.state === "deferred"',
@@ -75,8 +83,41 @@ for token in (
     'ack.state === "completed"',
     'BKE_WORKER_GITHUB_WEBHOOK_SECRET',
     'BKE_WORKER_RELAY_TOKEN_KEY',
+    '"/github/app/install-token"',
+    "verifyActionsOidcToken",
+    "mintInstallationToken",
 ):
+
     assert token in runtime, token
+
+for token in (
+    'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
+    'CONTROL_REPOSITORY_ID = "1354026486"',
+    'SERIAL_WORKFLOW_REF =',
+    '"jan2xo/bke-worker/.github/workflows/serial-dispatcher.yml@refs/heads/main"',
+    'BROKER_AUDIENCE = "bke-worker-github-app-broker"',
+    'ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"',
+    '"https://token.actions.githubusercontent.com/.well-known/jwks"',
+    '"RS256"',
+    'repository_ids: [Number(CONTROL_REPOSITORY_ID)]',
+    'GITHUB_APP_PERMISSION_REQUIRED',
+    'validateInstallationPermissions',
+    'contents: "write"',
+    'issues: "write"',
+    'pull_requests: "write"',
+    'BKE_WORKER_GITHUB_APP_ID',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    '"https://api.github.com/repos/jan2xo/bke-worker/installation"',
+    'GITHUB_APP_INSTALLATION_RESOLUTION_FAILED',
+):
+    assert token in github_app, token
+
+for forbidden in (
+    "administration",
+    "organization_",
+    "secrets: \"write\"",
+):
+    assert forbidden not in github_app.lower(), forbidden
 
 for forbidden in (
     'json.optString("prompt")',
@@ -98,12 +139,17 @@ for token in (
     '[secrets]',
     '[env.preproduction]',
     '[env.preproduction.secrets]',
+    '"BKE_WORKER_GITHUB_APP_ID"',
+    '"BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM"',
 ):
+
     assert token in wrangler, token
 
 for forbidden in (
     "BKE_WORKER_GITHUB_WEBHOOK_SECRET =",
     "BKE_WORKER_RELAY_TOKEN_KEY =",
+    "BKE_WORKER_GITHUB_APP_ID =",
+    "BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM =",
     "route =",
     "routes =",
     "[[migrations]]",
@@ -146,6 +192,30 @@ for token in (
     'Production remains LOCKED.',
 ):
     assert token in preproduction_creator, token
+
+for token in (
+    'BKE WORKER GITHUB APP ACTUATOR — PREPRODUCTION',
+    'Metadata: read',
+    'Contents: read & write',
+    'Issues: read & write',
+    'Pull requests: read & write',
+    'BKE_WORKER_GITHUB_APP_ID',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_FILE',
+    'BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    'Installation: resolved by the broker from GitHub',
+    'wrangler secret put BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM',
+    'gh variable set BKE_WORKER_GITHUB_APP_BROKER_URL',
+    'Production remains LOCKED.',
+):
+    assert token in github_app_configurator, token
+
+for forbidden in (
+    'echo "$PRIVATE_KEY_FILE"',
+    'cat "$PRIVATE_KEY_FILE" | tee',
+    'gh secret set',
+    'Administration: write',
+):
+    assert forbidden not in github_app_configurator, forbidden
 
 for forbidden in (
     'echo "$BKE_WORKER_GITHUB_WEBHOOK_SECRET"',

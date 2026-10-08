@@ -69,6 +69,43 @@ Serial reconciliation is GitHub-native and should run on bounded queue/PR events
 
 The control-plane workflow must execute trusted default-branch dispatcher code, not arbitrary PR-head code.
 
+## GitHub App mutation authority
+
+The preferred serial-dispatcher mutation identity is the existing **BKE Worker
+GitHub App**, not the workflow's built-in `GITHUB_TOKEN`.
+
+The trusted default-branch workflow has only:
+
+```yaml
+contents: read
+id-token: write
+```
+
+It requests a GitHub Actions OIDC JWT with audience
+`bke-worker-github-app-broker`. The Cloudflare PREPRODUCTION broker verifies the
+exact repository, repository ID, workflow ref, main-branch ref, and allowed event
+before minting a short-lived installation token.
+
+The broker scopes the token to:
+
+- repository: `jan2xo/bke-worker`
+- Contents: write
+- Issues: write
+- Pull requests: write
+
+No Administration or secret-management permission is required.
+
+The former repository-level
+`Allow GitHub Actions to create and approve pull requests` switch is no longer
+the preferred authority path. The helper
+`scripts/enable-serial-dispatcher-pr-creation.sh` remains historical/break-glass
+operator tooling only and is not required by the GitHub App path.
+
+If App/OIDC/broker configuration is unavailable, the dispatcher must fail closed
+before mutation. It must not silently fall back to a broader credential.
+
+Full boundary: `docs/github-app-dispatch-actuator.md`.
+
 ## Security
 
 - no production deployment;

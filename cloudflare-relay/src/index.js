@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  mintInstallationToken,
+  verifyActionsOidcToken,
+} from "./github-app.js";
+import {
   CONTROL_REPOSITORY,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
@@ -134,6 +138,24 @@ async function handleGitHubWebhook(request, env) {
   );
 }
 
+async function handleGitHubAppInstallToken(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const match = /^Bearer\s+(.+)$/iu.exec(authorization);
+  if (!match) return json({ error: "ACTIONS_OIDC_REQUIRED" }, 401);
+
+  try {
+    await verifyActionsOidcToken(match[1]);
+    const minted = await mintInstallationToken(env);
+    return json(minted, 200);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "GITHUB_APP_BROKER_FAILED";
+    const status = code.startsWith("OIDC_") ? 401 :
+      code.endsWith("_UNCONFIGURED") ? 503 :
+      502;
+    return json({ error: code }, status);
+  }
+}
+
 async function handleRelayUpgrade(request, env, workerId) {
   if (!isValidWorkerId(workerId)) {
     return json({ error: "WORKER_ID_INVALID" }, 400);
@@ -167,6 +189,13 @@ export default {
         return json({ error: "METHOD_NOT_ALLOWED" }, 405);
       }
       return handleGitHubWebhook(request, env);
+    }
+
+    if (url.pathname === "/github/app/install-token") {
+      if (request.method !== "POST") {
+        return json({ error: "METHOD_NOT_ALLOWED" }, 405);
+      }
+      return handleGitHubAppInstallToken(request, env);
     }
 
     const workerId = relayPathWorkerId(url.pathname);
@@ -261,7 +290,26 @@ export class WorkerSession extends DurableObject {
       );
     }
 
+    const supersedesStaleHead = active &&
+      active.wake.pr_number === wake.pr_number &&
+      active.wake.expected_head_sha !== wake.expected_head_sha &&
+      wake.reason === "github_pull_request_synchronize";
+
     await this.rememberDelivery(recent, wake.delivery_id);
+
+    if (supersedesStaleHead) {
+      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+        wake,
+        phase: "queued",
+      });
+      const sent = await this.sendActiveIfSafe();
+      return json({
+        state: sent ? "superseded_sent" : "superseded_queued",
+        delivery_id: wake.delivery_id,
+        superseded_delivery_id: active.wake.delivery_id,
+      }, 202);
+    }
 
     if (active?.phase === "queued") {
       await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
@@ -391,6 +439,10 @@ export class WorkerSession extends DurableObject {
   async handleAck(ack, socket) {
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.wake.delivery_id !== ack.delivery_id) {
+      const recent = await this.recentDeliveries();
+      if (recent.includes(ack.delivery_id)) {
+        return;
+      }
       socket.close(1008, "ack delivery mismatch");
       return;
     }

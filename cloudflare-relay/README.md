@@ -11,8 +11,11 @@ GitHub remains the source of task ownership and exact-head truth. The relay neve
 ## Public surface
 
 - `POST /webhooks/github` — GitHub webhook ingress.
+- `POST /github/app/install-token` — OIDC-authenticated BKE GitHub App installation-token broker for the trusted serial dispatcher.
 - `GET /relay/<worker_id>` with `Upgrade: websocket` — Android outbound WSS connection.
 - every other path returns 404.
+
+The installation-token endpoint accepts only the exact GitHub Actions OIDC identity for `jan2xo/bke-worker/.github/workflows/serial-dispatcher.yml@main`; it is not a generic GitHub API proxy.
 
 ## Required secrets
 
@@ -20,6 +23,8 @@ Set these as Cloudflare Worker secrets. Never commit them:
 
 - `BKE_WORKER_GITHUB_WEBHOOK_SECRET`
 - `BKE_WORKER_RELAY_TOKEN_KEY`
+- `BKE_WORKER_GITHUB_APP_ID`
+- `BKE_WORKER_GITHUB_APP_PRIVATE_KEY_PEM`
 
 Variable names are generation-independent.
 
@@ -53,7 +58,11 @@ The Durable Object stores bounded delivery dedupe and at most:
 
 A wake moves through relay-side phases such as `queued`, `sent`, `deferred`, and `accepted`.
 
-Once the wake may have reached Android, disconnect does **not** cause automatic redelivery. This deliberately fails closed because a ChatGPT dispatch could already have happened. Explicit GitHub activity or operator recovery is safer than duplicate prompt delivery.
+Once the wake may have reached Android, disconnect does **not** cause blind automatic redelivery. This deliberately fails closed because a ChatGPT dispatch could already have happened.
+
+A newer `pull_request.synchronize` event for the **same PR** is different: the new GitHub exact head makes the older wake stale by definition. The relay therefore supersedes the stale same-PR active wake with the newer-head wake, clears any queued same-PR re-evaluation, and sends the new wake to the authoritative socket when one is connected. Android still serializes delivery locally: if the prior ChatGPT turn is genuinely still active, the newer wake is deferred until that turn clears. Late ACKs from a known superseded delivery are ignored rather than closing the authoritative socket.
+
+Same-head re-evaluation does **not** supersede an active wake; it remains queued behind the active delivery. Cross-PR replacement is still rejected fail-closed.
 
 `completed` and `rejected` ACKs retire the active wake and allow a queued re-evaluation wake to proceed.
 
@@ -97,3 +106,13 @@ BKE_WORKER_CLOUDFLARE_WEBHOOK_URL="https://<preproduction-worker-host>/webhooks/
 ```
 
 That prints the intended configuration only. After relay certification and explicit owner authorization, add `--apply` and provide `BKE_WORKER_GITHUB_WEBHOOK_SECRET`. The script creates or updates only the exact pull-request webhook and sends the secret to `gh api` through stdin rather than printing it or placing it directly in command arguments.
+
+## GitHub App outbound actuator
+
+The existing BKE Worker GitHub App is also the preferred outbound repository mutation identity.
+
+The long-lived private key lives only in Cloudflare PREPRODUCTION encrypted secret bindings. The broker authenticates as the App, resolves the App installation for `jan2xo/bke-worker` directly from GitHub, then mints a short-lived installation token scoped to that repository and only Contents/Issues/Pull Requests write. No operator-supplied installation ID is trusted.
+
+See `docs/github-app-dispatch-actuator.md`.
+
+The repository-wide Actions setting that allows `GITHUB_TOKEN` to create pull requests is not required when this actuator is active.

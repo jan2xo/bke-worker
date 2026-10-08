@@ -34,14 +34,32 @@ jobs:
               raise SystemExit("Intent certification is not explicitly invokable.")
 
           for token in [
-              'new Set(["core", "server", "chatgpt", "android", "android-release", "relay"])',
+              'new Set(["core", "server", "chatgpt", "android", "android-recovery", "android-recovery-github", "android-preproduction", "android-release", "relay"])',
               "name: Android Gecko Worker probe",
               "python3 tests/android_gecko_probe_contract.py",
               "python3 tests/utm_relay_contract.py",
               "gradle -p android-gecko :app:assembleDebug --stacktrace",
               "bke-worker-android-gecko-probe",
+              "name: Android recovery local contract",
+              "name: Android recovery GitHub signed APK build",
+              "python3 tests/android_recovery_signing_contract.py",
+              "python3 tests/android_recovery_operator_contract.py",
+              ":app:assembleRecovery",
+              "bke-worker-android-recovery-sidecar",
               "ANDROID_REQUIRED:",
               "ANDROID_RESULT:",
+              "ANDROID_RECOVERY_REQUIRED:",
+              "ANDROID_RECOVERY_RESULT:",
+              "ANDROID_RECOVERY_GITHUB_REQUIRED:",
+              "ANDROID_RECOVERY_GITHUB_RESULT:",
+              "name: Android PREPRODUCTION signed build",
+              "BKE_ANDROID_PREPRODUCTION_KEYSTORE_B64",
+              "BKE_ANDROID_PREPRODUCTION_CERT_SHA256",
+              ":app:assemblePreproduction",
+              "bke-worker-android-preproduction-candidate",
+              "ANDROID_PREPRODUCTION_REQUIRED:",
+              "ANDROID_PREPRODUCTION_RESULT:",
+              "Publish Android PREPRODUCTION prerelease",
               "name: Android production release",
               "BKE_ANDROID_SIGNING_KEYSTORE_B64",
               "BKE_ANDROID_SIGNING_CERT_SHA256",
@@ -66,10 +84,13 @@ jobs:
               "workflow_dispatch:",
               "group: bke-worker-serial-dispatcher",
               "cancel-in-progress: false",
-              "contents: write",
-              "pull-requests: write",
-              "issues: write",
+              "contents: read",
+              "id-token: write",
               "github.event.repository.default_branch",
+              "BKE_WORKER_GITHUB_APP_BROKER_URL",
+              "bke-worker-github-app-broker",
+              "/github/app/install-token",
+              'export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"',
               "persist-credentials: false",
               "python3 scripts/github_serial_dispatcher.py",
               "BKE_WORKER_ID: android-worker-a",
@@ -80,6 +101,10 @@ jobs:
                   )
 
           for forbidden in [
+              "contents: write",
+              "pull-requests: write",
+              "issues: write",
+              "GITHUB_TOKEN: ${{ github.token }}",
               "worker-b",
               "worker-c",
               "github.event.pull_request.head.sha",
@@ -109,6 +134,11 @@ jobs:
               "owner-blocked",
               "Blocked lane != blocked mission",
               "docs/autonomous-gatekeeper.md",
+              "Operator action entrypoints",
+              "one repo-tracked operator entrypoint script",
+              "prompt **inside the script, at the point of need**",
+              "without automating credentials",
+              "docs/operator-entrypoints.md",
           ]:
               if token not in canonical:
                   raise SystemExit(
@@ -137,6 +167,9 @@ jobs:
               "## Description",
               "## How Has This Been Tested?",
               "## Architecture / Security",
+              "## Operator Action",
+              "Human-only inputs",
+              "bash scripts/<intent-entrypoint>.sh",
               "## Checklist",
               "## Certification Notes",
               "One independent engineering intent belongs in one PR",
@@ -155,3 +188,28 @@ jobs:
 
       - name: Execute serial Master Queue dispatcher contract
         run: python3 tests/serial_dispatcher_contract.py
+
+      - name: Execute Android PREPRODUCTION signing contract
+        run: python3 tests/android_preproduction_signing_contract.py
+
+      - name: Execute operator entrypoint contract
+        run: |
+          python3 tests/operator_entrypoint_contract.py
+          bash -n scripts/complete-github-app-actuator-preproduction.sh
+
+
+  bke-intent:
+    name: BKE pinned intent consumer proof
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve and execute pinned BKE intent
+        id: bke
+        uses: jan2xo/bke-autonomous-engineering/.github/actions/intent-ci@b42648da2a14fdc29e5db1213f28f5cedcf61889
+        with:
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          run-id: ${{ github.run_id }}

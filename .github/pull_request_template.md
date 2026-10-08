@@ -91,6 +91,27 @@ Do not mark scenarios complete until the corresponding proof exists.
 
 ---
 
+## Operator Action
+
+<!--
+If this PR requires a human/operator action before or after merge, include or
+update one repo-tracked operator entrypoint in THIS PR.
+
+Operator instruction should normally be one command:
+  bash scripts/<intent-entrypoint>.sh
+
+The script discovers non-secret state itself and prompts internally only for
+genuinely human-required input. Do not require a pasted command sequence or
+pre-exported values the script could request itself.
+-->
+
+- **Required:** `YES / NO`
+- **Entrypoint:** `bash scripts/<intent-entrypoint>.sh / N/A`
+- **Human-only inputs:** `<secret/auth/security-boundary input / NONE>`
+- **Post-action verification:** `<what the script proves / N/A>`
+
+---
+
 ## Screenshots (if applicable)
 
 <!-- Required for meaningful user-visible UI changes when screenshots are practical. -->
@@ -117,6 +138,7 @@ Do not mark scenarios complete until the corresponding proof exists.
 - [ ] The minimum complete certification graph is declared
 - [ ] Required certification passed on the exact current head before merge
 - [ ] Production/security locks remain respected unless explicitly authorized
+- [ ] Any required operator action is exposed as one repo-tracked entrypoint that prompts internally only when human input is genuinely required
 - [ ] This PR contains one coherent engineering intent; the next independent wave will use a fresh PR from current `main`
 
 ---
