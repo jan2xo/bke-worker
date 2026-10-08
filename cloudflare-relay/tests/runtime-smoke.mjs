@@ -207,7 +207,7 @@ class RawWebSocket {
   }
 }
 
-async function postWebhook({ deliveryId, action, sha, number = 13, body = "", addedLabel = null }) {
+async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", addedLabel = null }) {
   const body = JSON.stringify({
     action,
     number,
@@ -215,7 +215,7 @@ async function postWebhook({ deliveryId, action, sha, number = 13, body = "", ad
     pull_request: {
       number,
       state: "open",
-      body,
+      body: prBody,
       labels: [{ name: `bke-worker:${workerId}` }],
       head: {
         ref: "test/utm-wss-relay-smoke",
@@ -486,7 +486,7 @@ try {
     action: "edited",
     sha: recoveryHead,
     number: 13,
-    body: `Task intent\n\n${recoveryMarker}`,
+    prBody: `Task intent\n\n${recoveryMarker}`,
   });
   assert.equal(recoveredCrossPr.status, 202);
   assert.equal(recoveredCrossPr.body.relay.state, "cross_pr_recovered_sent");
