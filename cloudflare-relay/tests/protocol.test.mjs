@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   CONTROL_REPOSITORY,
   CONTROL_REPOSITORIES,
+  CROSS_PR_RECOVERY_MARKER,
   PROTOCOL,
   deriveRelayToken,
   relayBearerMatches,
@@ -122,6 +123,47 @@ test("labeled event only routes when the added label is the assignment label", (
   );
   assert.equal(result.kind, "ignore");
   assert.equal(result.reason, "NON_ASSIGNMENT_LABEL_EVENT");
+});
+
+test("edited event routes only an exact cross-PR recovery marker", () => {
+  const base = payload();
+  const head = base.pull_request.head.sha;
+  const marker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=android-worker-a pr=28 head=${head} -->`;
+  const result = routeGitHubPullRequest(
+    payload({
+      action: "edited",
+      pull_request: {
+        ...base.pull_request,
+        body: `Task intent\n\n${marker}`,
+      },
+    }),
+    "delivery-recovery-001",
+  );
+  assert.equal(result.kind, "route");
+  assert.equal(result.wake.reason, "github_pull_request_cross_pr_recovery");
+
+  const malformed = routeGitHubPullRequest(
+    payload({
+      action: "edited",
+      pull_request: {
+        ...base.pull_request,
+        body: `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=other pr=28 head=${head} -->`,
+      },
+    }),
+    "delivery-recovery-002",
+  );
+  assert.equal(malformed.kind, "error");
+  assert.equal(malformed.error, "CROSS_PR_RECOVERY_MARKER_INVALID");
+
+  const ordinaryEdit = routeGitHubPullRequest(
+    payload({
+      action: "edited",
+      pull_request: { ...base.pull_request, body: "ordinary edit" },
+    }),
+    "delivery-recovery-003",
+  );
+  assert.equal(ordinaryEdit.kind, "ignore");
+  assert.equal(ordinaryEdit.reason, "NON_RECOVERY_EDIT_EVENT");
 });
 
 test("explicitly allowed demo repository routes with its own canonical repo identity", () => {

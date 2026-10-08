@@ -5,13 +5,14 @@ export const CONTROL_REPOSITORIES = new Set([
   "jan2xo/bke-demo-app",
 ]);
 export const ASSIGNMENT_LABEL_PREFIX = "bke-worker:";
+export const CROSS_PR_RECOVERY_MARKER = "BKE-RECOVER-CROSS-PR-WAKE";
 export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const DELIVERY = /^[A-Za-z0-9._:-]{1,128}$/;
 const ACK_STATES = new Set(["accepted", "deferred", "rejected", "completed"]);
-const ROUTING_ACTIONS = new Set(["opened", "reopened", "labeled", "synchronize"]);
+const ROUTING_ACTIONS = new Set(["opened", "reopened", "labeled", "synchronize", "edited"]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -224,16 +225,6 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     });
   }
 
-  if (action === "labeled") {
-    const added = typeof payload?.label?.name === "string" ? payload.label.name : "";
-    if (added.toLowerCase() !== workerLabels[0].toLowerCase()) {
-      return jsonResult("ignore", {
-        reason: "NON_ASSIGNMENT_LABEL_EVENT",
-        pullRequest: prNumber,
-      });
-    }
-  }
-
   const headSha = typeof pullRequest?.head?.sha === "string"
     ? pullRequest.head.sha
     : "";
@@ -244,6 +235,40 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     });
   }
 
+  let reason = `github_pull_request_${action}`;
+  if (action === "labeled") {
+    const added = typeof payload?.label?.name === "string" ? payload.label.name : "";
+    if (added.toLowerCase() !== workerLabels[0].toLowerCase()) {
+      return jsonResult("ignore", {
+        reason: "NON_ASSIGNMENT_LABEL_EVENT",
+        pullRequest: prNumber,
+      });
+    }
+  } else if (action === "edited") {
+    if (repository !== CONTROL_REPOSITORY) {
+      return jsonResult("ignore", {
+        reason: "RECOVERY_MARKER_CONTROL_REPOSITORY_ONLY",
+        pullRequest: prNumber,
+      });
+    }
+    const body = typeof pullRequest.body === "string" ? pullRequest.body : "";
+    const marker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
+    if (!body.includes(CROSS_PR_RECOVERY_MARKER)) {
+      return jsonResult("ignore", {
+        reason: "NON_RECOVERY_EDIT_EVENT",
+        pullRequest: prNumber,
+      });
+    }
+    if (!body.includes(marker)) {
+      return jsonResult("error", {
+        status: 409,
+        error: "CROSS_PR_RECOVERY_MARKER_INVALID",
+        pullRequest: prNumber,
+      });
+    }
+    reason = "github_pull_request_cross_pr_recovery";
+  }
+
   const wake = {
     protocol: PROTOCOL,
     type: "wake",
@@ -251,7 +276,7 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     repo: repository,
     pr_number: prNumber,
     expected_head_sha: headSha,
-    reason: `github_pull_request_${action}`,
+    reason,
     delivery_id: deliveryId,
   };
 

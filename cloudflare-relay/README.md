@@ -62,7 +62,13 @@ Once the wake may have reached Android, disconnect does **not** cause blind auto
 
 A newer `pull_request.synchronize` event for the **same PR** is different: the new GitHub exact head makes the older wake stale by definition. The relay therefore supersedes the stale same-PR active wake with the newer-head wake, clears any queued same-PR re-evaluation, and sends the new wake to the authoritative socket when one is connected. Android still serializes delivery locally: if the prior ChatGPT turn is genuinely still active, the newer wake is deferred until that turn clears. Late ACKs from a known superseded delivery are ignored rather than closing the authoritative socket.
 
-Same-head re-evaluation does **not** supersede an active wake; it remains queued behind the active delivery. Cross-PR replacement is still rejected fail-closed.
+Same-head re-evaluation does **not** supersede an active wake; it remains queued behind the active delivery. Cross-PR replacement remains fail-closed by default.
+
+If GitHub ownership and relay state disagree after an ambiguous historical delivery, cross-PR recovery requires an explicit GitHub edit on the currently assigned control-repository PR. The PR body must temporarily contain exactly:
+
+`<!-- BKE-RECOVER-CROSS-PR-WAKE worker=<worker_id> pr=<pr_number> head=<exact_head_sha> -->`
+
+A signed `pull_request.edited` webhook with that marker may retire one stale different-PR active wake and deliver the marked PR once to the authoritative socket. The marker is bound to the current worker ID, PR number, and exact head; ordinary edits, malformed/stale markers, demo-repository edits, reconnects, and ordinary automatic assignment do not authorize cross-PR replacement. The relay records the resulting `cross_pr_recovered_*` checkpoint on the PR, after which the operator should remove the temporary marker.
 
 Each routed wake also writes a compact best-effort PR-ledger checkpoint such as `BKE RELAY — sent`, `queued_behind_active`, `superseded_sent`, or `recovered_sent`. This metadata-only observability uses the existing repository-scoped BKE GitHub App token and never carries prompts, credentials, or browser data.
 
