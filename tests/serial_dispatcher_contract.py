@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,7 +124,256 @@ class RecordingLabelApi(dispatcher.GitHubApi):
         raise AssertionError(f"Unexpected request: {method} {path}")
 
 
+class FakeContinuationApi:
+    def __init__(self, *, active_ci=False):
+        self.active_ci = active_ci
+        self.pr = {
+            "number": 82,
+            "state": "open",
+            "body": "## BKE TASK CHECKLIST\n- [ ] **A1 — perform authorized work.**",
+            "head": {"sha": "a" * 40},
+        }
+        self.comments = [
+            {
+                "id": 100,
+                "created_at": "2020-01-01T00:00:00Z",
+                "body": "BKE EXECUTION CHECKPOINT — IMPLEMENTED\nhead=" + "a" * 40,
+            },
+        ]
+        self.edits = []
+        self.created_comments = []
+
+    def search_open_worker_prs(self):
+        return [{"number": 82}]
+
+    def get_pull_request(self, number):
+        assert number == 82
+        return self.pr
+
+    def list_issue_comments(self, number):
+        assert number == 82
+        return list(self.comments)
+
+    def get_commit(self, sha):
+        assert sha == "a" * 40
+        return {"commit": {"committer": {"date": "2020-01-01T00:00:00Z"}}}
+
+    def active_workflow_runs_for_sha(self, sha):
+        return []
+
+    def active_required_certification_runs(self):
+        return self.active_ci
+
+    def update_issue_body(self, number, body):
+        assert number == 82
+        self.pr["body"] = body
+        self.edits.append(body)
+
+    def add_issue_comment(self, number, body):
+        assert number == 82
+        self.created_comments.append(body)
+        self.comments.append({
+            "id": 200 + len(self.created_comments),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "body": body,
+        })
+
+
+class FakeCertificationRunsApi(dispatcher.GitHubApi):
+    def __init__(self, statuses=()):
+        super().__init__("test-only", "https://api.test", "jan2xo/bke-worker")
+        self.active_statuses = set(statuses)
+        self.requested_statuses = []
+
+    def request(self, method, path, payload=None, *, allow_404=False):
+        assert method == "GET"
+        assert "/actions/workflows/certify.yml/runs?" in path
+        status = path.split("status=", 1)[1].split("&", 1)[0]
+        self.requested_statuses.append(status)
+        return {"workflow_runs": [{"status": status}] if status in self.active_statuses else []}
+
+
 class SerialDispatcherTests(unittest.TestCase):
+    def test_resume_requested_is_not_progress_and_is_deduped(self):
+        api = FakeContinuationApi()
+        first = dispatcher.request_continuation(api)
+        self.assertEqual(first["state"], "CONTINUATION_REQUESTED")
+        self.assertEqual(len(api.edits), 1)
+        self.assertEqual(len(api.created_comments), 1)
+        self.assertIn("RESUME_REQUESTED", api.created_comments[0])
+
+        second = dispatcher.request_continuation(api)
+        self.assertEqual(second, {
+            "state": "WAITING",
+            "reason": "RESUME_ALREADY_REQUESTED",
+            "pr": 82,
+        })
+        self.assertEqual(len(api.edits), 1)
+        self.assertEqual(len(api.created_comments), 1)
+
+    def test_running_issue_comment_certification_suppresses_resume(self):
+        api = FakeContinuationApi(active_ci=True)
+        result = dispatcher.request_continuation(api)
+        self.assertEqual(result["state"], "WAITING")
+        self.assertEqual(result["reason"], "CONTINUATION_NOT_SAFE_OR_LEASE_ACTIVE")
+        self.assertEqual(api.edits, [])
+        self.assertEqual(api.created_comments, [])
+
+    def test_issue_comment_ci_query_is_not_pr_head_sha_only(self):
+        active = FakeCertificationRunsApi(statuses=("in_progress",))
+        self.assertTrue(active.active_required_certification_runs())
+        self.assertEqual(active.requested_statuses, ["queued", "in_progress"])
+        idle = FakeCertificationRunsApi()
+        self.assertFalse(idle.active_required_certification_runs())
+        self.assertEqual(idle.requested_statuses, ["queued", "in_progress", "waiting"])
+
+    def test_execution_checklist_is_machine_recognizable(self):
+        body = """## BKE TASK CHECKLIST
+- [ ] **A1 — Authoritative assignment discovery.**
+- [x] **A2 — Zero / one / multiple assignment proof.**
+## Certification
+"""
+        entries = dispatcher.extract_execution_checklist(body)
+        self.assertEqual(entries[0][0], "A1")
+        self.assertFalse(entries[0][2])
+        self.assertEqual(entries[1][0], "A2")
+        self.assertTrue(entries[1][2])
+
+    def test_execution_checklist_adds_stable_fallback_cursor(self):
+        body = dispatcher.ensure_execution_checklist("## Task contract\nNo checklist")
+        entries = dispatcher.extract_execution_checklist(body)
+        self.assertEqual(entries, [("TASK-1", "Complete and certify the authorized task contract above.", False)])
+        dispatcher.require_execution_checklist(body)
+
+    def test_execution_checklist_rejects_duplicate_ids(self):
+        with self.assertRaisesRegex(dispatcher.DispatchError, "DUPLICATE_TASK_CHECKLIST_ITEM:A1"):
+            dispatcher.extract_execution_checklist(
+                "## BKE TASK CHECKLIST\n- [ ] **A1 — one**\n- [ ] **A1 — duplicate**"
+            )
+
+    def test_progress_lease_requires_unresolved_safe_work(self):
+        checklist = [("A1", "assignment", False), ("A2", "proof", True)]
+        now = datetime.now(timezone.utc)
+        self.assertFalse(
+            dispatcher.continuation_should_resume(
+                now=now,
+                head_sha="a" * 40,
+                checklist=checklist,
+                progress_at=now - timedelta(minutes=29),
+                active_certification=False,
+                terminal_or_blocked=False,
+                relay_uncertain=False,
+            )
+        )
+        self.assertTrue(
+            dispatcher.continuation_should_resume(
+                now=now,
+                head_sha="a" * 40,
+                checklist=checklist,
+                progress_at=now - timedelta(minutes=30),
+                active_certification=False,
+                terminal_or_blocked=False,
+                relay_uncertain=False,
+            )
+        )
+        for blocked in (True,):
+            self.assertFalse(
+                dispatcher.continuation_should_resume(
+                    now=now,
+                    head_sha="a" * 40,
+                    checklist=checklist,
+                    progress_at=now - timedelta(minutes=31),
+                    active_certification=False,
+                    terminal_or_blocked=blocked,
+                    relay_uncertain=False,
+                )
+            )
+
+    def test_continuation_generation_changes_only_on_meaningful_progress(self):
+        checklist = [("A1", "assignment", False)]
+        first = dispatcher.continuation_generation("a" * 40, checklist, "1")
+        same = dispatcher.continuation_generation("a" * 40, checklist, "1")
+        head_progress = dispatcher.continuation_generation("b" * 40, checklist, "1")
+        checkpoint_progress = dispatcher.continuation_generation("a" * 40, checklist, "2")
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, head_progress)
+        self.assertNotEqual(first, checkpoint_progress)
+
+    def test_continuation_marker_is_bounded_metadata(self):
+        marker = dispatcher.continuation_marker(
+            "android-worker-a",
+            82,
+            "a" * 40,
+            "0123456789abcdef01234567",
+        )
+        self.assertIn("BKE-CONTINUATION-RESUME", marker)
+        self.assertNotIn("prompt=", marker)
+        self.assertNotIn("javascript=", marker)
+        self.assertNotIn("shell=", marker)
+
+    def test_long_run_cursor_progresses_then_stops_at_terminal_state(self):
+        now = datetime.now(timezone.utc)
+        checklist = [("A1", "assignment", False), ("A2", "proof", False)]
+        self.assertTrue(
+            dispatcher.continuation_should_resume(
+                now=now, head_sha="a" * 40, checklist=checklist,
+                progress_at=now - timedelta(minutes=31),
+                active_certification=False, terminal_or_blocked=False, relay_uncertain=False,
+            )
+        )
+        generation_one = dispatcher.continuation_generation("a" * 40, checklist, "checkpoint-1")
+        progressed = [("A1", "assignment", True), ("A2", "proof", False)]
+        generation_two = dispatcher.continuation_generation("b" * 40, progressed, "checkpoint-2")
+        self.assertNotEqual(generation_one, generation_two)
+        self.assertFalse(
+            dispatcher.continuation_should_resume(
+                now=now, head_sha="b" * 40, checklist=progressed,
+                progress_at=now - timedelta(minutes=31),
+                active_certification=False, terminal_or_blocked=True, relay_uncertain=False,
+            )
+        )
+
+    def test_checkpoint_reconciliation_requires_every_item_and_fresh_head(self):
+        checklist = [("A1", "assignment", False), ("A2", "proof", False)]
+        reconciled, unresolved = dispatcher.reconcile_execution_checkpoint(
+            checklist,
+            {"A1": "DONE", "A2": "BLOCKED"},
+            exact_head="a" * 40,
+            certified_head=None,
+        )
+        self.assertEqual(reconciled, {"A1": "DONE", "A2": "BLOCKED"})
+        self.assertEqual(unresolved, ["A2"])
+        with self.assertRaisesRegex(dispatcher.DispatchError, "CHECKPOINT_RECONCILIATION_INVALID"):
+            dispatcher.reconcile_execution_checkpoint(
+                checklist, {"A1": "DONE"}, exact_head="a" * 40, certified_head=None
+            )
+        with self.assertRaisesRegex(dispatcher.DispatchError, "CHECKPOINT_CERTIFICATION_STALE_HEAD"):
+            dispatcher.reconcile_execution_checkpoint(
+                checklist, {"A1": "DONE", "A2": "DONE"},
+                exact_head="a" * 40, certified_head="b" * 40
+            )
+
+    def test_ready_for_audit_requires_complete_fresh_certification(self):
+        complete = {"A1": "DONE", "A2": "NOT_REQUIRED"}
+        self.assertTrue(
+            dispatcher.ready_for_audit_allowed(
+                complete, exact_head="a" * 40, certified_head="a" * 40,
+                required_certification_complete=True,
+            )
+        )
+        self.assertFalse(
+            dispatcher.ready_for_audit_allowed(
+                {"A1": "DONE", "A2": "BLOCKED"}, exact_head="a" * 40,
+                certified_head="a" * 40, required_certification_complete=True,
+            )
+        )
+        self.assertFalse(
+            dispatcher.ready_for_audit_allowed(
+                complete, exact_head="a" * 40, certified_head="b" * 40,
+                required_certification_complete=True,
+            )
+        )
+
     def test_control_label_contract_is_bounded(self):
         self.assertEqual(
             set(dispatcher.CONTROL_LABELS),

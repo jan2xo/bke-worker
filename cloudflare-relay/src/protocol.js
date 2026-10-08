@@ -6,6 +6,7 @@ export const CONTROL_REPOSITORIES = new Set([
 ]);
 export const ASSIGNMENT_LABEL_PREFIX = "bke-worker:";
 export const CROSS_PR_RECOVERY_MARKER = "BKE-RECOVER-CROSS-PR-WAKE";
+export const CONTINUATION_MARKER = "BKE-CONTINUATION-RESUME";
 export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -276,27 +277,49 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     const priorBody = typeof payload?.changes?.body?.from === "string"
       ? payload.changes.body.from
       : null;
-    const marker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
-    if (!body.includes(CROSS_PR_RECOVERY_MARKER)) {
+    const recoveryMarker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
+    const continuationPattern = new RegExp(
+      `<!-- ${CONTINUATION_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} generation=[a-f0-9]{24} -->`,
+    );
+    // Ordinary PR body edits are not wake signals. Only explicitly marker-bearing
+    // edits enter the strict recovery/continuation validation path.
+    if (!body.includes(CONTINUATION_MARKER) && !body.includes(CROSS_PR_RECOVERY_MARKER)) {
       return jsonResult("ignore", {
         reason: "NON_RECOVERY_EDIT_EVENT",
         pullRequest: prNumber,
       });
     }
-    if (!body.includes(marker)) {
-      return jsonResult("error", {
-        status: 409,
-        error: "CROSS_PR_RECOVERY_MARKER_INVALID",
-        pullRequest: prNumber,
-      });
+    if (body.includes(CONTINUATION_MARKER)) {
+      if (!continuationPattern.test(body)) {
+        return jsonResult("error", {
+          status: 409,
+          error: "CONTINUATION_MARKER_INVALID",
+          pullRequest: prNumber,
+        });
+      }
+      if (priorBody === null || priorBody.includes(CONTINUATION_MARKER)) {
+        return jsonResult("ignore", {
+          reason: "CONTINUATION_MARKER_NOT_NEW",
+          pullRequest: prNumber,
+        });
+      }
+      reason = "github_pull_request_continuation";
+    } else {
+      if (!body.includes(recoveryMarker)) {
+        return jsonResult("error", {
+          status: 409,
+          error: "CROSS_PR_RECOVERY_MARKER_INVALID",
+          pullRequest: prNumber,
+        });
+      }
+      if (priorBody === null || priorBody.includes(CROSS_PR_RECOVERY_MARKER)) {
+        return jsonResult("ignore", {
+          reason: "CROSS_PR_RECOVERY_MARKER_NOT_NEW",
+          pullRequest: prNumber,
+        });
+      }
+      reason = "github_pull_request_cross_pr_recovery";
     }
-    if (priorBody === null || priorBody.includes(CROSS_PR_RECOVERY_MARKER)) {
-      return jsonResult("ignore", {
-        reason: "CROSS_PR_RECOVERY_MARKER_NOT_NEW",
-        pullRequest: prNumber,
-      });
-    }
-    reason = "github_pull_request_cross_pr_recovery";
   }
 
   const wake = {
@@ -359,6 +382,54 @@ export function validateRecoveryRequest(value, expectedWorkerId) {
     isValidWorkerId(value.worker_id);
 }
 
+export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId) {
+  if (!Array.isArray(issueItems) || !Array.isArray(pullRequests) || !isValidWorkerId(workerId)) {
+    throw new Error("RECOVERY_ASSIGNMENT_PAYLOAD_INVALID");
+  }
+
+  const assignedLabel = `${ASSIGNMENT_LABEL_PREFIX}${workerId}`.toLowerCase();
+  const issueCandidates = issueItems
+    .filter((item) =>
+      item &&
+      item.pull_request &&
+      item.state === "open" &&
+      Number.isInteger(Number(item.number)) &&
+      Number(item.number) > 0 &&
+      Array.isArray(item.labels) &&
+      item.labels.some((label) =>
+        String(label?.name || "").toLowerCase() === assignedLabel
+      )
+    )
+    .map((item) => Number(item.number));
+
+  const pullByNumber = new Map(
+    pullRequests
+      .filter((item) => item && Number.isInteger(Number(item.number)))
+      .map((item) => [Number(item.number), item])
+  );
+
+  return issueCandidates
+    .map((number) => {
+      const pull = pullByNumber.get(number);
+      if (!pull) {
+        throw new Error(`RECOVERY_ASSIGNMENT_DETAIL_MISSING:${number}`);
+      }
+      // A terminal PR is not resurrected, but an unreadable/open assigned PR
+      // must not be silently discarded and misclassified as FREE.
+      if (pull.state === "closed") return null;
+      if (pull.state !== "open") {
+        throw new Error(`RECOVERY_ASSIGNMENT_STATE_INVALID:${number}`);
+      }
+      const headRef = typeof pull.head?.ref === "string" ? pull.head.ref : "";
+      const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
+      if (!headRef || !SHA.test(headSha)) {
+        throw new Error(`RECOVERY_ASSIGNMENT_HEAD_INVALID:${number}`);
+      }
+      return { workerId, number, headRef, headSha };
+    })
+    .filter(Boolean);
+}
+
 export function planRecovery(assignments, active) {
   if (!Array.isArray(assignments)) throw new Error("RECOVERY_ASSIGNMENTS_INVALID");
 
@@ -374,7 +445,10 @@ export function planRecovery(assignments, active) {
   const sameActiveHead = sameActivePr &&
     active.wake.expected_head_sha === assignment.headSha;
 
-  if (sameActiveHead) {
+  // Queued means no delivery was accepted: a reconnect may safely recover
+  // the same PR/head. Sent, accepted, and deferred remain in-flight and must
+  // never be replayed solely because a reconnect occurred.
+  if (sameActiveHead && active.phase !== "queued") {
     return {
       state: "preserved_active_assignment",
       assignment,

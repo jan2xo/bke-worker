@@ -1,6 +1,8 @@
 name: Serial Master Queue Dispatcher
 
 on:
+  schedule:
+    - cron: '*/5 * * * *'
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened]
   pull_request_target:
@@ -94,3 +96,17 @@ jobs:
           set -euo pipefail
           export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"
           python3 scripts/github_serial_dispatcher.py
+
+      - name: Request safe continuation after progress lease
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          BKE_WORKER_ID: android-worker-a
+          BKE_CONTINUATION_ONLY: "true"
+        run: |
+          set -euo pipefail
+          export GITHUB_TOKEN="$BKE_GITHUB_APP_TOKEN"
+          python3 scripts/github_serial_dispatcher.py
+
+
