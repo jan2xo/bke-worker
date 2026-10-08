@@ -435,7 +435,10 @@ export function planRecovery(assignments, active) {
   const sameActiveHead = sameActivePr &&
     active.wake.expected_head_sha === assignment.headSha;
 
-  if (sameActiveHead) {
+  // Queued means no delivery was accepted: a reconnect may safely recover
+  // the same PR/head. Sent, accepted, and deferred remain in-flight and must
+  // never be replayed solely because a reconnect occurred.
+  if (sameActiveHead && active.phase !== "queued") {
     return {
       state: "preserved_active_assignment",
       assignment,
