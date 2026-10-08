@@ -320,38 +320,13 @@ try {
   );
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  // A genuinely external newer exact head still supersedes the active wake.
-  const externalSelfCheck = await postWebhook({
-    deliveryId: "cloudflare-smoke-001-external",
-    action: "synchronize",
-    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    sender: "external-user",
-    headRepoOwner: "jan2xo",
-  });
-  assert.equal(externalSelfCheck.status, 202);
-  assert.equal(externalSelfCheck.body.relay.state, "superseded_sent");
-  assert.equal(
-    externalSelfCheck.body.relay.superseded_delivery_id,
-    "cloudflare-smoke-001",
-  );
-
-  const externalWake = JSON.parse(await ws.nextText());
-  assert.equal(externalWake.delivery_id, "cloudflare-smoke-001-external");
-  assert.equal(externalWake.expected_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-
-  ws.sendText(JSON.stringify({
-    protocol: 1,
-    type: "ack",
-    worker_id: workerId,
-    delivery_id: externalWake.delivery_id,
-    state: "accepted",
-  }));
-
   // A newer exact head for the same PR supersedes an ambiguous active wake.
   const superseding = await postWebhook({
     deliveryId: "cloudflare-smoke-002",
     action: "synchronize",
     sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    sender: "external-user",
+    headRepoOwner: "jan2xo",
   });
   assert.equal(superseding.status, 202);
   assert.equal(superseding.body.relay.state, "superseded_sent");
