@@ -64,6 +64,8 @@ A newer `pull_request.synchronize` event for the **same PR** is different: the n
 
 Same-head re-evaluation does **not** supersede an active wake; it remains queued behind the active delivery. Cross-PR replacement is still rejected fail-closed.
 
+Each routed wake also writes a compact best-effort PR-ledger checkpoint such as `BKE RELAY — sent`, `queued_behind_active`, `superseded_sent`, or `recovered_sent`. This metadata-only observability uses the existing repository-scoped BKE GitHub App token and never carries prompts, credentials, or browser data.
+
 For an explicitly ambiguous same-head delivery, GitHub reassignment is the recovery control: remove and re-apply the same `bke-worker:<worker_id>` assignment. A fresh assignment-label event for the already-active same PR replaces the ambiguous durable wake and emits one fresh continuation. This is never triggered by reconnect alone, and it does not permit cross-PR replacement.
 
 `completed` and `rejected` ACKs retire the active wake and allow a queued re-evaluation wake to proceed.
