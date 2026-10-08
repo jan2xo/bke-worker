@@ -6,6 +6,7 @@ export const CONTROL_REPOSITORIES = new Set([
 ]);
 export const ASSIGNMENT_LABEL_PREFIX = "bke-worker:";
 export const CROSS_PR_RECOVERY_MARKER = "BKE-RECOVER-CROSS-PR-WAKE";
+export const CONTINUATION_MARKER = "BKE-CONTINUATION-RESUME";
 export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -276,27 +277,41 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     const priorBody = typeof payload?.changes?.body?.from === "string"
       ? payload.changes.body.from
       : null;
-    const marker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
-    if (!body.includes(CROSS_PR_RECOVERY_MARKER)) {
-      return jsonResult("ignore", {
-        reason: "NON_RECOVERY_EDIT_EVENT",
-        pullRequest: prNumber,
-      });
+    const recoveryMarker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
+    const continuationPattern = new RegExp(
+      `<!-- ${CONTINUATION_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} generation=[a-f0-9]{24} -->`,
+    );
+    if (body.includes(CONTINUATION_MARKER)) {
+      if (!continuationPattern.test(body)) {
+        return jsonResult("error", {
+          status: 409,
+          error: "CONTINUATION_MARKER_INVALID",
+          pullRequest: prNumber,
+        });
+      }
+      if (priorBody === null || priorBody.includes(CONTINUATION_MARKER)) {
+        return jsonResult("ignore", {
+          reason: "CONTINUATION_MARKER_NOT_NEW",
+          pullRequest: prNumber,
+        });
+      }
+      reason = "github_pull_request_continuation";
+    } else {
+      if (!body.includes(recoveryMarker)) {
+        return jsonResult("error", {
+          status: 409,
+          error: "CROSS_PR_RECOVERY_MARKER_INVALID",
+          pullRequest: prNumber,
+        });
+      }
+      if (priorBody === null || priorBody.includes(CROSS_PR_RECOVERY_MARKER)) {
+        return jsonResult("ignore", {
+          reason: "CROSS_PR_RECOVERY_MARKER_NOT_NEW",
+          pullRequest: prNumber,
+        });
+      }
+      reason = "github_pull_request_cross_pr_recovery";
     }
-    if (!body.includes(marker)) {
-      return jsonResult("error", {
-        status: 409,
-        error: "CROSS_PR_RECOVERY_MARKER_INVALID",
-        pullRequest: prNumber,
-      });
-    }
-    if (priorBody === null || priorBody.includes(CROSS_PR_RECOVERY_MARKER)) {
-      return jsonResult("ignore", {
-        reason: "CROSS_PR_RECOVERY_MARKER_NOT_NEW",
-        pullRequest: prNumber,
-      });
-    }
-    reason = "github_pull_request_cross_pr_recovery";
   }
 
   const wake = {
