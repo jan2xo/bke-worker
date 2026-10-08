@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+from datetime import datetime, timezone
 import sys
 import urllib.error
 import urllib.parse
@@ -17,6 +19,8 @@ READY_LABEL = "bke-task:ready"
 BLOCKED_LABEL = "bke-task:blocked"
 WORKER_ID = "android-worker-a"
 WORKER_LABEL = f"bke-worker:{WORKER_ID}"
+PROGRESS_LEASE_SECONDS = 30 * 60
+CONTINUATION_MARKER = "BKE-CONTINUATION-RESUME"
 TASK_BRANCH_PREFIX = "bke/task-"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 ACTIONS_PR_CREATION_DENIED_FRAGMENT = (
@@ -200,7 +204,38 @@ def validate_orphan_materialization(
     return parent_sha
 
 
+def extract_execution_checklist(body: str) -> list[tuple[str, str, bool]]:
+    lines = body.splitlines()
+    in_section = False
+    entries: list[tuple[str, str, bool]] = []
+    seen: set[str] = set()
+    for line in lines:
+        if line.strip().lower() == "## bke task checklist":
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = re.match(r"^\s*[-*]\s+\[(?P<checked>[ xX])\]\s+\*\*(?P<id>[A-Z][A-Z0-9-]+)\s+—\s+(?P<text>.+?)\*\*\s*$", line)
+        if not match:
+            continue
+        item_id = match.group("id")
+        if item_id in seen:
+            raise DispatchError(f"DUPLICATE_TASK_CHECKLIST_ITEM:{item_id}")
+        seen.add(item_id)
+        entries.append((item_id, match.group("text").strip(), match.group("checked").lower() == "x"))
+    return entries
+
+
+def require_execution_checklist(body: str) -> None:
+    entries = extract_execution_checklist(body)
+    if not entries:
+        raise DispatchError("TASK_PR_CHECKLIST_MISSING_OR_UNPARSEABLE")
+
+
 def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
+    require_execution_checklist(task.body)
     return (
         "## BKE queued task\n\n"
         f"Materialized deterministically from task issue #{task.number} by the GitHub-native serial dispatcher.\n\n"
@@ -219,6 +254,59 @@ def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
         "- Do not invent unrelated work.\n"
         "- Production remains locked unless separately authorized.\n"
     )
+
+
+
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def continuation_generation(
+    head_sha: str,
+    checklist: list[tuple[str, str, bool]],
+    latest_progress_id: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "head_sha": head_sha,
+            "checklist": [(item_id, checked) for item_id, _, checked in checklist],
+            "latest_progress_id": latest_progress_id,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
+def continuation_marker(worker_id: str, pr_number: int, head_sha: str, generation: str) -> str:
+    return (
+        f"<!-- {CONTINUATION_MARKER} worker={worker_id} "
+        f"pr={pr_number} head={head_sha} generation={generation} -->"
+    )
+
+
+def continuation_should_resume(
+    *,
+    now: datetime,
+    head_sha: str,
+    checklist: list[tuple[str, str, bool]],
+    progress_at: datetime | None,
+    active_certification: bool,
+    terminal_or_blocked: bool,
+    relay_uncertain: bool,
+) -> bool:
+    if not checklist or all(checked for _, _, checked in checklist):
+        return False
+    if terminal_or_blocked or active_certification or relay_uncertain:
+        return False
+    if progress_at is None:
+        return False
+    return (now.astimezone(timezone.utc) - progress_at.astimezone(timezone.utc)).total_seconds() >= PROGRESS_LEASE_SECONDS
 
 
 class GitHubApi:
@@ -325,6 +413,42 @@ class GitHubApi:
                 f"Master checklist reference #{number} is a pull request, not a task issue"
             )
         return payload
+
+    def get_pull_request(self, number: int) -> dict[str, Any]:
+        payload = self.request("GET", f"/repos/{self.repository}/pulls/{number}")
+        if not isinstance(payload, dict):
+            raise DispatchError(f"Pull request #{number} payload invalid")
+        return payload
+
+    def list_issue_comments(self, number: int) -> list[dict[str, Any]]:
+        return self.paginate(f"/repos/{self.repository}/issues/{number}/comments")
+
+    def get_commit(self, sha: str) -> dict[str, Any]:
+        payload = self.request("GET", f"/repos/{self.repository}/commits/{sha}")
+        if not isinstance(payload, dict):
+            raise DispatchError(f"Commit {sha} payload invalid")
+        return payload
+
+    def active_workflow_runs_for_sha(self, sha: str) -> list[dict[str, Any]]:
+        encoded = urllib.parse.quote(sha, safe="")
+        payload = self.request(
+            "GET",
+            f"/repos/{self.repository}/actions/runs?head_sha={encoded}&per_page=100",
+        )
+        if not isinstance(payload, dict):
+            raise DispatchError("Workflow run payload invalid")
+        runs = payload.get("workflow_runs") or []
+        return [
+            item for item in runs
+            if isinstance(item, dict) and item.get("status") in {"queued", "in_progress"}
+        ]
+
+    def add_issue_comment(self, number: int, body: str) -> None:
+        self.request(
+            "POST",
+            f"/repos/{self.repository}/issues/{number}/comments",
+            {"body": body},
+        )
 
     def update_issue_body(self, number: int, body: str) -> None:
         self.request(
@@ -553,6 +677,116 @@ def _worker_labels(payload: dict[str, Any]) -> list[str]:
     )
 
 
+def request_continuation(api: GitHubApi) -> dict[str, Any]:
+    assigned = api.search_open_worker_prs()
+    if len(assigned) != 1:
+        return {
+            "state": "WAITING",
+            "reason": "CONTINUATION_NOT_SINGLE_OWNER",
+            "assigned_prs": len(assigned),
+        }
+
+    pr_number = int(assigned[0]["number"])
+    pr = api.get_pull_request(pr_number)
+    if str(pr.get("state") or "").lower() != "open":
+        return {"state": "WAITING", "reason": "PR_NOT_OPEN"}
+
+    body = str(pr.get("body") or "")
+    checklist = extract_execution_checklist(body)
+    if not checklist:
+        raise DispatchError("CONTINUATION_CHECKLIST_MISSING")
+    if all(checked for _, _, checked in checklist):
+        return {"state": "WAITING", "reason": "CHECKLIST_COMPLETE", "pr": pr_number}
+
+    comments = api.list_issue_comments(pr_number)
+    progress_events = [
+        comment for comment in comments
+        if isinstance(comment, dict)
+        and isinstance(comment.get("body"), str)
+        and (
+            comment["body"].startswith("BKE EXECUTION CHECKPOINT —")
+            or comment["body"].startswith("BKE CONTINUATION CHECKPOINT —")
+        )
+    ]
+    progress_events.sort(key=lambda item: str(item.get("created_at") or ""))
+    latest_progress = progress_events[-1] if progress_events else None
+
+    head_sha = str((pr.get("head") or {}).get("sha") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise DispatchError("CONTINUATION_HEAD_INVALID")
+    head_commit = api.get_commit(head_sha)
+    commit_date = _parse_iso_timestamp(
+        ((head_commit.get("commit") or {}).get("committer") or {}).get("date")
+    )
+    progress_at = commit_date
+    if latest_progress:
+        progress_at = max(
+            [value for value in [commit_date, _parse_iso_timestamp(latest_progress.get("created_at"))] if value],
+            default=commit_date,
+        )
+
+    active_certification = bool(api.active_workflow_runs_for_sha(head_sha))
+    terminal_or_blocked = (
+        "BKE EXECUTION CHECKPOINT — READY_FOR_AUDIT" in body
+        or any(
+            isinstance(item.get("body"), str) and (
+                "BKE EXECUTION CHECKPOINT — READY_FOR_AUDIT" in item["body"]
+                or "BKE EXECUTION CHECKPOINT — BLOCKED" in item["body"]
+            )
+            for item in comments
+        )
+    )
+    relay_events = [
+        item for item in comments
+        if isinstance(item, dict)
+        and isinstance(item.get("body"), str)
+        and item["body"].startswith("BKE RELAY —")
+    ]
+    relay_events.sort(key=lambda item: str(item.get("created_at") or ""))
+    latest_relay = relay_events[-1] if relay_events else None
+    relay_uncertain = bool(
+        latest_relay and re.search(r"BKE RELAY — (?:sent|accepted|deferred|conflict|recovery_required)", latest_relay["body"], re.I)
+    )
+
+    if not continuation_should_resume(
+        now=datetime.now(timezone.utc),
+        head_sha=head_sha,
+        checklist=checklist,
+        progress_at=progress_at,
+        active_certification=active_certification,
+        terminal_or_blocked=terminal_or_blocked,
+        relay_uncertain=relay_uncertain,
+    ):
+        return {"state": "WAITING", "reason": "CONTINUATION_NOT_SAFE_OR_LEASE_ACTIVE", "pr": pr_number}
+
+    latest_progress_id = str(latest_progress.get("id") if latest_progress else head_sha)
+    generation = continuation_generation(head_sha, checklist, latest_progress_id)
+    marker = continuation_marker(WORKER_ID, pr_number, head_sha, generation)
+    if marker not in body:
+        new_body = re.sub(r"<!-- BKE-CONTINUATION-RESUME worker=[^>]+ -->\s*", "", body)
+        new_body = new_body.rstrip() + "\n\n" + marker + "\n"
+        api.update_issue_body(pr_number, new_body)
+
+    checkpoint = (
+        "BKE CONTINUATION CHECKPOINT — RESUME_REQUESTED\n"
+        f"worker={WORKER_ID}\npr=#{pr_number}\nhead={head_sha}\n"
+        f"generation={generation}\nreason=progress_lease_expired"
+    )
+    if not any(
+        isinstance(item.get("body"), str) and f"generation={generation}" in item["body"]
+        and item["body"].startswith("BKE CONTINUATION CHECKPOINT — RESUME_REQUESTED")
+        for item in comments
+    ):
+        api.add_issue_comment(pr_number, checkpoint)
+
+    return {
+        "state": "CONTINUATION_REQUESTED",
+        "pr": pr_number,
+        "head": head_sha,
+        "generation": generation,
+    }
+
+
 def reconcile(api: GitHubApi) -> dict[str, Any]:
     api.ensure_control_labels()
     masters = api.open_master_issues()
@@ -691,7 +925,8 @@ def main() -> int:
         return 2
 
     try:
-        result = reconcile(GitHubApi(token, api_url, repository))
+        api = GitHubApi(token, api_url, repository)
+        result = request_continuation(api) if os.environ.get("BKE_CONTINUATION_ONLY") == "true" else reconcile(api)
     except DispatchError as error:
         print(f"BKE serial dispatcher FAIL-CLOSED: {error}", file=sys.stderr)
         return 3
