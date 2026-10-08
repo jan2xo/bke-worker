@@ -130,14 +130,14 @@ class FakeContinuationApi:
         self.pr = {
             "number": 82,
             "state": "open",
-            "body": "## BKE TASK CHECKLIST\\n- [ ] **A1 — perform authorized work.**",
+            "body": "## BKE TASK CHECKLIST\n- [ ] **A1 — perform authorized work.**",
             "head": {"sha": "a" * 40},
         }
         self.comments = [
             {
                 "id": 100,
                 "created_at": "2020-01-01T00:00:00Z",
-                "body": "BKE EXECUTION CHECKPOINT — IMPLEMENTED\\nhead=" + "a" * 40,
+                "body": "BKE EXECUTION CHECKPOINT — IMPLEMENTED\nhead=" + "a" * 40,
             },
         ]
         self.edits = []
