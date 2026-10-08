@@ -207,10 +207,21 @@ class RawWebSocket {
   }
 }
 
-async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", priorBody = null, addedLabel = null }) {
+async function postWebhook({
+  deliveryId,
+  action,
+  sha,
+  number = 13,
+  prBody = "",
+  priorBody = null,
+  addedLabel = null,
+  sender = "external-user",
+  headRepoOwner = "jan2xo",
+}) {
   const body = JSON.stringify({
     action,
     number,
+    sender: { login: sender },
     repository: { full_name: "jan2xo/bke-worker" },
     pull_request: {
       number,
@@ -220,6 +231,10 @@ async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", 
       head: {
         ref: "test/utm-wss-relay-smoke",
         sha,
+        repo: {
+          full_name: "jan2xo/bke-worker",
+          owner: { login: headRepoOwner },
+        },
       },
     },
     ...(action === "labeled"
@@ -286,6 +301,49 @@ try {
     type: "ack",
     worker_id: workerId,
     delivery_id: wake.delivery_id,
+    state: "accepted",
+  }));
+
+  // A same-repo synchronize authored by the head repository owner is the worker's
+  // own active execution advancement and must not create another visible turn.
+  const selfSynchronize = await postWebhook({
+    deliveryId: "cloudflare-smoke-self-001",
+    action: "synchronize",
+    sha: "9999999999999999999999999999999999999999",
+    sender: "jan2xo",
+    headRepoOwner: "jan2xo",
+  });
+  assert.equal(selfSynchronize.status, 202);
+  assert.equal(
+    selfSynchronize.body.relay.state,
+    "self_synchronize_suppressed",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // A genuinely external newer exact head still supersedes the active wake.
+  const externalSelfCheck = await postWebhook({
+    deliveryId: "cloudflare-smoke-001-external",
+    action: "synchronize",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    sender: "external-user",
+    headRepoOwner: "jan2xo",
+  });
+  assert.equal(externalSelfCheck.status, 202);
+  assert.equal(externalSelfCheck.body.relay.state, "superseded_sent");
+  assert.equal(
+    externalSelfCheck.body.relay.superseded_delivery_id,
+    "cloudflare-smoke-001",
+  );
+
+  const externalWake = JSON.parse(await ws.nextText());
+  assert.equal(externalWake.delivery_id, "cloudflare-smoke-001-external");
+  assert.equal(externalWake.expected_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: externalWake.delivery_id,
     state: "accepted",
   }));
 
