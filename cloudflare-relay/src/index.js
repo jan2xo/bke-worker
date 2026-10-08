@@ -11,6 +11,7 @@ import {
   routeGitHubPullRequest,
   validateAck,
   validateRegister,
+  validateRecoveryRequest,
   validateWake,
   verifyGitHubSignature,
 } from "./protocol.js";
@@ -190,6 +191,71 @@ async function handleGitHubAppInstallToken(request, env) {
   }
 }
 
+async function recoverAssignedPullRequests(env, workerId) {
+  const minted = await mintInstallationToken(env);
+  const label = encodeURIComponent(`bke-worker:${workerId}`);
+  const response = await fetch(
+    `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues?state=open&labels=${label}&per_page=100`,
+    {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${minted.token}`,
+        "user-agent": "bke-worker-relay",
+        "x-github-api-version": "2026-03-10",
+      },
+    },
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(payload)) {
+    throw new Error(`GITHUB_ASSIGNMENT_RECOVERY_FAILED:${response.status}`);
+  }
+
+  const assignments = payload
+    .filter((item) => item && item.pull_request && item.state === "open")
+    .map((item) => ({
+      number: Number(item.number),
+      headRef: typeof item.pull_request?.head?.ref === "string"
+        ? item.pull_request.head.ref
+        : "",
+      headSha: typeof item.pull_request?.head?.sha === "string"
+        ? item.pull_request.head.sha
+        : "",
+      labels: Array.isArray(item.labels)
+        ? item.labels.map((labelItem) => String(labelItem?.name || ""))
+        : [],
+    }))
+    .filter((item) =>
+      item.number > 0 &&
+      item.headRef &&
+      /^[0-9a-f]{40}$/.test(item.headSha) &&
+      item.labels.some((name) => name.toLowerCase() === `bke-worker:${workerId}`.toLowerCase())
+    );
+
+  return assignments;
+}
+
+async function handleRelayRecovery(request, env, workerId) {
+  if (!isValidWorkerId(workerId)) {
+    return json({ error: "WORKER_ID_INVALID" }, 400);
+  }
+  const relayToken = env.BKE_WORKER_RELAY_TOKEN_KEY;
+  if (!relayToken) return json({ error: "RELAY_TOKEN_UNCONFIGURED" }, 503);
+  if (!(await relayBearerMatches(request.headers.get("Authorization") || "", relayToken, workerId))) {
+    return json({ error: "RELAY_UNAUTHORIZED" }, 401);
+  }
+  const objectId = workerSessionObjectId(env, workerId);
+  const stub = env.WORKER_SESSIONS.get(objectId);
+  const response = await stub.fetch("https://worker-session.internal/recover", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-bke-worker-id": workerId },
+    body: JSON.stringify({ worker_id: workerId }),
+  });
+  return new Response(await response.text(), {
+    status: response.status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
 async function handleRelayUpgrade(request, env, workerId) {
   if (!isValidWorkerId(workerId)) {
     return json({ error: "WORKER_ID_INVALID" }, 400);
@@ -234,10 +300,22 @@ export default {
 
     const workerId = relayPathWorkerId(url.pathname);
     if (workerId !== null) {
+      if (url.pathname.endsWith("/recover")) {
+        return json({ error: "RECOVERY_PATH_INVALID" }, 400);
+      }
       if (request.method !== "GET") {
         return json({ error: "METHOD_NOT_ALLOWED" }, 405);
       }
       return handleRelayUpgrade(request, env, workerId);
+    }
+
+    const recoveryMatch = /^\/relay\/([^/]+)\/recover$/u.exec(url.pathname);
+    if (recoveryMatch) {
+      const workerIdForRecovery = decodeURIComponent(recoveryMatch[1]);
+      if (request.method !== "POST") {
+        return json({ error: "METHOD_NOT_ALLOWED" }, 405);
+      }
+      return handleRelayRecovery(request, env, workerIdForRecovery);
     }
 
     return json({ error: "NOT_FOUND" }, 404);
@@ -260,6 +338,9 @@ export class WorkerSession extends DurableObject {
     }
     if (url.pathname === "/dispatch") {
       return this.dispatch(request, workerId);
+    }
+    if (url.pathname === "/recover") {
+      return this.recover(request, workerId);
     }
     return json({ error: "NOT_FOUND" }, 404);
   }
@@ -414,6 +495,108 @@ export class WorkerSession extends DurableObject {
       delivery_id: wake.delivery_id,
       active_delivery_id: active.wake.delivery_id,
     }, 202);
+  }
+
+  async recover(request, workerId) {
+    const value = parseJson(await request.text());
+    if (!validateRecoveryRequest(value, workerId)) {
+      return json({ error: "RECOVERY_REQUEST_INVALID" }, 400);
+    }
+
+    let assignments;
+    try {
+      assignments = await recoverAssignedPullRequests(this.env, workerId);
+    } catch (error) {
+      return json({
+        error: error instanceof Error ? error.message : "GITHUB_ASSIGNMENT_RECOVERY_FAILED",
+      }, 502);
+    }
+
+    if (assignments.length > 1) {
+      const checkpointPr = assignments[0]?.number;
+      if (checkpointPr) {
+        try {
+          const minted = await mintInstallationToken(this.env);
+          await fetch(
+            `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${checkpointPr}/comments`,
+            {
+              method: "POST",
+              headers: {
+                accept: "application/vnd.github+json",
+                authorization: `Bearer ${minted.token}`,
+                "content-type": "application/json",
+                "user-agent": "bke-worker-relay",
+                "x-github-api-version": "2026-03-10",
+              },
+              body: JSON.stringify({
+                body: `BKE RECOVERY CONFLICT — worker=${workerId}; open assigned PRs=${assignments.map((item) => "#" + item.number).join(", ")}. Worker remains fail-closed; no PR selected heuristically.`,
+              }),
+            },
+          );
+        } catch {
+          // Conflict remains fail-closed even if the durable checkpoint cannot be written.
+        }
+      }
+      return json({
+        state: "conflict",
+        worker_id: workerId,
+        assignments: assignments.map(({ number, headRef, headSha }) => ({ number, headRef, headSha })),
+      }, 409);
+    }
+
+    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+    const plan = planRecovery(
+      assignments.map((assignment) => ({ ...assignment, workerId })),
+      active,
+    );
+
+    if (plan.state === "waiting_for_assignment") {
+      await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
+      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+      return json({
+        state: "waiting_for_assignment",
+        worker_id: workerId,
+      }, 200);
+    }
+
+    const assignment = plan.assignment;
+    if (plan.state === "preserved_active_assignment") {
+      return json({
+        state: plan.state,
+        worker_id: workerId,
+        assignment,
+        active_phase: plan.activePhase,
+        delivery_id: plan.deliveryId,
+      }, 200);
+    }
+
+    const wake = plan.wake;
+    if (plan.state === "head_converged_without_redelivery") {
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+        wake,
+        phase: "recovery_required",
+      });
+      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+      return json({
+        state: plan.state,
+        worker_id: workerId,
+        assignment,
+        delivery_id: wake.delivery_id,
+      }, 200);
+    }
+
+    await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+    await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+      wake,
+      phase: "queued",
+    });
+    const sent = await this.sendActiveIfSafe();
+    return json({
+      state: sent ? "recovered_sent" : "recovered_queued",
+      worker_id: workerId,
+      assignment,
+      delivery_id: wake.delivery_id,
+    }, 200);
   }
 
   async recentDeliveries() {

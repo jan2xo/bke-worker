@@ -32,6 +32,15 @@ for token in (
     'DEFAULT_WORKER_ID = "android-worker-a"',
     "RelayWebSocketClient(",
     "handleRelayWake",
+    "handleRelayRecovery",
+    "github_pull_request_reconnect_recovery",
+    "STATE_BLOCKED_CONFLICT",
+    "STATE_WAITING_FOR_ASSIGNMENT",
+    "waiting_for_assignment",
+    "preserved_active_assignment",
+    "head_converged_without_redelivery",
+    "recovered_sent",
+    "recovered_queued",
     "dispatchWake",
     "RECENT_DELIVERY_LIMIT = 64",
     "ACTION_ENSURE_BROWSER",
@@ -105,6 +114,11 @@ for token in (
 
 assert "PowerManager" not in service
 assert "WakeLock" not in service
+assert "activeWakeUncertain = true" in service
+assert "workerState = STATE_BLOCKED_CONFLICT" in service
+assert "workerState = STATE_WAITING_FOR_ASSIGNMENT" in service
+assert 'recovery.activePhase != "queued"' in service
+assert '.header("Authorization", "Bearer " + config.bearerToken)' in relay_client
 assert "GeckoRuntime.create(context.applicationContext)" in runtime
 
 for token in (
@@ -260,6 +274,9 @@ for token in (
     "RelayProtocol.parseWake",
     "RelayProtocol.register",
     "RelayProtocol.ack",
+    "parseRecovery(",
+    "requestRecovery()",
+    'header("Authorization", "Bearer " + config.bearerToken)',
     "scheduleReconnect",
     "reconnectScheduled",
     "reconnectRunnable",

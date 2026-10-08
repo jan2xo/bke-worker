@@ -18,6 +18,16 @@ data class RelayWake(
     val deliveryId: String,
 )
 
+data class RelayRecovery(
+    val state: String,
+    val workerId: String,
+    val prNumber: Int?,
+    val headRef: String?,
+    val headSha: String?,
+    val deliveryId: String?,
+    val activePhase: String?,
+)
+
 object RelayProtocol {
     const val VERSION = 1
     const val CONTROL_REPOSITORY = "jan2xo/bke-worker"
@@ -123,6 +133,32 @@ object RelayProtocol {
             .put("worker_id", workerId)
             .put("session_id", sessionId)
             .toString()
+
+    fun parseRecovery(text: String, expectedWorkerId: String): RelayRecovery? {
+        val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        val state = json.optString("state")
+        val workerId = json.optString("worker_id")
+        if (state.isBlank() || workerId != expectedWorkerId || !workerIdPattern.matches(workerId)) {
+            return null
+        }
+
+        val assignment = json.optJSONObject("assignment")
+        val prNumber = assignment?.optInt("number", -1)?.takeIf { it > 0 }
+        val headRef = assignment?.optString("headRef")?.takeIf { it.isNotBlank() }
+        val headSha = assignment?.optString("headSha")?.takeIf { shaPattern.matches(it) }
+        val deliveryId = json.optString("delivery_id").takeIf { deliveryPattern.matches(it) }
+        val activePhase = json.optString("active_phase").takeIf { it.isNotBlank() }
+
+        return RelayRecovery(
+            state = state,
+            workerId = workerId,
+            prNumber = prNumber,
+            headRef = headRef,
+            headSha = headSha,
+            deliveryId = deliveryId,
+            activePhase = activePhase,
+        )
+    }
 
     fun ack(workerId: String, deliveryId: String, state: String): String =
         JSONObject()
