@@ -157,6 +157,7 @@ object RelayProtocol {
             headRef = headRef,
             headSha = headSha,
             deliveryId = deliveryId,
+            activePhase = activePhase,
         )
     }
 
