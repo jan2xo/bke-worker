@@ -281,6 +281,14 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     const continuationPattern = new RegExp(
       `<!-- ${CONTINUATION_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} generation=[a-f0-9]{24} -->`,
     );
+    // Ordinary PR body edits are not wake signals. Only explicitly marker-bearing
+    // edits enter the strict recovery/continuation validation path.
+    if (!body.includes(CONTINUATION_MARKER) && !body.includes(CROSS_PR_RECOVERY_MARKER)) {
+      return jsonResult("ignore", {
+        reason: "NON_RECOVERY_EDIT_EVENT",
+        pullRequest: prNumber,
+      });
+    }
     if (body.includes(CONTINUATION_MARKER)) {
       if (!continuationPattern.test(body)) {
         return jsonResult("error", {
