@@ -290,7 +290,26 @@ export class WorkerSession extends DurableObject {
       );
     }
 
+    const supersedesStaleHead = active &&
+      active.wake.pr_number === wake.pr_number &&
+      active.wake.expected_head_sha !== wake.expected_head_sha &&
+      wake.reason === "github_pull_request_synchronize";
+
     await this.rememberDelivery(recent, wake.delivery_id);
+
+    if (supersedesStaleHead) {
+      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+        wake,
+        phase: "queued",
+      });
+      const sent = await this.sendActiveIfSafe();
+      return json({
+        state: sent ? "superseded_sent" : "superseded_queued",
+        delivery_id: wake.delivery_id,
+        superseded_delivery_id: active.wake.delivery_id,
+      }, 202);
+    }
 
     if (active?.phase === "queued") {
       await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
@@ -420,6 +439,10 @@ export class WorkerSession extends DurableObject {
   async handleAck(ack, socket) {
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.wake.delivery_id !== ack.delivery_id) {
+      const recent = await this.recentDeliveries();
+      if (recent.includes(ack.delivery_id)) {
+        return;
+      }
       socket.close(1008, "ack delivery mismatch");
       return;
     }
