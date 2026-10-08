@@ -351,6 +351,14 @@ export function validateRegister(value, expectedWorkerId) {
     value.session_id.length <= 128;
 }
 
+export function validateRecoveryRequest(value, expectedWorkerId) {
+  if (!exactKeys(value, ["protocol", "type", "worker_id"])) return false;
+  return value.protocol === PROTOCOL &&
+    value.type === "recover" &&
+    value.worker_id === expectedWorkerId &&
+    isValidWorkerId(value.worker_id);
+}
+
 export function validateAck(value, expectedWorkerId) {
   if (!exactKeys(value, ["protocol", "type", "worker_id", "delivery_id", "state"])) {
     return false;
