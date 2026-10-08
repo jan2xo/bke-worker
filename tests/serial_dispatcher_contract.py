@@ -209,6 +209,28 @@ class SerialDispatcherTests(unittest.TestCase):
         self.assertNotIn("javascript=", marker)
         self.assertNotIn("shell=", marker)
 
+    def test_long_run_cursor_progresses_then_stops_at_terminal_state(self):
+        now = datetime.now(timezone.utc)
+        checklist = [("A1", "assignment", False), ("A2", "proof", False)]
+        self.assertTrue(
+            dispatcher.continuation_should_resume(
+                now=now, head_sha="a" * 40, checklist=checklist,
+                progress_at=now - timedelta(minutes=31),
+                active_certification=False, terminal_or_blocked=False, relay_uncertain=False,
+            )
+        )
+        generation_one = dispatcher.continuation_generation("a" * 40, checklist, "checkpoint-1")
+        progressed = [("A1", "assignment", True), ("A2", "proof", False)]
+        generation_two = dispatcher.continuation_generation("b" * 40, progressed, "checkpoint-2")
+        self.assertNotEqual(generation_one, generation_two)
+        self.assertFalse(
+            dispatcher.continuation_should_resume(
+                now=now, head_sha="b" * 40, checklist=progressed,
+                progress_at=now - timedelta(minutes=31),
+                active_certification=False, terminal_or_blocked=True, relay_uncertain=False,
+            )
+        )
+
     def test_checkpoint_reconciliation_requires_every_item_and_fresh_head(self):
         checklist = [("A1", "assignment", False), ("A2", "proof", False)]
         reconciled, unresolved = dispatcher.reconcile_execution_checkpoint(
