@@ -137,9 +137,11 @@ class SerialDispatcherTests(unittest.TestCase):
         self.assertEqual(entries[1][0], "A2")
         self.assertTrue(entries[1][2])
 
-    def test_execution_checklist_requires_stable_items(self):
-        with self.assertRaisesRegex(dispatcher.DispatchError, "TASK_PR_CHECKLIST_MISSING"):
-            dispatcher.require_execution_checklist("## Task contract\nNo checklist")
+    def test_execution_checklist_adds_stable_fallback_cursor(self):
+        body = dispatcher.ensure_execution_checklist("## Task contract\nNo checklist")
+        entries = dispatcher.extract_execution_checklist(body)
+        self.assertEqual(entries, [("TASK-1", "Complete and certify the authorized task contract above.", False)])
+        dispatcher.require_execution_checklist(body)
 
     def test_execution_checklist_rejects_duplicate_ids(self):
         with self.assertRaisesRegex(dispatcher.DispatchError, "DUPLICATE_TASK_CHECKLIST_ITEM:A1"):
