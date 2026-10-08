@@ -14,6 +14,7 @@ import kotlin.math.min
 class RelayWebSocketClient(
     private val config: RelayConfig,
     private val onWake: (RelayWake) -> Unit,
+    private val onRecovery: (RelayRecovery) -> Unit,
     private val onState: (String) -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -84,6 +85,7 @@ class RelayWebSocketClient(
                 mainHandler.removeCallbacks(reconnectRunnable)
                 onState("CONNECTED")
                 webSocket.send(RelayProtocol.register(config.workerId, sessionId))
+                requestRecovery()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -127,6 +129,40 @@ class RelayWebSocketClient(
         }
 
         socket = client.newWebSocket(requestBuilder.build(), listener)
+    }
+
+    private fun requestRecovery() {
+        val relayUri = runCatching { URI(config.relayUrl) }.getOrNull() ?: return
+        val scheme = if (relayUri.scheme.equals("wss", ignoreCase = true)) "https" else "http"
+        val path = relayUri.path.trimEnd('/')
+        val recoveryUrl = scheme + "://" + relayUri.authority + path + "/recover"
+        val request = Request.Builder()
+            .url(recoveryUrl)
+            .header("Authorization", "Bearer " + config.bearerToken)
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                onState("RECOVERY_FAILED")
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                response.use {
+                    val body = runCatching { it.body?.string().orEmpty() }.getOrDefault("")
+                    if (!it.isSuccessful) {
+                        onState("RECOVERY_FAILED")
+                        return
+                    }
+                    val recovery = RelayProtocol.parseRecovery(body, config.workerId)
+                    if (recovery == null) {
+                        onState("RECOVERY_PROTOCOL_REJECT")
+                        return
+                    }
+                    onRecovery(recovery)
+                }
+            }
+        })
     }
 
     private fun scheduleReconnect() {
