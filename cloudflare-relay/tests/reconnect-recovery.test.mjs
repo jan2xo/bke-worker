@@ -88,3 +88,33 @@ const continuationPayload = {
 const continuationRoute = routeGitHubPullRequest(continuationPayload, "delivery-continuation-82");
 assert.equal(continuationRoute.kind, "route");
 assert.equal(continuationRoute.wake.reason, "github_pull_request_continuation");
+
+assert.equal(planRecovery([], wake(80, assignment.headSha, "sent")).state, "waiting_for_assignment");
+assert.equal(
+  planRecovery(
+    [{ ...assignment, number: 81, headRef: "bke/task-81", headSha: "2534b147ae98bad366cd8e32eaad1f8207fb3bb1" }],
+    null,
+  ).state,
+  "conflict",
+);
+assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "queued")).state, "recovered");
+assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "deferred")).state, "preserved_active_assignment");
+assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "sent")).state, "preserved_active_assignment");
+
+const closedPullPayload = {
+  ...continuationPayload,
+  pull_request: { ...continuationPayload.pull_request, state: "closed" },
+};
+assert.notEqual(
+  routeGitHubPullRequest(closedPullPayload, "delivery-closed-82").wake?.reason,
+  "github_pull_request_continuation",
+);
+
+const duplicateContinuation = {
+  ...continuationPayload,
+  changes: { body: { from: continuationPayload.pull_request.body } },
+};
+assert.equal(
+  routeGitHubPullRequest(duplicateContinuation, "delivery-duplicate-82").kind,
+  "ignore",
+);
