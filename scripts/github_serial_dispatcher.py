@@ -484,13 +484,29 @@ class GitHubApi:
             "GET",
             f"/repos/{self.repository}/actions/runs?head_sha={encoded}&per_page=100",
         )
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or not isinstance(payload.get("workflow_runs"), list):
             raise DispatchError("Workflow run payload invalid")
-        runs = payload.get("workflow_runs") or []
         return [
-            item for item in runs
-            if isinstance(item, dict) and item.get("status") in {"queued", "in_progress"}
+            item for item in payload["workflow_runs"]
+            if isinstance(item, dict) and item.get("status") in {"queued", "in_progress", "waiting"}
         ]
+
+    def active_required_certification_runs(self) -> bool:
+        # /certify is triggered by issue_comment; its workflow head_sha is
+        # MAIN, not the exact PR source head. The source-SHA run filter above
+        # cannot prove that certification is idle. With one worker, conservatively
+        # suppress resumes during ANY running Intent Certification attempt.
+        for status in ("queued", "in_progress", "waiting"):
+            encoded = urllib.parse.quote(status, safe="")
+            payload = self.request(
+                "GET",
+                f"/repos/{self.repository}/actions/workflows/certify.yml/runs?status={encoded}&per_page=1",
+            )
+            if not isinstance(payload, dict) or not isinstance(payload.get("workflow_runs"), list):
+                raise DispatchError("REQUIRED_CERTIFICATION_STATE_UNKNOWN")
+            if payload.get("workflow_runs"):
+                return True
+        return False
 
     def add_issue_comment(self, number: int, body: str) -> None:
         self.request(
@@ -754,7 +770,10 @@ def request_continuation(api: GitHubApi) -> dict[str, Any]:
         and isinstance(comment.get("body"), str)
         and (
             comment["body"].startswith("BKE EXECUTION CHECKPOINT —")
-            or comment["body"].startswith("BKE CONTINUATION CHECKPOINT —")
+            or (
+                comment["body"].startswith("BKE CONTINUATION CHECKPOINT —")
+                and not comment["body"].startswith("BKE CONTINUATION CHECKPOINT — RESUME_REQUESTED")
+            )
         )
     ]
     progress_events.sort(key=lambda item: str(item.get("created_at") or ""))
@@ -774,7 +793,10 @@ def request_continuation(api: GitHubApi) -> dict[str, Any]:
             default=commit_date,
         )
 
-    active_certification = bool(api.active_workflow_runs_for_sha(head_sha))
+    active_certification = (
+        bool(api.active_workflow_runs_for_sha(head_sha))
+        or api.active_required_certification_runs()
+    )
     terminal_or_blocked = (
         "BKE EXECUTION CHECKPOINT — READY_FOR_AUDIT" in body
         or any(
@@ -810,6 +832,16 @@ def request_continuation(api: GitHubApi) -> dict[str, Any]:
 
     latest_progress_id = str(latest_progress.get("id") if latest_progress else head_sha)
     generation = continuation_generation(head_sha, checklist, latest_progress_id)
+    # A resume request is delivery intent, not meaningful task progress.
+    # Repeated polls must never create a new generation for the same cursor.
+    if any(
+        isinstance(item.get("body"), str)
+        and item["body"].startswith("BKE CONTINUATION CHECKPOINT — RESUME_REQUESTED")
+        and f"generation={generation}" in item["body"]
+        for item in comments
+    ):
+        return {"state": "WAITING", "reason": "RESUME_ALREADY_REQUESTED", "pr": pr_number}
+
     marker = continuation_marker(WORKER_ID, pr_number, head_sha, generation)
     if marker not in body:
         new_body = re.sub(r"<!-- BKE-CONTINUATION-RESUME worker=[^>]+ -->\s*", "", body)
