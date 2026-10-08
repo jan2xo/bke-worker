@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import { planRecovery } from "../src/protocol.js";
+import { normalizeRecoveryAssignments, planRecovery } from "../src/protocol.js";
+
+const realisticIssuePayload = [
+  { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/82" } },
+  { number: 999, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/999" } },
+];
+const realisticPullPayload = [
+  { number: 82, state: "open", head: { ref: "bke/task-82", sha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" } },
+  { number: 999, state: "closed", head: { ref: "bke/stale", sha: "ffffffffffffffffffffffffffffffffffffffff" } },
+];
+assert.deepEqual(
+  normalizeRecoveryAssignments(realisticIssuePayload, realisticPullPayload, "android-worker-a"),
+  [{ workerId: "android-worker-a", number: 82, headRef: "bke/task-82", headSha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" }],
+);
 
 const assignment = {
   workerId: "android-worker-a",
