@@ -236,7 +236,28 @@ export function routeGitHubPullRequest(payload, deliveryId) {
   }
 
   let reason = `github_pull_request_${action}`;
-  if (action === "labeled") {
+  if (action === "synchronize") {
+    const senderLogin =
+      typeof payload?.sender?.login === "string"
+        ? payload.sender.login
+        : "";
+    const headRepoFullName =
+      typeof pullRequest?.head?.repo?.full_name === "string"
+        ? pullRequest.head.repo.full_name
+        : "";
+    const headRepoOwnerLogin =
+      typeof pullRequest?.head?.repo?.owner?.login === "string"
+        ? pullRequest.head.repo.owner.login
+        : "";
+    if (
+      senderLogin &&
+      headRepoFullName === repository &&
+      headRepoOwnerLogin &&
+      senderLogin.toLowerCase() === headRepoOwnerLogin.toLowerCase()
+    ) {
+      reason = "github_pull_request_self_synchronize";
+    }
+  } else if (action === "labeled") {
     const added = typeof payload?.label?.name === "string" ? payload.label.name : "";
     if (added.toLowerCase() !== workerLabels[0].toLowerCase()) {
       return jsonResult("ignore", {
