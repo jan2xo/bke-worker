@@ -14,6 +14,32 @@ assert.deepEqual(
   [{ workerId: "android-worker-a", number: 82, headRef: "bke/task-82", headSha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" }],
 );
 
+// GitHub assignment state must never appear FREE when details are unreadable.
+assert.throws(
+  () => normalizeRecoveryAssignments(
+    realisticIssuePayload.slice(0, 1),
+    [],
+    "android-worker-a",
+  ),
+  /RECOVERY_ASSIGNMENT_DETAIL_MISSING:82/,
+);
+assert.throws(
+  () => normalizeRecoveryAssignments(
+    realisticIssuePayload.slice(0, 1),
+    [{ ...realisticPullPayload[0], head: { ref: "bke/task-82", sha: "invalid" } }],
+    "android-worker-a",
+  ),
+  /RECOVERY_ASSIGNMENT_HEAD_INVALID:82/,
+);
+assert.deepEqual(
+  normalizeRecoveryAssignments(
+    realisticIssuePayload.slice(0, 1),
+    [{ ...realisticPullPayload[0], state: "closed" }],
+    "android-worker-a",
+  ),
+  [],
+);
+
 const assignment = {
   workerId: "android-worker-a",
   number: 80,
