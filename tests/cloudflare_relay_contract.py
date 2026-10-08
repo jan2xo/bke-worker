@@ -88,6 +88,9 @@ for token in (
     '"/github/app/install-token"',
     "verifyActionsOidcToken",
     "mintInstallationToken",
+    "postRelayCheckpoint",
+    '"BKE RELAY — " + relayState',
+    '"user-agent": "bke-worker-relay"',
 ):
 
     assert token in runtime, token
