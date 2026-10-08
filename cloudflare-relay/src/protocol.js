@@ -359,6 +359,56 @@ export function validateRecoveryRequest(value, expectedWorkerId) {
     isValidWorkerId(value.worker_id);
 }
 
+export function planRecovery(assignments, active) {
+  if (!Array.isArray(assignments)) throw new Error("RECOVERY_ASSIGNMENTS_INVALID");
+
+  if (assignments.length > 1) {
+    return { state: "conflict" };
+  }
+  if (assignments.length === 0) {
+    return { state: "waiting_for_assignment" };
+  }
+
+  const assignment = assignments[0];
+  const sameActivePr = active?.wake?.pr_number === assignment.number;
+  const sameActiveHead = sameActivePr &&
+    active.wake.expected_head_sha === assignment.headSha;
+
+  if (sameActiveHead) {
+    return {
+      state: "preserved_active_assignment",
+      assignment,
+      activePhase: active.phase,
+      deliveryId: active.wake.delivery_id,
+    };
+  }
+
+  const wake = {
+    protocol: PROTOCOL,
+    type: "wake",
+    worker_id: assignment.workerId,
+    repo: CONTROL_REPOSITORY,
+    pr_number: assignment.number,
+    expected_head_sha: assignment.headSha,
+    reason: "github_pull_request_reconnect_recovery",
+    delivery_id: `recovery-${assignment.workerId}-${assignment.number}-${assignment.headSha}`,
+  };
+
+  if (active && sameActivePr && active.phase !== "queued") {
+    return {
+      state: "head_converged_without_redelivery",
+      assignment,
+      wake,
+    };
+  }
+
+  return {
+    state: "recovered",
+    assignment,
+    wake,
+  };
+}
+
 export function validateAck(value, expectedWorkerId) {
   if (!exactKeys(value, ["protocol", "type", "worker_id", "delivery_id", "state"])) {
     return false;
