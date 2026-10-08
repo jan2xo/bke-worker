@@ -359,6 +359,44 @@ export function validateRecoveryRequest(value, expectedWorkerId) {
     isValidWorkerId(value.worker_id);
 }
 
+export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId) {
+  if (!Array.isArray(issueItems) || !Array.isArray(pullRequests) || !isValidWorkerId(workerId)) {
+    throw new Error("RECOVERY_ASSIGNMENT_PAYLOAD_INVALID");
+  }
+
+  const assignedLabel = `${ASSIGNMENT_LABEL_PREFIX}${workerId}`.toLowerCase();
+  const issueCandidates = issueItems
+    .filter((item) =>
+      item &&
+      item.pull_request &&
+      item.state === "open" &&
+      Number.isInteger(Number(item.number)) &&
+      Number(item.number) > 0 &&
+      Array.isArray(item.labels) &&
+      item.labels.some((label) =>
+        String(label?.name || "").toLowerCase() === assignedLabel
+      )
+    )
+    .map((item) => Number(item.number));
+
+  const pullByNumber = new Map(
+    pullRequests
+      .filter((item) => item && Number.isInteger(Number(item.number)))
+      .map((item) => [Number(item.number), item])
+  );
+
+  return issueCandidates
+    .map((number) => {
+      const pull = pullByNumber.get(number);
+      if (!pull || pull.state !== "open") return null;
+      const headRef = typeof pull.head?.ref === "string" ? pull.head.ref : "";
+      const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
+      if (!headRef || !SHA.test(headSha)) return null;
+      return { workerId, number, headRef, headSha };
+    })
+    .filter(Boolean);
+}
+
 export function planRecovery(assignments, active) {
   if (!Array.isArray(assignments)) throw new Error("RECOVERY_ASSIGNMENTS_INVALID");
 
