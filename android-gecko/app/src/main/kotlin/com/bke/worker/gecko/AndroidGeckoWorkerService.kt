@@ -779,9 +779,15 @@ class AndroidGeckoWorkerService : Service() {
                         reason = "github_pull_request_reconnect_recovery",
                         deliveryId = recovery.deliveryId,
                     )
-                    activeWakeUncertain = true
                     activeSawBusy = false
-                    workerState = STATE_BLOCKED_UNCERTAIN
+                    activeWakeUncertain = recovery.activePhase != "queued"
+                    workerState = if (activeWakeUncertain) {
+                        STATE_BLOCKED_UNCERTAIN
+                    } else if (workerPort != null) {
+                        STATE_READY
+                    } else {
+                        STATE_RECOVERING
+                    }
                     updateNotification()
                 }
             }
@@ -819,6 +825,10 @@ class AndroidGeckoWorkerService : Service() {
 
     private fun handleRelayWake(wake: RelayWake) {
         if (wake.workerId != activeWorkerId) return
+
+        if (workerState == STATE_WAITING_FOR_ASSIGNMENT && workerPort != null) {
+            workerState = STATE_READY
+        }
 
         if (wake.deliveryId in recentDeliveryIds) {
             relayClient?.sendAck(wake.deliveryId, "accepted")
