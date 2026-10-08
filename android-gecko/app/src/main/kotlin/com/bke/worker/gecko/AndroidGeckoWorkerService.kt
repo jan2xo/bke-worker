@@ -64,6 +64,8 @@ class AndroidGeckoWorkerService : Service() {
         private const val STATE_NO_COMPOSER = "NO_COMPOSER"
         private const val STATE_RECOVERING = "RECOVERING"
         private const val STATE_BLOCKED_UNCERTAIN = "BLOCKED_UNCERTAIN_TURN"
+        private const val STATE_BLOCKED_CONFLICT = "BLOCKED_ASSIGNMENT_CONFLICT"
+        private const val STATE_WAITING_FOR_ASSIGNMENT = "WAITING_FOR_ASSIGNMENT"
         private const val STATE_FAILED = "FAILED"
 
         private const val RECENT_DELIVERY_LIMIT = 64
@@ -518,6 +520,7 @@ class AndroidGeckoWorkerService : Service() {
         relayClient = RelayWebSocketClient(
             config = config,
             onWake = ::handleRelayWake,
+            onRecovery = ::handleRelayRecovery,
             onState = { state ->
                 relayState = state
                 updateNotification()
@@ -739,6 +742,79 @@ class AndroidGeckoWorkerService : Service() {
         activeSawBusy = false
         activeWakeUncertain = false
         maybeDispatchPendingWake()
+    }
+
+    private fun handleRelayRecovery(recovery: RelayRecovery) {
+        if (recovery.workerId != activeWorkerId) return
+
+        when (recovery.state) {
+            "waiting_for_assignment" -> {
+                activeWake = null
+                pendingWake = null
+                activeSawBusy = false
+                activeWakeUncertain = false
+                workerState = STATE_WAITING_FOR_ASSIGNMENT
+                updateNotification()
+            }
+
+            "conflict" -> {
+                activeWake = null
+                pendingWake = null
+                activeSawBusy = false
+                activeWakeUncertain = true
+                workerState = STATE_BLOCKED_CONFLICT
+                updateNotification()
+            }
+
+            "preserved_active_assignment" -> {
+                if (recovery.deliveryId != null &&
+                    recovery.prNumber != null &&
+                    recovery.headSha != null
+                ) {
+                    activeWake = RelayWake(
+                        workerId = activeWorkerId,
+                        repo = RelayProtocol.CONTROL_REPOSITORY,
+                        prNumber = recovery.prNumber,
+                        expectedHeadSha = recovery.headSha,
+                        reason = "github_pull_request_reconnect_recovery",
+                        deliveryId = recovery.deliveryId,
+                    )
+                    activeWakeUncertain = true
+                    activeSawBusy = false
+                    workerState = STATE_BLOCKED_UNCERTAIN
+                    updateNotification()
+                }
+            }
+
+            "head_converged_without_redelivery" -> {
+                if (recovery.prNumber != null && recovery.headSha != null) {
+                    activeWake = RelayWake(
+                        workerId = activeWorkerId,
+                        repo = RelayProtocol.CONTROL_REPOSITORY,
+                        prNumber = recovery.prNumber,
+                        expectedHeadSha = recovery.headSha,
+                        reason = "github_pull_request_reconnect_recovery",
+                        deliveryId = recovery.deliveryId ?: "recovery-${recovery.prNumber}-${recovery.headSha}",
+                    )
+                }
+                pendingWake = null
+                activeSawBusy = false
+                activeWakeUncertain = true
+                workerState = STATE_BLOCKED_UNCERTAIN
+                updateNotification()
+            }
+
+            "recovered_sent", "recovered_queued" -> {
+                activeWakeUncertain = false
+                workerState = if (workerPort != null) STATE_READY else STATE_RECOVERING
+                updateNotification()
+            }
+
+            else -> {
+                workerState = STATE_RECOVERING
+                updateNotification()
+            }
+        }
     }
 
     private fun handleRelayWake(wake: RelayWake) {
