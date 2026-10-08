@@ -207,7 +207,7 @@ class RawWebSocket {
   }
 }
 
-async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", addedLabel = null }) {
+async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", priorBody = null, addedLabel = null }) {
   const body = JSON.stringify({
     action,
     number,
@@ -224,6 +224,9 @@ async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", 
     },
     ...(action === "labeled"
       ? { label: { name: addedLabel || `bke-worker:${workerId}` } }
+      : {}),
+    ...(action === "edited" && priorBody !== null
+      ? { changes: { body: { from: priorBody } } }
       : {}),
   });
   const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
@@ -489,6 +492,7 @@ try {
     sha: recoveryHead,
     number: 13,
     prBody: `Task intent\n\n${recoveryMarker}`,
+    priorBody: "Task intent",
   });
   assert.equal(recoveredCrossPr.status, 202);
   assert.equal(recoveredCrossPr.body.relay.state, "cross_pr_recovered_sent");
