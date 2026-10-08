@@ -332,6 +332,21 @@ export class WorkerSession extends DurableObject {
 
     const samePrActive = active &&
       active.wake.pr_number === wake.pr_number;
+    const selfSynchronizeSuppression = samePrActive &&
+      active.phase !== "queued" &&
+      active.wake.expected_head_sha !== wake.expected_head_sha &&
+      wake.reason === "github_pull_request_self_synchronize";
+
+    await this.rememberDelivery(recent, wake.delivery_id);
+
+    if (selfSynchronizeSuppression) {
+      return json({
+        state: "self_synchronize_suppressed",
+        delivery_id: wake.delivery_id,
+        active_delivery_id: active.wake.delivery_id,
+      }, 202);
+    }
+
     const supersedesStaleHead = samePrActive &&
       active.wake.expected_head_sha !== wake.expected_head_sha &&
       wake.reason === "github_pull_request_synchronize";
@@ -339,8 +354,6 @@ export class WorkerSession extends DurableObject {
       wake.reason === "github_pull_request_labeled";
     const supersedesAmbiguousWake =
       supersedesStaleHead || explicitReassignmentRecovery;
-
-    await this.rememberDelivery(recent, wake.delivery_id);
 
     if (crossPrRecovery) {
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
