@@ -267,6 +267,45 @@ def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
 
 
 
+def reconcile_execution_checkpoint(
+    checklist: list[tuple[str, str, bool]],
+    statuses: dict[str, str],
+    *,
+    exact_head: str,
+    certified_head: str | None,
+) -> tuple[dict[str, str], list[str]]:
+    if not re.fullmatch(r"[0-9a-f]{40}", exact_head):
+        raise DispatchError("CHECKPOINT_HEAD_INVALID")
+    allowed = {"DONE", "BLOCKED", "NOT_REQUIRED"}
+    ids = {item_id for item_id, _, _ in checklist}
+    unknown = sorted(set(statuses) - ids)
+    missing = sorted(ids - set(statuses))
+    invalid = sorted(item_id for item_id, status in statuses.items() if status not in allowed)
+    if unknown or missing or invalid:
+        raise DispatchError(
+            "CHECKPOINT_RECONCILIATION_INVALID:"
+            + ",".join(unknown + missing + invalid)
+        )
+    if certified_head is not None and certified_head != exact_head:
+        raise DispatchError("CHECKPOINT_CERTIFICATION_STALE_HEAD")
+    unresolved = sorted(item_id for item_id, status in statuses.items() if status == "BLOCKED")
+    return dict(sorted(statuses.items())), unresolved
+
+
+def ready_for_audit_allowed(
+    reconciliation: dict[str, str],
+    *,
+    exact_head: str,
+    certified_head: str | None,
+    required_certification_complete: bool,
+) -> bool:
+    if not reconciliation or any(status not in {"DONE", "NOT_REQUIRED"} for status in reconciliation.values()):
+        return False
+    if not re.fullmatch(r"[0-9a-f]{40}", exact_head) or certified_head != exact_head:
+        return False
+    return required_certification_complete
+
+
 def _parse_iso_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
