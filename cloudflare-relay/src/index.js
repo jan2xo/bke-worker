@@ -210,6 +210,11 @@ async function recoverAssignedPullRequests(env, workerId) {
   if (!response.ok || !Array.isArray(issuePayload)) {
     throw new Error(`GITHUB_ASSIGNMENT_RECOVERY_FAILED:${response.status}`);
   }
+  // An exactly full first page might omit further assigned PRs. Never
+  // classify a truncated view as FREE or as a unique assignment.
+  if (issuePayload.length >= 100) {
+    throw new Error("GITHUB_ASSIGNMENT_RECOVERY_PAGE_AMBIGUOUS");
+  }
 
   const candidateNumbers = issuePayload
     .filter((item) => item?.pull_request && item.state === "open")
@@ -230,7 +235,12 @@ async function recoverAssignedPullRequests(env, workerId) {
       },
     );
     const pullPayload = await pullResponse.json().catch(() => null);
-    if (pullResponse.ok && pullPayload) pullRequests.push(pullPayload);
+    if (!pullResponse.ok || !pullPayload || typeof pullPayload !== "object" || Array.isArray(pullPayload)) {
+      // Missing details are not evidence that a GitHub-assigned PR vanished.
+      // Abort reconstruction rather than silently reducing 1+ owners to zero.
+      throw new Error(`GITHUB_ASSIGNMENT_DETAIL_FAILED:${number}:${pullResponse.status}`);
+    }
+    pullRequests.push(pullPayload);
   }
 
   return normalizeRecoveryAssignments(issuePayload, pullRequests, workerId);
