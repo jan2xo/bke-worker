@@ -411,10 +411,20 @@ export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId)
   return issueCandidates
     .map((number) => {
       const pull = pullByNumber.get(number);
-      if (!pull || pull.state !== "open") return null;
+      if (!pull) {
+        throw new Error(`RECOVERY_ASSIGNMENT_DETAIL_MISSING:${number}`);
+      }
+      // A terminal PR is not resurrected, but an unreadable/open assigned PR
+      // must not be silently discarded and misclassified as FREE.
+      if (pull.state === "closed") return null;
+      if (pull.state !== "open") {
+        throw new Error(`RECOVERY_ASSIGNMENT_STATE_INVALID:${number}`);
+      }
       const headRef = typeof pull.head?.ref === "string" ? pull.head.ref : "";
       const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
-      if (!headRef || !SHA.test(headSha)) return null;
+      if (!headRef || !SHA.test(headSha)) {
+        throw new Error(`RECOVERY_ASSIGNMENT_HEAD_INVALID:${number}`);
+      }
       return { workerId, number, headRef, headSha };
     })
     .filter(Boolean);
