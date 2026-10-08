@@ -58,7 +58,11 @@ The Durable Object stores bounded delivery dedupe and at most:
 
 A wake moves through relay-side phases such as `queued`, `sent`, `deferred`, and `accepted`.
 
-Once the wake may have reached Android, disconnect does **not** cause automatic redelivery. This deliberately fails closed because a ChatGPT dispatch could already have happened. Explicit GitHub activity or operator recovery is safer than duplicate prompt delivery.
+Once the wake may have reached Android, disconnect does **not** cause blind automatic redelivery. This deliberately fails closed because a ChatGPT dispatch could already have happened.
+
+A newer `pull_request.synchronize` event for the **same PR** is different: the new GitHub exact head makes the older wake stale by definition. The relay therefore supersedes the stale same-PR active wake with the newer-head wake, clears any queued same-PR re-evaluation, and sends the new wake to the authoritative socket when one is connected. Android still serializes delivery locally: if the prior ChatGPT turn is genuinely still active, the newer wake is deferred until that turn clears. Late ACKs from a known superseded delivery are ignored rather than closing the authoritative socket.
+
+Same-head re-evaluation does **not** supersede an active wake; it remains queued behind the active delivery. Cross-PR replacement is still rejected fail-closed.
 
 `completed` and `rejected` ACKs retire the active wake and allow a queued re-evaluation wake to proceed.
 
