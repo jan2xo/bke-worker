@@ -92,7 +92,10 @@ assert.equal(continuationRoute.wake.reason, "github_pull_request_continuation");
 assert.equal(planRecovery([], wake(80, assignment.headSha, "sent")).state, "waiting_for_assignment");
 assert.equal(
   planRecovery(
-    [{ ...assignment, number: 81, headRef: "bke/task-81", headSha: "2534b147ae98bad366cd8e32eaad1f8207fb3bb1" }],
+    [
+      assignment,
+      { ...assignment, number: 81, headRef: "bke/task-81", headSha: "2534b147ae98bad366cd8e32eaad1f8207fb3bb1" },
+    ],
     null,
   ).state,
   "conflict",
