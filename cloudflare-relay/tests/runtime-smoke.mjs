@@ -452,6 +452,8 @@ try {
     state: "completed",
   }));
 
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
   // A different PR remains fail-closed until an exact GitHub recovery marker is edited in.
   const staleDifferentPr = await postWebhook({
     deliveryId: "cloudflare-smoke-008",
