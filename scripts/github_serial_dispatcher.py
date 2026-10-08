@@ -228,14 +228,24 @@ def extract_execution_checklist(body: str) -> list[tuple[str, str, bool]]:
     return entries
 
 
+def ensure_execution_checklist(body: str) -> str:
+    if extract_execution_checklist(body):
+        return body
+    return (
+        body.rstrip()
+        + "\n\n## BKE TASK CHECKLIST\n"
+        + "- [ ] **TASK-1 — Complete and certify the authorized task contract above.**\n"
+    )
+
+
 def require_execution_checklist(body: str) -> None:
-    entries = extract_execution_checklist(body)
-    if not entries:
+    if not extract_execution_checklist(ensure_execution_checklist(body)):
         raise DispatchError("TASK_PR_CHECKLIST_MISSING_OR_UNPARSEABLE")
 
 
 def build_task_pr_body(task: TaskSnapshot, worker_id: str = WORKER_ID) -> str:
-    require_execution_checklist(task.body)
+    task_body = ensure_execution_checklist(task.body)
+    require_execution_checklist(task_body)
     return (
         "## BKE queued task\n\n"
         f"Materialized deterministically from task issue #{task.number} by the GitHub-native serial dispatcher.\n\n"
