@@ -136,6 +136,7 @@ test("edited event routes only an exact cross-PR recovery marker", () => {
         ...base.pull_request,
         body: `Task intent\n\n${marker}`,
       },
+      changes: { body: { from: "Task intent" } },
     }),
     "delivery-recovery-001",
   );
@@ -149,6 +150,7 @@ test("edited event routes only an exact cross-PR recovery marker", () => {
         ...base.pull_request,
         body: `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=other pr=28 head=${head} -->`,
       },
+      changes: { body: { from: "Task intent" } },
     }),
     "delivery-recovery-002",
   );
@@ -164,6 +166,20 @@ test("edited event routes only an exact cross-PR recovery marker", () => {
   );
   assert.equal(ordinaryEdit.kind, "ignore");
   assert.equal(ordinaryEdit.reason, "NON_RECOVERY_EDIT_EVENT");
+
+  const replay = routeGitHubPullRequest(
+    payload({
+      action: "edited",
+      pull_request: {
+        ...base.pull_request,
+        body: `Task intent\n\n${marker}\nextra edit`,
+      },
+      changes: { body: { from: `Task intent\n\n${marker}` } },
+    }),
+    "delivery-recovery-004",
+  );
+  assert.equal(replay.kind, "ignore");
+  assert.equal(replay.reason, "CROSS_PR_RECOVERY_MARKER_NOT_NEW");
 });
 
 test("explicitly allowed demo repository routes with its own canonical repo identity", () => {
