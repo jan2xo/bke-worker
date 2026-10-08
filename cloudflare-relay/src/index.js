@@ -313,7 +313,10 @@ export class WorkerSession extends DurableObject {
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (active && active.wake.pr_number !== wake.pr_number) {
+    const crossPrRecovery = active &&
+      active.wake.pr_number !== wake.pr_number &&
+      wake.reason === "github_pull_request_cross_pr_recovery";
+    if (active && active.wake.pr_number !== wake.pr_number && !crossPrRecovery) {
       return json(
         {
           error: "WORKER_WAKE_IN_FLIGHT",
@@ -322,6 +325,9 @@ export class WorkerSession extends DurableObject {
         },
         409,
       );
+    }
+    if (!active && wake.reason === "github_pull_request_cross_pr_recovery") {
+      return json({ error: "CROSS_PR_RECOVERY_NOT_REQUIRED" }, 409);
     }
 
     const samePrActive = active &&
@@ -335,6 +341,21 @@ export class WorkerSession extends DurableObject {
       supersedesStaleHead || explicitReassignmentRecovery;
 
     await this.rememberDelivery(recent, wake.delivery_id);
+
+    if (crossPrRecovery) {
+      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
+      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+        wake,
+        phase: "queued",
+      });
+      const sent = await this.sendActiveIfSafe();
+      return json({
+        state: sent ? "cross_pr_recovered_sent" : "cross_pr_recovered_queued",
+        delivery_id: wake.delivery_id,
+        superseded_pr: active.wake.pr_number,
+        superseded_delivery_id: active.wake.delivery_id,
+      }, 202);
+    }
 
     if (supersedesAmbiguousWake) {
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);

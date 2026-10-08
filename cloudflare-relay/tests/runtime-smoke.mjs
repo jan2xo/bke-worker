@@ -207,14 +207,15 @@ class RawWebSocket {
   }
 }
 
-async function postWebhook({ deliveryId, action, sha }) {
+async function postWebhook({ deliveryId, action, sha, number = 13, prBody = "", priorBody = null, addedLabel = null }) {
   const body = JSON.stringify({
     action,
-    number: 13,
+    number,
     repository: { full_name: "jan2xo/bke-worker" },
     pull_request: {
-      number: 13,
+      number,
       state: "open",
+      body: prBody,
       labels: [{ name: `bke-worker:${workerId}` }],
       head: {
         ref: "test/utm-wss-relay-smoke",
@@ -222,7 +223,10 @@ async function postWebhook({ deliveryId, action, sha }) {
       },
     },
     ...(action === "labeled"
-      ? { label: { name: `bke-worker:${workerId}` } }
+      ? { label: { name: addedLabel || `bke-worker:${workerId}` } }
+      : {}),
+    ...(action === "edited" && priorBody !== null
+      ? { changes: { body: { from: priorBody } } }
       : {}),
   });
   const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
@@ -448,6 +452,69 @@ try {
     type: "ack",
     worker_id: workerId,
     delivery_id: wake7.delivery_id,
+    state: "completed",
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // A different PR remains fail-closed until an exact GitHub recovery marker is edited in.
+  const staleDifferentPr = await postWebhook({
+    deliveryId: "cloudflare-smoke-008",
+    action: "opened",
+    sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    number: 12,
+  });
+  assert.equal(staleDifferentPr.status, 202);
+  const wake8 = JSON.parse(await ws.nextText());
+  assert.equal(wake8.pr_number, 12);
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake8.delivery_id,
+    state: "accepted",
+  }));
+
+  const blockedCrossPr = await postWebhook({
+    deliveryId: "cloudflare-smoke-009",
+    action: "opened",
+    sha: "ffffffffffffffffffffffffffffffffffffffff",
+    number: 13,
+  });
+  assert.equal(blockedCrossPr.status, 409);
+  assert.equal(blockedCrossPr.body.relay.error, "WORKER_WAKE_IN_FLIGHT");
+
+  const recoveryHead = "ffffffffffffffffffffffffffffffffffffffff";
+  const recoveryMarker = `<!-- BKE-RECOVER-CROSS-PR-WAKE worker=${workerId} pr=13 head=${recoveryHead} -->`;
+  const recoveredCrossPr = await postWebhook({
+    deliveryId: "cloudflare-smoke-010",
+    action: "edited",
+    sha: recoveryHead,
+    number: 13,
+    prBody: `Task intent\n\n${recoveryMarker}`,
+    priorBody: "Task intent",
+  });
+  assert.equal(recoveredCrossPr.status, 202);
+  assert.equal(recoveredCrossPr.body.relay.state, "cross_pr_recovered_sent");
+  assert.equal(recoveredCrossPr.body.relay.superseded_pr, 12);
+
+  const wake10 = JSON.parse(await ws.nextText());
+  assert.equal(wake10.pr_number, 13);
+  assert.equal(wake10.reason, "github_pull_request_cross_pr_recovery");
+
+  // A late ACK from the retired cross-PR wake must not disturb the new authoritative wake.
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake8.delivery_id,
+    state: "completed",
+  }));
+  ws.sendText(JSON.stringify({
+    protocol: 1,
+    type: "ack",
+    worker_id: workerId,
+    delivery_id: wake10.delivery_id,
     state: "completed",
   }));
 
