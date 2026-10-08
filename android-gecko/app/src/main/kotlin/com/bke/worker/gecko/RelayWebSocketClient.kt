@@ -151,16 +151,16 @@ class RelayWebSocketClient(
             override fun onResponse(call: okhttp3.Call, response: Response) {
                 response.use {
                     val body = runCatching { it.body?.string().orEmpty() }.getOrDefault("")
+                    val recovery = RelayProtocol.parseRecovery(body, config.workerId)
+                    if (recovery != null) {
+                        onRecovery(recovery)
+                        return
+                    }
                     if (!it.isSuccessful) {
                         onState("RECOVERY_FAILED")
                         return
                     }
-                    val recovery = RelayProtocol.parseRecovery(body, config.workerId)
-                    if (recovery == null) {
-                        onState("RECOVERY_PROTOCOL_REJECT")
-                        return
-                    }
-                    onRecovery(recovery)
+                    onState("RECOVERY_PROTOCOL_REJECT")
                 }
             }
         })
