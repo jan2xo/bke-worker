@@ -252,6 +252,9 @@ export function routeGitHubPullRequest(payload, deliveryId) {
       });
     }
     const body = typeof pullRequest.body === "string" ? pullRequest.body : "";
+    const priorBody = typeof payload?.changes?.body?.from === "string"
+      ? payload.changes.body.from
+      : null;
     const marker = `<!-- ${CROSS_PR_RECOVERY_MARKER} worker=${workerId} pr=${prNumber} head=${headSha} -->`;
     if (!body.includes(CROSS_PR_RECOVERY_MARKER)) {
       return jsonResult("ignore", {
@@ -263,6 +266,12 @@ export function routeGitHubPullRequest(payload, deliveryId) {
       return jsonResult("error", {
         status: 409,
         error: "CROSS_PR_RECOVERY_MARKER_INVALID",
+        pullRequest: prNumber,
+      });
+    }
+    if (priorBody === null || priorBody.includes(CROSS_PR_RECOVERY_MARKER)) {
+      return jsonResult("ignore", {
+        reason: "CROSS_PR_RECOVERY_MARKER_NOT_NEW",
         pullRequest: prNumber,
       });
     }
