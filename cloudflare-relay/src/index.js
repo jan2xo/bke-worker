@@ -290,22 +290,28 @@ export class WorkerSession extends DurableObject {
       );
     }
 
-    const supersedesStaleHead = active &&
-      active.wake.pr_number === wake.pr_number &&
+    const samePrActive = active &&
+      active.wake.pr_number === wake.pr_number;
+    const supersedesStaleHead = samePrActive &&
       active.wake.expected_head_sha !== wake.expected_head_sha &&
       wake.reason === "github_pull_request_synchronize";
+    const explicitReassignmentRecovery = samePrActive &&
+      wake.reason === "github_pull_request_labeled";
+    const supersedesAmbiguousWake =
+      supersedesStaleHead || explicitReassignmentRecovery;
 
     await this.rememberDelivery(recent, wake.delivery_id);
 
-    if (supersedesStaleHead) {
+    if (supersedesAmbiguousWake) {
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
       await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
         wake,
         phase: "queued",
       });
       const sent = await this.sendActiveIfSafe();
+      const statePrefix = explicitReassignmentRecovery ? "recovered" : "superseded";
       return json({
-        state: sent ? "superseded_sent" : "superseded_queued",
+        state: sent ? `${statePrefix}_sent` : `${statePrefix}_queued`,
         delivery_id: wake.delivery_id,
         superseded_delivery_id: active.wake.delivery_id,
       }, 202);
