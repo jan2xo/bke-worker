@@ -399,6 +399,7 @@ export class WorkerSession extends DurableObject {
     const crossPrRecovery = active &&
       active.wake.pr_number !== wake.pr_number &&
       wake.reason === "github_pull_request_cross_pr_recovery";
+    const continuationWake = wake.reason === "github_pull_request_continuation";
     if (active && active.wake.pr_number !== wake.pr_number && !crossPrRecovery) {
       return json(
         {
@@ -437,6 +438,23 @@ export class WorkerSession extends DurableObject {
       wake.reason === "github_pull_request_labeled";
     const supersedesAmbiguousWake =
       supersedesStaleHead || explicitReassignmentRecovery;
+
+    if (continuationWake) {
+      if (active && active.wake.pr_number !== wake.pr_number) {
+        return json({
+          error: "CONTINUATION_PR_MISMATCH",
+          active_pr: active.wake.pr_number,
+          incoming_pr: wake.pr_number,
+        }, 409);
+      }
+      if (active && active.phase !== "queued") {
+        return json({
+          state: "continuation_blocked_uncertain",
+          delivery_id: wake.delivery_id,
+          active_delivery_id: active.wake.delivery_id,
+        }, 202);
+      }
+    }
 
     if (crossPrRecovery) {
       await this.ctx.storage.delete(QUEUED_WAKE_KEY);
