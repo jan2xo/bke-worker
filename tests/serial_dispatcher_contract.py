@@ -209,6 +209,47 @@ class SerialDispatcherTests(unittest.TestCase):
         self.assertNotIn("javascript=", marker)
         self.assertNotIn("shell=", marker)
 
+    def test_checkpoint_reconciliation_requires_every_item_and_fresh_head(self):
+        checklist = [("A1", "assignment", False), ("A2", "proof", False)]
+        reconciled, unresolved = dispatcher.reconcile_execution_checkpoint(
+            checklist,
+            {"A1": "DONE", "A2": "BLOCKED"},
+            exact_head="a" * 40,
+            certified_head=None,
+        )
+        self.assertEqual(reconciled, {"A1": "DONE", "A2": "BLOCKED"})
+        self.assertEqual(unresolved, ["A2"])
+        with self.assertRaisesRegex(dispatcher.DispatchError, "CHECKPOINT_RECONCILIATION_INVALID"):
+            dispatcher.reconcile_execution_checkpoint(
+                checklist, {"A1": "DONE"}, exact_head="a" * 40, certified_head=None
+            )
+        with self.assertRaisesRegex(dispatcher.DispatchError, "CHECKPOINT_CERTIFICATION_STALE_HEAD"):
+            dispatcher.reconcile_execution_checkpoint(
+                checklist, {"A1": "DONE", "A2": "DONE"},
+                exact_head="a" * 40, certified_head="b" * 40
+            )
+
+    def test_ready_for_audit_requires_complete_fresh_certification(self):
+        complete = {"A1": "DONE", "A2": "NOT_REQUIRED"}
+        self.assertTrue(
+            dispatcher.ready_for_audit_allowed(
+                complete, exact_head="a" * 40, certified_head="a" * 40,
+                required_certification_complete=True,
+            )
+        )
+        self.assertFalse(
+            dispatcher.ready_for_audit_allowed(
+                {"A1": "DONE", "A2": "BLOCKED"}, exact_head="a" * 40,
+                certified_head="a" * 40, required_certification_complete=True,
+            )
+        )
+        self.assertFalse(
+            dispatcher.ready_for_audit_allowed(
+                complete, exact_head="a" * 40, certified_head="b" * 40,
+                required_certification_complete=True,
+            )
+        )
+
     def test_control_label_contract_is_bounded(self):
         self.assertEqual(
             set(dispatcher.CONTROL_LABELS),
