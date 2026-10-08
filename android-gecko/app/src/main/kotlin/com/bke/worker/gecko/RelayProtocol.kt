@@ -25,6 +25,7 @@ data class RelayRecovery(
     val headRef: String?,
     val headSha: String?,
     val deliveryId: String?,
+    val activePhase: String?,
 )
 
 object RelayProtocol {
@@ -110,6 +111,7 @@ object RelayProtocol {
             expectedHeadSha = expectedHeadSha,
             reason = reason,
             deliveryId = deliveryId,
+            activePhase = activePhase,
         )
     }
 
@@ -146,6 +148,7 @@ object RelayProtocol {
         val headRef = assignment?.optString("headRef")?.takeIf { it.isNotBlank() }
         val headSha = assignment?.optString("headSha")?.takeIf { shaPattern.matches(it) }
         val deliveryId = json.optString("delivery_id").takeIf { deliveryPattern.matches(it) }
+        val activePhase = json.optString("active_phase").takeIf { it.isNotBlank() }
 
         return RelayRecovery(
             state = state,
