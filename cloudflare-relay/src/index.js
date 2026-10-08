@@ -45,6 +45,35 @@ function parseJson(text) {
   }
 }
 
+async function postRelayCheckpoint(env, wake, relayState) {
+  try {
+    const minted = await mintInstallationToken(env);
+    const body = [
+      "BKE RELAY — " + relayState,
+      "worker=" + wake.worker_id,
+      "delivery=" + wake.delivery_id,
+      "head=" + wake.expected_head_sha,
+    ].join(" • ");
+
+    await fetch(
+      `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${wake.pr_number}/comments`,
+      {
+        method: "POST",
+        headers: {
+          "accept": "application/vnd.github+json",
+          "authorization": `Bearer ${minted.token}`,
+          "content-type": "application/json",
+          "user-agent": "bke-worker-relay",
+          "x-github-api-version": "2022-11-28",
+        },
+        body: JSON.stringify({ body }),
+      },
+    );
+  } catch {
+    // Transport must not fail because observability is temporarily unavailable.
+  }
+}
+
 function relayPathWorkerId(pathname) {
   const prefix = "/relay/";
   if (!pathname.startsWith(prefix)) return null;
@@ -126,6 +155,11 @@ async function handleGitHubWebhook(request, env) {
   });
 
   const durableResult = await response.json();
+  await postRelayCheckpoint(
+    env,
+    routing.wake,
+    String(durableResult?.state || durableResult?.error || "unknown"),
+  );
   return json(
     {
       accepted: response.ok,
