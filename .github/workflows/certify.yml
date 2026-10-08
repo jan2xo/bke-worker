@@ -947,6 +947,10 @@ jobs:
         working-directory: cloudflare-relay
         run: npm run check
 
+      - name: Execute deterministic reconnect recovery planner tests
+        working-directory: cloudflare-relay
+        run: npm run reconnect-recovery-test
+
       - name: Verify Android/relay cross-boundary contract
         run: python3 tests/cloudflare_relay_contract.py
 
