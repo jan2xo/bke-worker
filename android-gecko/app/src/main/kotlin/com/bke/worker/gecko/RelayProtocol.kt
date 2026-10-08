@@ -111,7 +111,6 @@ object RelayProtocol {
             expectedHeadSha = expectedHeadSha,
             reason = reason,
             deliveryId = deliveryId,
-            activePhase = activePhase,
         )
     }
 
