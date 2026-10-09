@@ -96,6 +96,7 @@ The broker accepts only a valid GitHub Actions OIDC JWT that proves:
   - `issues`
   - `pull_request_target`
   - `workflow_dispatch`
+  - `schedule` (trusted default-branch cron reconciliation only)
 
 The OIDC signature is verified against GitHub's published Actions OIDC JWKS.
 
