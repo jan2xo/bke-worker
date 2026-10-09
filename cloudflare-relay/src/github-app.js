@@ -8,7 +8,7 @@ const ACTIONS_OIDC_JWKS =
   "https://token.actions.githubusercontent.com/.well-known/jwks";
 const BROKER_AUDIENCE = "bke-worker-github-app-broker";
 const GITHUB_API_VERSION = "2026-03-10";
-const ALLOWED_EVENTS = new Set(["issues", "pull_request_target", "workflow_dispatch"]);
+const ALLOWED_EVENTS = new Set(["issues", "pull_request_target", "workflow_dispatch", "schedule"]);
 const REQUIRED_TOKEN_PERMISSIONS = Object.freeze({
   contents: "write",
   issues: "write",
