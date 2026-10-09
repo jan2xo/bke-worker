@@ -47,6 +47,36 @@ test("trusted serial dispatcher claims pass", () => {
   assert.equal(validateActionsClaims(validClaims()), true);
 });
 
+test("scheduled dispatcher OIDC accepts only the trusted main workflow identity", () => {
+  const scheduled = { ...validClaims(), event_name: "schedule" };
+  assert.equal(validateActionsClaims(scheduled), true);
+
+  for (const [field, value, expected] of [
+    ["repository", "jan2xo/other", "OIDC_REPOSITORY_INVALID"],
+    ["repository_id", "1", "OIDC_REPOSITORY_ID_INVALID"],
+    ["workflow_ref", "jan2xo/bke-worker/.github/workflows/other.yml@refs/heads/main", "OIDC_WORKFLOW_REF_INVALID"],
+    ["workflow", "Other Workflow", "OIDC_WORKFLOW_INVALID"],
+    ["ref", "refs/heads/feature", "OIDC_REF_INVALID"],
+    ["aud", "other-broker", "OIDC_AUDIENCE_INVALID"],
+    ["iss", "https://example.com", "OIDC_ISSUER_INVALID"],
+  ]) {
+    assert.throws(
+      () => validateActionsClaims({ ...scheduled, [field]: value }),
+      (error) => error?.message === expected,
+      `schedule must reject mismatched ${field}`,
+    );
+  }
+});
+
+test("untrusted workflow events remain rejected", () => {
+  for (const event_name of ["push", "workflow_run", "repository_dispatch", ""]) {
+    assert.throws(
+      () => validateActionsClaims({ ...validClaims(), event_name }),
+      /OIDC_EVENT_INVALID/u,
+    );
+  }
+});
+
 test("wrong repository, workflow, ref, or event fails closed", () => {
   for (const [field, value] of [
     ["repository", "jan2xo/other"],
