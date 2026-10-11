@@ -1,6 +1,6 @@
 # BKE Worker
 
-BKE Worker is a GitHub-native autonomous-engineering wake/orchestration service.
+BKE Worker is a GitHub-native engineering-office orchestration system with two operator-selected browser-integrated surfaces: **Android GeckoView + WebExtension** and **desktop browser WebExtension**. The existing Linux/Playwright code is preserved legacy implementation, not the target architecture.
 
 GitHub is durable engineering truth. ChatGPT performs engineering. Worker provides liveness, deterministic PR routing, webhook dedupe, browser safety, and recovery heartbeat.
 
@@ -21,7 +21,7 @@ one worker instance -> one active PR assignment at a time
 one PR -> one active worker
 ```
 
-Multiple worker processes may run concurrently when every worker has an isolated ChatGPT/browser/state tuple and a distinct PR assignment.
+Multiple workers may progress independent PRs asynchronously when each worker has its own browser/GeckoView session, ChatGPT target, extension/pairing identity, and state. Android and desktop WebExtension are alternative entry points to **the same office**, never independent task databases.
 
 A PR is durably assigned by exactly one label:
 
@@ -80,9 +80,9 @@ A configured ChatGPT Project/conversation is a browser-targeting choice only. It
 
 ## Program direction: pre-execution architecture + Master Command Center
 
-> **Roadmap / not yet implemented runtime behavior.** The current canonical Worker still uses the authority model above. This section records the next autonomous-program direction without claiming those capabilities already exist.
+> **Phased roadmap, not a claim of live certification.** **Now:** the owner and main-brain ChatGPT brainstorm, audit, and delegate through GitHub; independent workers execute assigned PRs. **Later:** a separately certified wake mechanism lets that same main office autonomously reconcile GitHub and continue already-authorized delegation. Either Android or desktop WebExtension can be the operator's entry surface.
 
-The target is to remove the human owner from the ordinary engineering keepalive loop. The human defines the mission, constraints, and locked production/security boundaries once. A selected **Master ChatGPT** conversation then researches the system, plans the authorized work, delegates independent intents, reviews evidence, and keeps the program moving through GitHub-native PR ledgers.
+The long-term target is to remove the need for the owner to issue every main-office continuation prompt. The owner remains the mission/security authority. A selected **Master ChatGPT** conversation researches the system, plans authorized work, delegates intents, and later (after a separately certified wake mechanism) can reconcile GitHub events and continue authorized work autonomously.
 
 Before a large program is executed, Master should produce a **Pre-Execution Architecture Package** that covers:
 
@@ -111,15 +111,15 @@ MASTER CHATGPT
 researches combinations + locks coherent architecture
         |
         v
-MASTER COMMAND CENTER
-routes selected chat / GitHub / CI / worker events
+GITHUB CONTROL PLANE + BOUNDED WAKE DELIVERY
+routes authorized PR events and durable evidence
         |
         v
 N CHATGPT ENGINEERING WORKERS
         |
-        +-- PR A -> worker-a -> isolated Chromium profile / ChatGPT A
-        +-- PR B -> worker-b -> isolated Chromium profile / ChatGPT B
-        +-- PR C -> worker-c -> isolated Chromium profile / ChatGPT C
+        +-- PR A -> worker-a -> isolated GeckoView or browser profile / ChatGPT A
+        +-- PR B -> worker-b -> isolated GeckoView or browser profile / ChatGPT B
+        +-- PR C -> worker-c -> isolated GeckoView or browser profile / ChatGPT C
         +-- ...
         |
         v
@@ -131,7 +131,7 @@ MASTER reviews / corrects / certifies / merges / unlocks dependents
 
 The Command Center is a routing, observation, and control surface. **It is not a second planner or task database. ChatGPT remains the reasoning brain and GitHub remains durable engineering truth.**
 
-Selected engineering chats may report discoveries and results back to Master. Master must recover live GitHub before acting and classify the new information against the authorized mission:
+Engineering workers report through **GitHub PR checkpoints, commits, exact-head CI evidence, and blocking reasons**, not direct reports or transcript dumps to Master. GitHub events can wake Master in the future; Master must recover live GitHub before acting and classify that evidence against the authorized mission:
 
 ```text
 same existing intent
@@ -159,23 +159,22 @@ one active PR -> one worker instance
 
 The intended engineering intelligence layer is **normal ChatGPT Chat conversations with connected tools/capabilities**. Codex is not assumed or required as the worker brain. BKE Worker, future MCP capabilities, and future browser-extension infrastructure provide routing, liveness, browser/tool access, and bounded execution surfaces; ChatGPT performs the engineering reasoning.
 
-A successful future program should allow the owner to define and approve a large architecture once, leave ordinary execution to Master + the worker fleet, and later audit whether the GitHub execution was deliberate, bounded, certified, and correct instead of manually sending continuation messages every few minutes.
+The target is one engineering office that continues independent assigned work while the owner and main brain brainstorm elsewhere. The owner may return via Android tomorrow or a desktop extension the next day. GitHub is the resumable office ledger; a future autonomous Master wake is an explicit additional certification gate.
 
-## Chromium extension bridge foundation
+## Android GeckoView and desktop WebExtension — one office
 
-The repository now contains a browser-native foundation under `browser-extension/`.
+**Selected architecture:** two browser-integrated surfaces, not Linux/Playwright as the preferred new execution model.
 
-This is **not yet the canonical live browser adapter**. The current runtime remains .NET + persistent Chromium + loopback Playwright/CDP until the extension path is locally certified.
+| Surface | Current implementation evidence | Next gate |
+| --- | --- | --- |
+| Android GeckoView + embedded WebExtension/native messaging | Historical live PREPRODUCTION GitHub -> Cloudflare relay -> Android -> ChatGPT "HELLO BOSS" proof (PR #38); recovery and continuation code merged later | Prove current device readiness and live continuation without losing human-authenticated app state |
+| Desktop browser WebExtension | `browser-extension/` Manifest V3/TypeScript **probe-only** foundation: ChatGPT tab/composer/busy observation; no prompt dispatch yet | Certify authenticated transport, bounded dispatch, duplicate suppression, session recovery, and isolation |
 
-The foundation uses Manifest V3 + TypeScript and is intentionally probe-only:
+Both surfaces must recover **the same authoritative GitHub PR/assignment state**. A change of device does not silently take over an active worker assignment or uncertain in-flight ChatGPT turn. Per-worker targets, sessions and bridge identities remain isolated.
 
-- host access is limited to `https://chatgpt.com/*`;
-- it reports ChatGPT tab/composer/busy state without reading message contents;
-- worker ID and future controller URL are stored as non-secret per-profile configuration;
-- extension storage is restricted to trusted extension contexts;
-- there is no remote transport, prompt dispatch, cookie access, auth automation, or public CDP exposure.
+The historical Linux/.NET + persistent Chromium + loopback Playwright/CDP implementation and its certification modules are preserved for evidence and intentionally scoped maintenance. They are **not part of the operator-selected Android/WebExtension target**. Do not delete or migrate them under a documentation-only PR.
 
-The planned next bridge wave is authenticated outbound control-plane transport plus bounded, idempotent dispatch. See `docs/browser-extension-bridge.md`.
+See `docs/browser-extension-bridge.md` for the desktop extension's current probe contract, future transport requirements, and certification gates.
 
 ## Worker identity and PR delegation
 
@@ -223,26 +222,17 @@ If ChatGPT is busy, hydrating, unauthenticated, or otherwise not positively safe
 
 ## Browser and instance isolation
 
-Concurrent workers must not share writable runtime resources. Each worker needs a distinct:
+Concurrent workers cannot share a ChatGPT target, writable browser profile, GeckoView app session, WebExtension controller identity, or durable state. A worker must verify its unique `worker_id`, GitHub assignment, browser/session pairing, and safe composer state before delivery. Duplicate ownership, disconnected pairing, or uncertain in-flight execution fails closed.
 
-- ChatGPT conversation/target;
-- persistent Chromium profile;
-- loopback CDP endpoint;
-- durable state file;
-- Worker HTTP listen address/port;
-- heartbeat/runtime process.
+The **preserved Linux server** separately enforces local resource leases for its legacy Chromium profile, loopback CDP port, state file, listen port, and worker process. Those ports and .NET configuration values are **not universal requirements** of Android or desktop WebExtension.
 
-Workers on the same host share `BKE_WORKER_RESOURCE_LOCK_DIRECTORY`. The process acquires exclusive leases for worker ID, ChatGPT target, profile, state file, and CDP endpoint. A collision fails closed.
+The target browser surfaces use human-authenticated ChatGPT Chat:
 
-The host-local lease protects workers sharing that lock directory. Durable PR ownership still lives in GitHub; ChatGPT must revalidate the PR label and open-PR ownership before acting.
-
-Live `chatgpt.com` uses a normal human-owned Chromium session.
-
-- authentication is human-only;
-- OAuth/MFA/CAPTCHA/security challenges are never automated;
-- CDP is loopback-only;
-- browser credentials/profile contents are never committed, logged, uploaded, or returned by Worker APIs;
-- current autonomous Worker is Chat-only and fails closed if configured for Work.
+- authentication and OAuth/MFA/CAPTCHA/security challenges remain human-only;
+- no cookies, credentials, GeckoView profiles, or extension secrets may be exported into GitHub/Worker APIs/logs;
+- native-message and extension-origin commands are untrusted until worker identity, authorization, and delivery state are verified;
+- legacy CDP remains loopback-only if used for legacy maintenance;
+- ChatGPT Work is not part of the certified Worker execution surface.
 
 ## Runtime state
 
@@ -260,7 +250,7 @@ Persisted state contains only liveness/routing data: configured ChatGPT target, 
 
 If the process restarts after persisting `DISPATCHING` or `CONTINUING`, Worker cannot prove whether the prior prompt was sent. It enters `BLOCKED` rather than risk duplicate delivery. Operator recovery is explicit.
 
-## Operator API
+## Legacy Linux server operator API (preserved)
 
 ```text
 GET  /health
@@ -275,9 +265,11 @@ POST /webhooks/github
 
 Manual continuation returns a conflict when no active PR is assigned.
 
-## Per-worker configuration
+## Legacy Linux/Playwright per-worker configuration (preserved)
 
-Example worker A:
+The following environment example documents the existing server code, **not** the Android/desktop-WebExtension target. GeckoView/extension pairing and settings require their own platform contracts and certification.
+
+Example legacy worker A:
 
 ```text
 BKE_WORKER_ID=worker-a
@@ -301,7 +293,7 @@ BKE_WORKER_HEARTBEAT_SECONDS=1800
 BKE_WORKER_MIN_DISPATCH_SECONDS=30
 ```
 
-Worker B needs its own ID, ChatGPT target, CDP port, profile, state file, and HTTP listen port.
+Another legacy Linux worker needs its own ID, ChatGPT target, CDP port, profile, state file, and HTTP listen port. Android and desktop WebExtension workers require equivalent isolation, not these CDP variables.
 
 The `BKE_WORKER_CHATGPT_PROJECT` / `BKE_WORKER_CHATGPT_CONVERSATION` values select a browser target when project-chat mode is used; they do not supply the canonical BKE Worker instructions. Separate worker accounts may instead use an isolated override link or another certified target mode.
 
@@ -338,11 +330,11 @@ Active CI is intentionally limited to:
 - cheap automatic PR Guard; and
 - explicit intent certification invoked only when the PR certification plan requires it.
 
-For multi-worker runtime changes, the server certification includes a two-worker isolation/routing harness.
+For changes to the preserved legacy Linux server, server certification includes a two-worker isolation/routing harness. Android and WebExtension changes require their own relevant certification boundaries; doc-only changes need the cheap PR Guard and exact-head review.
 
-## Legacy Android prototype
+## Historical implementation generations
 
-Android Accessibility remains historical prototype evidence. Linux/.NET + persistent Chromium + loopback Playwright/CDP is the canonical autonomous runtime.
+The **older Android Accessibility controller** is historical prototype evidence and is distinct from the newer GeckoView/WebExtension Android runtime. Linux/.NET + persistent Chromium + loopback Playwright/CDP is preserved legacy implementation. The **selected target** is Android GeckoView/WebExtension plus desktop WebExtension, with separate live-certification gates for each.
 
 ## Production boundary
 
