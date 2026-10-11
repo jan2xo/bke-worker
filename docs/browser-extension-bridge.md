@@ -1,16 +1,14 @@
-# Chromium extension bridge architecture
+# WebExtension bridge architecture — desktop surface of one BKE office
 
-## Intent
+## Intent and status
 
-The browser extension is the planned browser-side bridge for BKE Worker's multi-worker architecture.
+The operator-selected target offers **two interchangeable browser-integrated office entry/execution surfaces**: Android GeckoView with an embedded WebExtension/native-message bridge, and a desktop browser WebExtension. The engineering office itself is GitHub-governed, not bound to Android, a Linux host, or a browser profile. Worker assignment remains exclusive by GitHub PR/worker label.
 
-The long-term purpose is to let a worker's normal persistent Chromium profile run on an approved host without exposing a public CDP endpoint. The extension lives inside that exact browser profile and eventually creates an **outbound authenticated connection** to the BKE control plane.
+The desktop extension lives in a human-owned authenticated browser profile and will eventually establish an **outbound authenticated control-plane connection** without exposing public CDP. The checked-in Manifest V3 foundation is presently **probe-only**; it has not yet certified remote prompt delivery, continuation, or multiple live extension workers.
 
-The current canonical autonomous runtime remains:
+Android GeckoView is a **separate implemented platform path** with historical live PREPRODUCTION GitHub -> Cloudflare relay -> ChatGPT proof (PR #38). Its installed/current device state is not inferred from that historical result. Cross-platform protocol reuse is desirable, but GeckoView native messaging and desktop browser-extension lifecycle/permissions need platform-specific adapters and certification.
 
-`Linux/.NET -> human-authenticated persistent Chromium -> loopback Playwright/CDP -> ChatGPT Chat`
-
-This extension does not replace that runtime yet.
+Linux/.NET + Playwright/CDP is preserved as legacy implementation and test evidence. It is **not the operator-selected target**. This document changes architecture direction, not deployed runtime or certification status.
 
 ## First foundation
 
@@ -48,11 +46,12 @@ It does not collect prompt text, assistant responses, cookies, credentials, OAut
 
 ## Language and runtime split
 
-- **Browser extension:** TypeScript / Manifest V3.
-- **BKE Worker/control plane:** .NET/C#.
-- **Browser authentication:** human-owned Chromium profile.
+- **Desktop browser extension foundation:** TypeScript / Manifest V3, currently Chrome-targeted/probe-only; support for other desktop browsers requires compatibility testing.
+- **Android:** GeckoView plus its embedded extension/native-messaging adapter.
+- **Control/wake/assignment:** GitHub is durable authority; Cloudflare relay and other orchestrators are transport/liveness infrastructure, not task databases.
+- **Authentication:** human-owned ChatGPT session in each isolated browser or GeckoView profile.
 
-Do not rewrite the existing Worker into TypeScript merely to support the extension. The extension is a browser-native adapter, not a replacement for the .NET orchestration/runtime layer.
+Shared concepts are worker identity, bounded dispatch, idempotency, recovery, and GitHub ownership—not an assumption that Chrome extension APIs, GeckoView messaging, or .NET server APIs are identical. Do not rewrite or remove existing code solely because the selected architecture changed.
 
 ## Permission boundary
 
@@ -105,20 +104,19 @@ The next transport intent should implement an authenticated, outbound-only contr
 
 Chrome 116+ is the current minimum because future WebSocket activity can extend a Manifest V3 extension service worker lifetime while messages continue to flow.
 
-## Migration rule
+## Desktop WebExtension activation gate
 
-The extension path is additive until it proves parity with the required browser contract.
+The **WebExtension is the selected desktop target**, but this foundation must not be described as a live autonomous executor until an independently scoped PR proves:
 
-Before replacing Playwright/CDP for live engineering, certify at minimum:
+1. exact worker, GitHub PR assignment, extension/pairing, and browser-profile identity;
+2. human-authenticated ChatGPT session survives browser and extension restart without automating authentication;
+3. correct ChatGPT conversation/target is selected and confirmed;
+4. composer availability, busy/idle state, and interruption safety fail closed;
+5. bounded authorized PR dispatch reaches only the intended worker conversation;
+6. duplicate, conflicting, or ambiguous delivery cannot double-send;
+7. no credential, cookie, browser-profile, or unauthorized message-content leakage;
+8. control-plane disconnect/reconnect and uncertain in-flight turns do not duplicate execution;
+9. multiple desktop extension workers remain isolated and cannot cross-dispatch;
+10. meaningful results appear in GitHub PR checkpoints and exact-head certification, not as private direct reports to Master.
 
-1. exact worker/profile identity;
-2. human-authenticated ChatGPT session survives normal browser/worker restart;
-3. correct ChatGPT target is observed;
-4. composer availability and busy state fail closed;
-5. bounded prompt dispatch reaches only the intended worker conversation;
-6. duplicate/ambiguous dispatch cannot double-send;
-7. no credential or message-content leakage;
-8. controller loss/reconnect does not create uncertain duplicate execution;
-9. multiple extension-backed workers remain isolated.
-
-Until that proof exists, Playwright/CDP remains canonical.
+The legacy Playwright/CDP implementation remains in source until a separate authorized retirement intent, but **it is not the target or prerequisite for activating the desktop WebExtension**. Android and desktop workers may execute asynchronously from independent PR assignments. The main office recovers their progress from GitHub; automatic main-office wake is a later, separate certification gate.
