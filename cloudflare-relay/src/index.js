@@ -1,4 +1,5 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { fulfillCommandCenterAdminRead } from "./admin-broker.js";
 import {
   mintInstallationToken,
   verifyActionsOidcToken,
@@ -333,6 +334,15 @@ export default {
     return json({ error: "NOT_FOUND" }, 404);
   },
 };
+
+// This is NOT an HTTP route. Only an account-authorized named Cloudflare
+// Service binding can invoke this narrow capability. Public fetch remains
+// unchanged and has no endpoint that returns a GitHub Admin read token.
+export class CommandCenterReadBroker extends WorkerEntrypoint {
+  async mintReadOnlyGitHubToken(request) {
+    return fulfillCommandCenterAdminRead(this.env, request);
+  }
+}
 
 export class WorkerSession extends DurableObject {
   async fetch(request) {
