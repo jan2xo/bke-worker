@@ -195,7 +195,9 @@ jobs:
       - name: Execute operator entrypoint contract
         run: |
           python3 tests/operator_entrypoint_contract.py
+          python3 tests/android_continuation_operator_contract.py
           bash -n scripts/complete-github-app-actuator-preproduction.sh
+          bash -n scripts/certify-android-continuation-preproduction.sh
 
 
   bke-intent:
