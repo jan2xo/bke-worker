@@ -31,10 +31,27 @@ git fetch origin main >/dev/null
 main_sha="$(git rev-parse refs/remotes/origin/main)"
 api_sha="$(gh api "repos/$REPO/commits/main" --jq .sha)"
 [[ "$main_sha" == "$api_sha" ]] || fail "GitHub main/fetched main mismatch"
-[[ "$(git rev-parse HEAD)" == "$main_sha" ]] ||
-  fail "use a trusted exact-main checkout; local branch is not current main"
-[[ -z "$(git status --porcelain)" ]] ||
-  fail "checkout is dirty; use a clean isolated worktree of current main"
+if [[ "${BKE_CONTINUATION_TRUSTED_MAIN:-0}" == "1" ]]; then
+  [[ "$(git rev-parse HEAD)" == "$main_sha" ]] || fail "trusted worktree SHA drift"
+  [[ -z "$(git status --porcelain)" ]] || fail "trusted worktree became dirty"
+elif [[ "$(git rev-parse HEAD)" != "$main_sha" || -n "$(git status --porcelain)" ]]; then
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/bke-android-cert.XXXXXX")"
+  if ! git worktree add --detach "$temp_root/repo" "$main_sha" >/dev/null; then
+    rm -rf -- "$temp_root"
+    fail "could not create an isolated current-main worktree"
+  fi
+  cleanup() {
+    git worktree remove --force "$temp_root/repo" >/dev/null 2>&1 || true
+    rm -rf -- "$temp_root"
+  }
+  trap cleanup EXIT
+  echo "Running isolated exact-main code; your current work is untouched."
+  set +e
+  BKE_CONTINUATION_TRUSTED_MAIN=1 bash "$temp_root/repo/scripts/certify-android-continuation-preproduction.sh"
+  child_status=$?
+  set -e
+  exit "$child_status"
+fi
 
 # One explicitly created, unassigned, draft certification PR only.
 target="$(gh pr list --repo "$REPO" --state open --limit 500 \
@@ -93,7 +110,7 @@ gh pr edit "$number" --repo "$REPO" --add-label "$LABEL" ||
   fail "label outcome unknown — inspect GitHub before retry"
 # A single-owner result is necessary but not sufficient to prove a live delivery.
 owned="$(gh api -X GET search/issues -f q="$ownership_query" \
-  --jq '[.items[] | select(.repository_url=="https://api.github.com/repos/jan2xo/bke-worker")] | .[].number')"
+  --jq 'if .total_count == 1 and (.items|length)==1 and .items[0].repository_url=="https://api.github.com/repos/jan2xo/bke-worker" then .items[0].number else -1 end')"
 [[ "$owned" == "$number" ]] ||
   fail "post-label worker ownership ambiguous — do not retry"
 echo "ARMED / NOT CERTIFIED. Wait for actual PR progress and lease evidence on GitHub."
