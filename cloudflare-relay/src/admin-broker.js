@@ -18,6 +18,7 @@ export async function fulfillCommandCenterAdminRead(env, request, mint = mintAdm
   const minted = await mint(env);
   if (!minted || minted.repository !== REQUIRED_REPOSITORY ||
       minted.principal !== "github_app_installation" ||
+      Object.keys(minted.permissions || {}).sort().join(",") !== "contents,issues,pull_requests" ||
       minted.permissions?.contents !== "read" ||
       minted.permissions?.issues !== "read" ||
       minted.permissions?.pull_requests !== "read") {
