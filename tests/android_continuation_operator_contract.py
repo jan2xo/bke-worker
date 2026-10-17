@@ -29,6 +29,7 @@ required = (
     'RELAY: CONNECTED',
     'ARM-android-worker-a',
     'gh issue comment "$number"',
+    'BKE EXECUTION CHECKPOINT — OWNER_DEVICE_PREFLIGHT',
     'gh pr edit "$number" --repo "$REPO" --add-label "$LABEL"',
     '.total_count == 1',
     'post-label worker ownership ambiguous',

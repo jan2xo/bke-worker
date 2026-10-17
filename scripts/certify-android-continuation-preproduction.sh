@@ -98,7 +98,7 @@ read -r -p "Type ARM-android-worker-a to issue ONE GitHub label/wake: " answer
 [[ "$(gh api -X GET search/issues -f q="$ownership_query" --jq .total_count)" == "0" ]] ||
   fail "worker assignment changed"
 
-gh issue comment "$number" --repo "$REPO" --body "BKE LIVE CERTIFICATION — HUMAN PREFLIGHT ONLY
+gh issue comment "$number" --repo "$REPO" --body "BKE EXECUTION CHECKPOINT — OWNER_DEVICE_PREFLIGHT
 PR head: $head_sha
 main: $main_sha
 worker: $WORKER
