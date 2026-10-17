@@ -45,6 +45,7 @@ test("Admin broker rejects minted tokens with wrong repo, principal, or elevated
     { ...good, permissions: { ...good.permissions, contents: "write" } },
     { ...good, permissions: { ...good.permissions, issues: "write" } },
     { ...good, permissions: { ...good.permissions, pull_requests: "write" } },
+    { ...good, permissions: { ...good.permissions, administration: "write" } },
   ]) {
     await assert.rejects(
       () => fulfillCommandCenterAdminRead(env(), scope, async () => mutant),
