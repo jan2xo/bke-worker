@@ -21,7 +21,7 @@ bash scripts/certify-android-continuation-preproduction.sh
 The script reads live GitHub, refuses ambiguous PR/worker state, and verifies exact main. It uses a temporary exact-main worktree if the operator's checkout is not a clean current main, preserving local changes.
 
 4. The human independently verifies the existing device's **BROWSER ATTACHED / CHAT READY / RELAY CONNECTED / correct worker ID** and no duplicate session. There is no automated login, profile migration, APK reinstall, or secret read. A typed human acknowledgement is required.
-5. The entrypoint posts the owner preflight checkpoint and then adds exactly one `bke-worker:android-worker-a` label, which may cause an authorized GitHub/relay wake. It verifies global ownership afterward and **does not reattempt** an uncertain label action.
+5. The entrypoint posts a fresh `BKE EXECUTION CHECKPOINT — OWNER_DEVICE_PREFLIGHT` immediately before assignment. This **resets the existing GitHub progress-lease timestamp** so a stale test-PR commit cannot cause an immediate continuation after arming; it is an **owner device-readiness event, not proof of a worker turn**. The first real worker checkpoint must still be independently observed. The entrypoint then adds exactly one `bke-worker:android-worker-a` label, which may cause an authorized GitHub/relay wake. It verifies global ownership afterward and **does not reattempt** an uncertain label action.
 
 If no connected authenticated device is available, **stop**. Do not assign a worker because GitHub says FREE.
 
