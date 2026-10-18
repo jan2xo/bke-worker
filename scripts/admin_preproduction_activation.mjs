@@ -3,6 +3,7 @@
 // browser-profile access, GitHub App permission changes or OAuth automation.
 import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const [workerArg, commandArg, workerSha, commandSha] = process.argv.slice(2);
 const WRANGLER = "wrangler@4.148.0";
@@ -267,10 +268,14 @@ async function start() {
   console.log("BKE ADMIN: Human Admin MUST open " + URL + " and complete Cloudflare Access login.");
   console.log("BKE ADMIN: OWNER_LOGIN_REQUIRED (NOT YET LIVE ACCEPTED); production LOCKED.");
 }
+// The security predicates are imported by CI tests without launching any CLI.
+export { policyIdentity, noPriorActivation, names };
+if (fileURLToPath(import.meta.url) === resolve(process.argv[1] || "")) {
 start().catch(error => {
-  // Sanitized error code only; no CLI/JWT/token/body details.
-  const code = /^[A-Z0-9_]+$/u.test(error?.message || "")
-    ? error.message : "UNCLASSIFIED_ACTIVATION_ERROR";
-  console.error("BKE ADMIN: FAIL-CLOSED " + code);
-  process.exitCode = 1;
-});
+    // Sanitized error code only; no CLI/JWT/token/body details.
+    const code = /^[A-Z0-9_]+$/u.test(error?.message || "")
+      ? error.message : "UNCLASSIFIED_ACTIVATION_ERROR";
+    console.error("BKE ADMIN: FAIL-CLOSED " + code);
+    process.exitCode = 1;
+  });
+}
