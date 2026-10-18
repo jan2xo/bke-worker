@@ -95,7 +95,8 @@ async function denyAnonymous(url) {
   try {
     response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(20000) });
   } catch { fail("ACCESS_ANONYMOUS_PROBE_UNAVAILABLE"); }
-  if (response.status === 401 || response.status === 403) return;
+  // An origin 401/403 does not prove the edge Access policy is active.
+  // Require a recognizable redirect to Cloudflare Access's login challenge.
   const location = response.headers.get("location") || "";
   if ([301, 302, 303, 307, 308].includes(response.status) &&
       (/cloudflareaccess\.com/u.test(location) || /\/cdn-cgi\/access\//u.test(location))) return;
@@ -269,7 +270,7 @@ async function start() {
   console.log("BKE ADMIN: OWNER_LOGIN_REQUIRED (NOT YET LIVE ACCEPTED); production LOCKED.");
 }
 // The security predicates are imported by CI tests without launching any CLI.
-export { policyIdentity, noPriorActivation, names };
+export { policyIdentity, noPriorActivation, names, denyAnonymous };
 if (fileURLToPath(import.meta.url) === resolve(process.argv[1] || "")) {
 start().catch(error => {
     // Sanitized error code only; no CLI/JWT/token/body details.
