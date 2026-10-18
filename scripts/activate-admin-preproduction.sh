@@ -3,7 +3,7 @@ set -euo pipefail
 # Trusted-main, PREPRODUCTION-only operator entrypoint.
 REPO="jan2xo/bke-worker"
 COMMAND_REPO="jan2xo/bke-command-center"
-ENTRY_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd -P)"
+ENTRY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 for command_name in git gh node npm npx; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'BKE ADMIN: BLOCKED missing %s\n' "$command_name" >&2
@@ -27,11 +27,11 @@ REMOTE_SHA="$(gh api "repos/$REPO/commits/main" --jq .sha)"
   { echo "BKE ADMIN: BLOCKED GitHub main unavailable"; exit 2; }
 [[ "$(git -C "$ENTRY_DIR" rev-parse refs/remotes/origin/main)" == "$REMOTE_SHA" ]] ||
   { echo "BKE ADMIN: FAIL-CLOSED fetched source differs from GitHub main"; exit 2; }
-ROOT_TMP="$(mktemp -d "\${TMPDIR:-/tmp}/bke-admin-preproduction.XXXXXX")"
+ROOT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/bke-admin-preproduction.XXXXXX")"
 WORKTREE="$ROOT_TMP/worker"
 cleanup() {
   git -C "$ENTRY_DIR" worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
-  if [[ -n "\${ROOT_TMP:-}" && "$ROOT_TMP" == *"/bke-admin-preproduction."* ]]; then
+  if [[ -n "${ROOT_TMP:-}" && "$ROOT_TMP" == *"/bke-admin-preproduction."* ]]; then
     rm -rf -- "$ROOT_TMP"
   fi
 }
