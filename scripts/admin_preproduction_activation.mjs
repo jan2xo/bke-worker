@@ -10,7 +10,7 @@ const WRANGLER = "wrangler@4.148.0";
 const TARGET_RELAY = "bke-worker-relay-preproduction";
 const TARGET_CC = "bke-command-center-preproduction";
 const HOST = "cc.jl-bke.com";
-const URL = "https://" + HOST + "/admin";
+const ADMIN_URL = "https://" + HOST + "/admin";
 const SHA = /^[a-f0-9]{40}$/u;
 const ADMIN_FLAG_NAMES = ["BKE_ADMIN_BROKER_ENABLED", "BKE_ADMIN_REPO_CATALOG_ENABLED"];
 const CC_ADMIN_NAMES = ["BKE_ADMIN_DISCOVERY_ENABLED", "BKE_ADMIN_ACCESS_ISSUER",
@@ -166,7 +166,7 @@ async function preflight(token) {
   requireBinding(command, "GITHUB_TOKEN", "secret_text");
   requireBinding(command, "BKE_PREPRODUCTION", "plain_text");
   noPriorActivation(relay, command);
-  await denyAnonymous(URL, access.issuer);
+  await denyAnonymous(ADMIN_URL, access.issuer);
   return { accountId, relayDeployment, ccDeployment, access };
 }
 async function verifyTargetChanged(token, accountId, name, oldId) {
@@ -231,7 +231,7 @@ async function start() {
   }
   const stillAllowed = await accessSnapshot(token, snapshot.accountId);
   if (JSON.stringify(stillAllowed) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-  await denyAnonymous(URL, snapshot.access.issuer);
+  await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
   checkpoint("PREFLIGHT_PASS", workerSha, commandSha);
   console.log("BKE ADMIN: deploying authenticated PREPRODUCTION relay.");
   let phase = "RELAY_DEPLOY_STARTED";
@@ -256,7 +256,7 @@ async function start() {
     phase = "ADMIN_IDENTITY_CONFIG_STARTED";
     const afterAccess = await accessSnapshot(token, snapshot.accountId);
     if (JSON.stringify(afterAccess) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-    await denyAnonymous(URL, snapshot.access.issuer);
+    await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
     secretPut("BKE_ADMIN_ACCESS_ISSUER", snapshot.access.issuer, commandRoot);
     secretPut("BKE_ADMIN_ACCESS_AUD", snapshot.access.aud, commandRoot);
     secretPut("BKE_ADMIN_EMAILS", snapshot.access.email, commandRoot);
@@ -266,7 +266,7 @@ async function start() {
     const ccBindings = await settings(token, snapshot.accountId, TARGET_CC);
     for (const name of CC_ADMIN_NAMES) requireBinding(ccBindings, name, "secret_text");
     await verifyBoundRpc(token, snapshot.accountId);
-    await denyAnonymous(URL, snapshot.access.issuer);
+    await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
     phase = "OWNER_ACCESS_LOGIN_REQUIRED";
     checkpoint(phase, workerSha, commandSha);
   } catch (error) {
@@ -274,7 +274,7 @@ async function start() {
     throw error;
   }
   console.log("BKE ADMIN: PREPRODUCTION configured; anonymous Access denial verified.");
-  console.log("BKE ADMIN: Human Admin MUST open " + URL + " and complete Cloudflare Access login.");
+  console.log("BKE ADMIN: Human Admin MUST open  " + ADMIN_URL + "  and complete Cloudflare Access login.");
   console.log("BKE ADMIN: OWNER_LOGIN_REQUIRED (NOT YET LIVE ACCEPTED); production LOCKED.");
 }
 // The security predicates are imported by CI tests without launching any CLI.
