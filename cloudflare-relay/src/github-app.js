@@ -442,7 +442,7 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   // additional repository permissions for an installation token. A granted
   // empty permissions map is therefore safely sufficient for this catalog;
   // implicit metadata:read is also safe. NEVER accept optional read/write
-  // grants (contents, issues, administration, etc.) or missing attestation.
+  // grants (contents, issues, settings, etc.) or missing attestation.
   const granted = tokenInfo.permissions;
   const safeEmptyGrant = granted && typeof granted === "object" &&
     !Array.isArray(granted) && Object.keys(granted).length === 0;
