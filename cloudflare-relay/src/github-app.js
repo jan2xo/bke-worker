@@ -420,9 +420,10 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
     {
       method: "POST",
       headers: { ...appHeaders(jwt), "content-type": "application/json" },
-      // Explicit empty optional permissions requests metadata-only access;
-      // never omit permissions (that would inherit write scopes).
-      body: JSON.stringify({ permissions: {} }),
+      // GitHub's token mint must EXPLICITLY restrict permissions. An empty
+      // object may be interpreted as no restriction and inherit the App's
+      // write grants. Only request mandatory repository metadata read.
+      body: JSON.stringify({ permissions: { metadata: "read" } }),
     },
   );
   if (!response.ok) throw new Error("ADMIN_CATALOG_TOKEN_REJECTED");
@@ -438,18 +439,14 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   if (!Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000) {
     throw new Error("ADMIN_CATALOG_TOKEN_EXPIRY_INVALID");
   }
-  // GitHub documents that GET /installation/repositories needs no
-  // additional repository permissions for an installation token. A granted
-  // empty permissions map is therefore safely sufficient for this catalog;
-  // implicit metadata:read is also safe. NEVER accept optional read/write
-  // grants (contents, issues, settings, etc.) or missing attestation.
+  // Require an explicit, attested metadata-only grant. The permissions
+  // request above is NOT proven least privilege unless the returned grant
+  // contains precisely the requested field. Reject empty/missing grants as
+  // ambiguous; never accept optional repository read/write permissions.
   const granted = tokenInfo.permissions;
-  const safeEmptyGrant = granted && typeof granted === "object" &&
-    !Array.isArray(granted) && Object.keys(granted).length === 0;
-  const safeMetadataGrant = granted && typeof granted === "object" &&
-    !Array.isArray(granted) && Object.keys(granted).length === 1 &&
-    granted.metadata === "read";
-  if (!safeEmptyGrant && !safeMetadataGrant) {
+  if (!granted || typeof granted !== "object" ||
+      Array.isArray(granted) || Object.keys(granted).length !== 1 ||
+      granted.metadata !== "read") {
     throw new Error("ADMIN_CATALOG_TOKEN_GRANT_INVALID");
   }
   const out = [];
