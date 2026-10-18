@@ -308,7 +308,7 @@ function isDirectRunner(moduleUrl, scriptArg) {
     return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(scriptArg));
   } catch { return false; }
 }
-export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication };
+export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot };
 if (isDirectRunner(import.meta.url, process.argv[1])) {
 start().catch(error => {
     // Sanitized error code only; no CLI/JWT/token/body details.
