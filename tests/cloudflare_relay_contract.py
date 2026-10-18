@@ -55,7 +55,9 @@ for key in wake_keys:
     assert f'"{key}"' in android, key
 
 for token in (
-    'import { DurableObject } from "cloudflare:workers"',
+    'import { DurableObject, WorkerEntrypoint } from "cloudflare:workers"',
+    'export class CommandCenterReadBroker extends WorkerEntrypoint',
+    'return fulfillCommandCenterAdminRead(this.env, request)',
     'export class WorkerSession extends DurableObject',
     'this.ctx.storage',
     'SESSION_OBJECT_GENERATION = "v2"',

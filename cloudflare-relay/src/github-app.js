@@ -327,6 +327,51 @@ async function mintInstallationToken(env, fetchImpl = fetch) {
   };
 }
 
+
+const ADMIN_READ_PERMISSIONS = Object.freeze({
+  contents: "read",
+  issues: "read",
+  pull_requests: "read",
+});
+
+// Separate read-only token from the existing dispatcher mutation credential.
+// The unmodified dispatcher must continue using mintInstallationToken().
+async function mintAdminReadToken(env, fetchImpl = fetch) {
+  const { appId, privateKeyPem } = requiredAppConfiguration(env);
+  const jwt = await createGitHubAppJwt(appId, privateKeyPem);
+  const installation = await resolveInstallation(jwt, fetchImpl);
+  const response = await fetchImpl(
+    `https://api.github.com/app/installations/${installation.id}/access_tokens`,
+    {
+      method: "POST",
+      headers: { ...appHeaders(jwt), "content-type": "application/json" },
+      body: JSON.stringify({
+        repository_ids: [Number(CONTROL_REPOSITORY_ID)],
+        permissions: ADMIN_READ_PERMISSIONS,
+      }),
+    },
+  );
+  // GitHub is the only issuer; never use a manually supplied installation ID.
+  if (!response.ok) throw new Error("ADMIN_GITHUB_TOKEN_MINT_REJECTED");
+  const payload = await response.json().catch(() => null);
+  const expiry = typeof payload?.expires_at === "string" ? Date.parse(payload.expires_at) : NaN;
+  const remaining = expiry - Date.now();
+  if (!payload || typeof payload.token !== "string" ||
+      !/^ghs_[A-Za-z0-9_]+$/u.test(payload.token) ||
+      !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000) {
+    throw new Error("ADMIN_GITHUB_TOKEN_INVALID");
+  }
+  // GitHub responded to an exact-repository, read-only token request; never
+  // return the write-scoped dispatcher token or its wider permissions.
+  return {
+    token: payload.token,
+    expires_at: payload.expires_at,
+    repository: CONTROL_REPOSITORY,
+    permissions: ADMIN_READ_PERMISSIONS,
+    principal: "github_app_installation",
+  };
+}
+
 export {
   ACTIONS_OIDC_ISSUER,
   BROKER_AUDIENCE,
@@ -335,6 +380,7 @@ export {
   SERIAL_WORKFLOW_REF,
   createGitHubAppJwt,
   mintInstallationToken,
+  mintAdminReadToken,
   resolveInstallation,
   validateActionsClaims,
   validateInstallationPermissions,
