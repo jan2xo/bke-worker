@@ -196,6 +196,9 @@ jobs:
         run: |
           python3 tests/operator_entrypoint_contract.py
           python3 tests/android_continuation_operator_contract.py
+          python3 tests/admin_preproduction_operator_contract.py
+          node --test tests/admin_preproduction_activation.test.mjs
+          bash -n scripts/activate-admin-preproduction.sh
           bash -n scripts/complete-github-app-actuator-preproduction.sh
           bash -n scripts/certify-android-continuation-preproduction.sh
 
