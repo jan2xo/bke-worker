@@ -399,9 +399,9 @@ function safeCatalogRepository(item) {
 // Lists only repositories already approved in the EXISTING GitHub App
 // installation. The catalogue token stays inside this Cloudflare relay.
 // This DOES NOT increase the installed app's GitHub permissions.
-async function listAdminInstalledRepositories(env, fetchImpl = fetch) {
+async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt = createGitHubAppJwt) {
   const { appId, privateKeyPem } = requiredAppConfiguration(env);
-  const jwt = await createGitHubAppJwt(appId, privateKeyPem);
+  const jwt = await createJwt(appId, privateKeyPem);
   const installation = await resolveInstallation(jwt, fetchImpl);
   const response = await fetchImpl(
     "https://api.github.com/app/installations/" + installation.id + "/access_tokens",
@@ -421,12 +421,13 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch) {
       !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000 ||
       !tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
       Array.isArray(tokenInfo.permissions) ||
-      Object.entries(tokenInfo.permissions).some(([key, value]) =>
-        key !== "metadata" || value !== "read")) {
+      Object.keys(tokenInfo.permissions).length !== 1 ||
+      tokenInfo.permissions.metadata !== "read") {
     throw new Error("ADMIN_CATALOG_TOKEN_SCOPE_INVALID");
   }
   const out = [];
   const seen = new Set();
+  let expectedTotal = null;
   for (let page = 1; page <= CATALOG_MAX_PAGES; page++) {
     const qs = new URLSearchParams({ per_page: String(CATALOG_PAGE_SIZE), page: String(page) });
     const dataResponse = await fetchImpl(
@@ -446,9 +447,11 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch) {
     const data = await dataResponse.json().catch(() => null);
     if (!Array.isArray(data?.repositories) || data.repositories.length > CATALOG_PAGE_SIZE ||
         !Number.isSafeInteger(data?.total_count) || data.total_count < 0 ||
-        data.total_count > CATALOG_MAX_PAGES * CATALOG_PAGE_SIZE) {
+        data.total_count > CATALOG_MAX_PAGES * CATALOG_PAGE_SIZE ||
+        (page > 1 && data.total_count !== expectedTotal)) {
       throw new Error("ADMIN_CATALOG_REPOSITORIES_INVALID");
     }
+    if (page === 1) expectedTotal = data.total_count;
     for (const item of data.repositories) {
       const repo = safeCatalogRepository(item);
       if (seen.has(repo.id)) throw new Error("ADMIN_CATALOG_DUPLICATE_REPOSITORY");
