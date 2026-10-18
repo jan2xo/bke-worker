@@ -265,7 +265,7 @@ test("catalog runtime stage failures stay fixed, redacted and before unsafe resu
       : createJwt;
     await assert.rejects(() => listAdminInstalledRepositories(env,fetchMock,sign), error => {
       assert.equal(error.message,code);
-      assert.doesNotMatch(error.message,/ghs_|TOKEN_|RSA_MATERIAL|private|jwt|material/i);
+      assert.doesNotMatch(error.message,/ghs_|SENSITIVE|RSA_MATERIAL|private|jwt|material/i);
       return true;
     });
     assert.equal(f.calls.length,calls);
