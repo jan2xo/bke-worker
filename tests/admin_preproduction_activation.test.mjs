@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
-  policyIdentity, noPriorActivation, names, denyAnonymous,
+  policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner,
 } from "../scripts/admin_preproduction_activation.mjs";
 
 const app = { domain:"cc.jl-bke.com", type:"self_hosted",
@@ -61,4 +65,18 @@ test("Anonymous probe rejects an origin 403, accepts only actual Access login ch
   } finally {
     globalThis.fetch = previous;
   }
+});
+
+test("macOS-style symlink path resolves to direct runner without starting activation", () => {
+  const root = mkdtempSync(join(tmpdir(), "bke-admin-entry-"));
+  try {
+    const original = join(root, "entry.mjs");
+    const alias = join(root, "linked.mjs");
+    writeFileSync(original, "// test fixture");
+    symlinkSync(original, alias);
+    assert.equal(isDirectRunner(pathToFileURL(original).href, alias), true);
+    assert.equal(isDirectRunner(pathToFileURL(original).href, original), true);
+    assert.equal(isDirectRunner(pathToFileURL(original).href, join(root, "not-present")), false);
+    assert.equal(isDirectRunner(pathToFileURL(original).href, undefined), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
