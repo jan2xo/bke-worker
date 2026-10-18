@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  policyIdentity, noPriorActivation, names,
+  policyIdentity, noPriorActivation, names, denyAnonymous,
 } from "../scripts/admin_preproduction_activation.mjs";
 
 const app = { domain:"cc.jl-bke.com", type:"self_hosted",
@@ -44,4 +44,19 @@ test("Cloudflare binding inventory reads only names and type, no values",()=>{
   const map=names([{name:"GITHUB_TOKEN",type:"secret_text"},{name:"BKE_PREPRODUCTION",type:"plain_text"}]);
   assert.equal(map.get("GITHUB_TOKEN").type,"secret_text");
   assert.equal(map.has("BKE_ADMIN_DISCOVERY_ENABLED"),false);
+});
+
+test("Anonymous probe rejects an origin 403, accepts only actual Access login challenge", async () => {
+  const previous = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response("denied by application", { status: 403 });
+    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin"), /ACCESS_ANONYMOUS_NOT_DENIED/);
+    globalThis.fetch = async () => Response.redirect(
+      "https://project-freedom.cloudflareaccess.com/cdn-cgi/access/login/example", 302);
+    await denyAnonymous("https://cc.jl-bke.com/admin");
+    globalThis.fetch = async () => new Response("public app", { status: 200 });
+    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin"), /ACCESS_ANONYMOUS_NOT_DENIED/);
+  } finally {
+    globalThis.fetch = previous;
+  }
 });
