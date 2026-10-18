@@ -231,7 +231,7 @@ async function start() {
   }
   const stillAllowed = await accessSnapshot(token, snapshot.accountId);
   if (JSON.stringify(stillAllowed) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-  await denyAnonymous(URL);
+  await denyAnonymous(URL, snapshot.access.issuer);
   checkpoint("PREFLIGHT_PASS", workerSha, commandSha);
   console.log("BKE ADMIN: deploying authenticated PREPRODUCTION relay.");
   let phase = "RELAY_DEPLOY_STARTED";
@@ -256,7 +256,7 @@ async function start() {
     phase = "ADMIN_IDENTITY_CONFIG_STARTED";
     const afterAccess = await accessSnapshot(token, snapshot.accountId);
     if (JSON.stringify(afterAccess) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-    await denyAnonymous(URL);
+    await denyAnonymous(URL, snapshot.access.issuer);
     secretPut("BKE_ADMIN_ACCESS_ISSUER", snapshot.access.issuer, commandRoot);
     secretPut("BKE_ADMIN_ACCESS_AUD", snapshot.access.aud, commandRoot);
     secretPut("BKE_ADMIN_EMAILS", snapshot.access.email, commandRoot);
@@ -266,7 +266,7 @@ async function start() {
     const ccBindings = await settings(token, snapshot.accountId, TARGET_CC);
     for (const name of CC_ADMIN_NAMES) requireBinding(ccBindings, name, "secret_text");
     await verifyBoundRpc(token, snapshot.accountId);
-    await denyAnonymous(URL);
+    await denyAnonymous(URL, snapshot.access.issuer);
     phase = "OWNER_ACCESS_LOGIN_REQUIRED";
     checkpoint(phase, workerSha, commandSha);
   } catch (error) {
