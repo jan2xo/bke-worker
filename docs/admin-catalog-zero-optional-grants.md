@@ -1,5 +1,8 @@
-# GitHub App catalog: zero optional grants are sufficient
+# GitHub App catalog: historical zero-optional-grant hypothesis (superseded)
 
+> **SUPERSEDED — 2026-10-19:** The conclusion below that `permissions: {}` is a safe, proven least-privilege token request was **not established**. The owner still received `GITHUB_CATALOG_TOKEN_GRANT_REJECTED` after deploying PR #100. GitHub documents that omitted restrictions result in inherited installation grants, and an empty permissions map should not be treated as positive proof that GitHub applied a restriction. The active catalog contract now requires an explicit token mint request `{ permissions: { metadata: "read" } }` and an exact returned grant `{ metadata: "read" }`. See `docs/admin-catalog-explicit-metadata-only.md`. Historical content below is retained for audit and must not be reused as an operating recommendation.
+
+---
 ## Verified source and provider contract
 
 Owner’s authenticated PREPRODUCTION Command Center now reports `GITHUB_CATALOG_TOKEN_GRANT_REJECTED`. Worker relay source emits this only **after** GitHub returned an accepted installation-token response whose bearer format and expiry passed independent checks; its returned `permissions` object was not exactly `{ "metadata": "read" }`. The response's exact content was **not observed**, and no actual GitHub bearer or grant object was read or logged.
