@@ -429,13 +429,20 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   const tokenInfo = await response.json().catch(() => null);
   const token = tokenInfo?.token;
   const remaining = Date.parse(tokenInfo?.expires_at || "") - Date.now();
-  if (!isOpaqueGitHubInstallationToken(token) ||
-      !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000 ||
-      !tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
+  // Diagnostic stages are fixed codes ONLY. Never include the token,
+  // GitHub permissions object, response body, key material or timestamps
+  // in thrown errors, logs, PR checkpoints or Command Center responses.
+  if (!isOpaqueGitHubInstallationToken(token)) {
+    throw new Error("ADMIN_CATALOG_TOKEN_BEARER_INVALID");
+  }
+  if (!Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000) {
+    throw new Error("ADMIN_CATALOG_TOKEN_EXPIRY_INVALID");
+  }
+  if (!tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
       Array.isArray(tokenInfo.permissions) ||
       Object.keys(tokenInfo.permissions).length !== 1 ||
       tokenInfo.permissions.metadata !== "read") {
-    throw new Error("ADMIN_CATALOG_TOKEN_SCOPE_INVALID");
+    throw new Error("ADMIN_CATALOG_TOKEN_GRANT_INVALID");
   }
   const out = [];
   const seen = new Set();
