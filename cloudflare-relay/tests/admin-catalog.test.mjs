@@ -124,7 +124,7 @@ test("catalog continues to reject elevated grants, invalid bearer types and head
     assert.equal(f.calls.length, 2);
   }
   for (const token of ["ghu_not_installation", "github_pat_spoof",
-    "ghs_", "ghs_abc def", "ghs_abc\\r\\nX-Evil: injected",
+    "ghs_", "ghs_abc def", "ghs_abc" + String.fromCharCode(13, 10) + "X-Evil: injected",
     "ghs_" + "a".repeat(8193)]) {
     const f = fixture({ token });
     await assert.rejects(
