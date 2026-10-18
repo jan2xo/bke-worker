@@ -328,6 +328,18 @@ async function mintInstallationToken(env, fetchImpl = fetch) {
 }
 
 
+// GitHub completed rollout of stateless ghs_APPID_JWT installation tokens
+// in October 2026. Treat GitHub-issued installation bearer strings as opaque:
+// the modern format contains periods, hyphens and underscores. This check
+// enforces only the token type and safe HTTP-header characters, NOT JWT claims.
+// Scope and expiry are separately verified from the HTTPS issuance response.
+function isOpaqueGitHubInstallationToken(token) {
+  return typeof token === "string" &&
+    token.startsWith("ghs_") &&
+    token.length > 8 && token.length <= 8192 &&
+    !/[\x00-\x20\x7f]/u.test(token);
+}
+
 const ADMIN_READ_PERMISSIONS = Object.freeze({
   contents: "read",
   issues: "read",
@@ -357,7 +369,7 @@ async function mintAdminReadToken(env, fetchImpl = fetch) {
   const expiry = typeof payload?.expires_at === "string" ? Date.parse(payload.expires_at) : NaN;
   const remaining = expiry - Date.now();
   if (!payload || typeof payload.token !== "string" ||
-      !/^ghs_[A-Za-z0-9_]+$/u.test(payload.token) ||
+      !isOpaqueGitHubInstallationToken(payload.token) ||
       !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000) {
     throw new Error("ADMIN_GITHUB_TOKEN_INVALID");
   }
@@ -417,7 +429,7 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   const tokenInfo = await response.json().catch(() => null);
   const token = tokenInfo?.token;
   const remaining = Date.parse(tokenInfo?.expires_at || "") - Date.now();
-  if (typeof token !== "string" || !/^ghs_[A-Za-z0-9_]+$/u.test(token) ||
+  if (!isOpaqueGitHubInstallationToken(token) ||
       !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000 ||
       !tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
       Array.isArray(tokenInfo.permissions) ||
