@@ -328,6 +328,12 @@ async function start() {
     wrangler(["deploy", "--env", "preproduction"], commandRoot, { code: "COMMAND_CENTER_DEPLOY_FAILED" });
     await verifyTargetChanged(token, snapshot.accountId, TARGET_CC, beforeCC);
     await verifyBoundRpc(token, snapshot.accountId);
+    if (snapshot.connectedAccess) {
+      // Any lost bootstrap binding MUST be detected before enabling Admin,
+      // since encrypted provider-verified values are not readable by Wrangler.
+      const ccStaged = await settings(token, snapshot.accountId, TARGET_CC);
+      for (const name of CONNECTED_ACCESS_KEYS) requireBinding(ccStaged, name, "secret_text");
+    }
     checkpoint("COMMAND_CENTER_SOURCE_AND_PRIVATE_BINDING", workerSha, commandSha);
     phase = "ADMIN_IDENTITY_CONFIG_STARTED";
     await assertAccessUnchanged(token, snapshot);
