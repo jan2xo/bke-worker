@@ -16,7 +16,7 @@ const fixtureRepo = (id, name) => ({
 });
 const createJwt = async () => "test-fixture-jwt";
 
-function fixture({ permissions = { metadata: "read" }, pages, status = 201, token = "ghs_testcredential" } = {}) {
+function fixture({ permissions = { metadata: "read" }, pages, status = 201, token = "ghs_testcredential", expiresAt } = {}) {
   const calls = [];
   const fetchStub = async (url, options = {}) => {
     calls.push({ url, options });
@@ -27,7 +27,7 @@ function fixture({ permissions = { metadata: "read" }, pages, status = 201, toke
     }
     if (url.endsWith("/app/installations/51/access_tokens")) {
       return Response.json({ token,
-        expires_at: new Date(Date.now() + 35 * 60000).toISOString(),
+        expires_at: expiresAt === undefined ? new Date(Date.now() + 35 * 60000).toISOString() : expiresAt,
         permissions }, { status });
     }
     if (url.startsWith("https://api.github.com/installation/repositories?")) {
@@ -69,7 +69,7 @@ test("catalog fails closed on extra permissions or missing grant", async () => {
     { metadata: "write" }, {}, { issues: "write" }, []]) {
     const f = fixture({ permissions });
     await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
-      /ADMIN_CATALOG_TOKEN_SCOPE_INVALID/);
+      /ADMIN_CATALOG_TOKEN_GRANT_INVALID/);
     assert.equal(f.calls.length, 2);
   }
 });
@@ -119,7 +119,7 @@ test("catalog continues to reject elevated grants, invalid bearer types and head
     const f = fixture({ permissions, token: accepted });
     await assert.rejects(
       () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
-      /ADMIN_CATALOG_TOKEN_SCOPE_INVALID/,
+      /ADMIN_CATALOG_TOKEN_GRANT_INVALID/,
     );
     assert.equal(f.calls.length, 2);
   }
@@ -129,8 +129,58 @@ test("catalog continues to reject elevated grants, invalid bearer types and head
     const f = fixture({ token });
     await assert.rejects(
       () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
-      /ADMIN_CATALOG_TOKEN_SCOPE_INVALID/,
+      /ADMIN_CATALOG_TOKEN_BEARER_INVALID/,
     );
     assert.equal(f.calls.length, 2);
   }
+});
+
+test("catalog rejects invalid TTL separately and leaks no token metadata", async () => {
+  const values = [null, "invalid", "2000-01-01T00:00:00Z",
+    new Date(Date.now() + 30000).toISOString(),
+    new Date(Date.now() + 90 * 60000).toISOString()];
+  for (const expiresAt of values) {
+    const f = fixture({ expiresAt });
+    await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      error => {
+        assert.equal(error.message, "ADMIN_CATALOG_TOKEN_EXPIRY_INVALID");
+        assert.doesNotMatch(error.message, /ghs_|expires_at|permissions|2000-01-01/i);
+        return true;
+      });
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test("malformed bearer and excessive grants stay distinct and stop before catalog read", async () => {
+  for (const input of [
+    { token: "ghs_abc" + String.fromCharCode(13, 10) + "X-Evil: injected",
+      expected: "ADMIN_CATALOG_TOKEN_BEARER_INVALID" },
+    { token: null, expected: "ADMIN_CATALOG_TOKEN_BEARER_INVALID" },
+    { token: "ghs_1234567", permissions: {},
+      expected: "ADMIN_CATALOG_TOKEN_GRANT_INVALID" },
+    { token: "ghs_1234567", permissions: { metadata: "read", contents: "read" },
+      expected: "ADMIN_CATALOG_TOKEN_GRANT_INVALID" },
+  ]) {
+    const f = fixture(input);
+    await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      error => {
+        assert.equal(error.message, input.expected);
+        assert.doesNotMatch(error.message, /injected|metadata|contents|ghs_/);
+        return true;
+      });
+    assert.equal(f.calls.length, 2);
+    assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+  }
+});
+
+test("valid metadata-only token still enumerates only existing approved repositories", async () => {
+  const f = fixture({
+    token: "ghs_12345_" + "a".repeat(60) + ".payload.signature",
+    permissions: { metadata: "read" },
+    expiresAt: new Date(Date.now() + 15 * 60000).toISOString(),
+  });
+  const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
+  assert.equal(result.total_visible, 2);
+  assert.equal(f.calls.length, 3);
+  assert.doesNotMatch(JSON.stringify(result), /ghs_|payload.signature/);
 });
