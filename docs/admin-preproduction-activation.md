@@ -21,6 +21,14 @@ If necessary, it invokes the official GitHub (`gh auth login --web`) or Cloudfla
 5. Re-run the cheap and complete source checks, including Command Center `npm ci`, `npm test`, `npm run check`, Wrangler PREPRODUCTION dry-run, relay `npm run check`. Verify Cloudflare deploy IDs and policy did not drift.
 6. Write a sanitized GitHub issue #30 preflight checkpoint.
 
+## Access app visibility recovery
+
+If the operator receives `ACCESS_APPLICATION_NOT_VISIBLE`, **stop**. The Cloudflare API view associated with the locally authenticated Wrangler principal returned no Access app for the exact PREPRODUCTION hostname. This is distinct from `ACCESS_APPLICATION_AMBIGUOUS`, which means more than one exact match. Do not create a duplicate Access application, choose another domain, enter a manual Access audience/ID, use a browser cookie, or skip Access verification.
+
+The operator entrypoint queries `GET /accounts/{account_id}/access/apps?domain=cc.jl-bke.com&exact=true&per_page=100&page=1`, requires **exactly one** domain match, fetches that application's detail by ID, and verifies ID, domain, type and Access application audience before trusting any signed human policy. If the CLI identity cannot see the app, verify its Cloudflare account membership and `Access: Apps and Policies: Read` permission through the official Cloudflare account authentication/settings; no value should be pasted into the script. Keep the activation stopped until the protected app is visible to that principal.
+
+The fail-closed read happens *before any deployment* during preflight. The script does not create or modify an Access application, broaden its policy or print an Admin email or JWT. After credential/scope recovery, retry the same canonical one-command entrypoint from current main; it rechecks that no partial mutation occurred.
+
 ## Explicitly authorized PREPRODUCTION mutation only
 
 - Deploy `bke-worker-relay-preproduction` from verified current Worker main, verify new deployment.
