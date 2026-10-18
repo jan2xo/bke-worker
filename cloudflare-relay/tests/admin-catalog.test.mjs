@@ -55,7 +55,7 @@ test("catalog returns only approved repository metadata and no credential", asyn
   const f = fixture();
   const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
   assert.equal(f.calls.length, 3);
-  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: { metadata: "read" } });
   assert.equal(f.calls[2].options.headers.authorization, "Bearer ghs_testcredential");
   assert.equal(result.total_visible, 2);
   assert.deepEqual(result.repositories.map(r => r.full_name),
@@ -105,7 +105,7 @@ test("catalog accepts GitHub 2026 stateless JWT-format installation tokens witho
   const f = fixture({ token });
   const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
   assert.equal(f.calls.length, 3);
-  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: { metadata: "read" } });
   assert.equal(f.calls[2].options.headers.authorization, "Bearer " + token);
   assert.equal(result.total_visible, 2);
   assert.doesNotMatch(JSON.stringify(result), /ghs_|\.b_c-d\./);
@@ -169,7 +169,7 @@ test("malformed bearer and excessive grants stay distinct and stop before catalo
         return true;
       });
     assert.equal(f.calls.length, 2);
-    assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+    assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: { metadata: "read" } });
   }
 });
 
@@ -185,30 +185,58 @@ test("valid metadata-only token still enumerates only existing approved reposito
   assert.doesNotMatch(JSON.stringify(result), /ghs_|payload.signature/);
 });
 
-test("GitHub catalog allows zero optional grants without broadening App authority", async () => {
+test("catalog rejects ambiguous empty returned grants even after explicit metadata-read mint", async () => {
   const f = fixture({
     permissions: {},
     token: "ghs_12345_" + "a".repeat(68) + ".payload.signature",
   });
-  const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
-  assert.equal(result.total_visible, 2);
-  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
-  assert.equal(f.calls.length, 3);
-  assert.deepEqual(result.repositories.map(r => r.full_name),
-    ["jan2xo/BKE_RENDER_DOCK", "jan2xo/bke-worker"]);
-  assert.doesNotMatch(JSON.stringify(result), /ghs_|payload.signature/);
+  await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+    /ADMIN_CATALOG_TOKEN_GRANT_INVALID/);
+  assert.deepEqual(JSON.parse(f.calls[1].options.body),
+    { permissions: { metadata: "read" } });
+  assert.equal(f.calls.length, 2); // Never query repositories on ambiguous grants.
 });
 
-test("catalog rejects all optional grants including read, write, metadata-write and missing grant object", async () => {
+test("catalog rejects optional grants, metadata write and missing or ambiguous grant object", async () => {
   for (const permissions of [
     {contents:"read"}, {contents:"write"}, {issues:"read"},
     {metadata:"read", contents:"read"},
     {metadata:"read", checks:"read"}, {metadata:"write"},
-    {actions:"read"}, ["metadata", "read"], null, "metadata",
+    {actions:"read"}, {}, ["metadata", "read"], null, "metadata",
   ]) {
     const f = fixture({permissions});
     await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
       /ADMIN_CATALOG_TOKEN_GRANT_INVALID/);
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test("explicit metadata-only mint cannot silently inherit dispatcher privileges", async () => {
+  const f = fixture({ permissions: {
+    metadata: "read", contents: "write", issues: "write",
+    pull_requests: "write",
+  } });
+  await assert.rejects(
+    () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+    /ADMIN_CATALOG_TOKEN_GRANT_INVALID/,
+  );
+  assert.deepEqual(JSON.parse(f.calls[1].options.body),
+    { permissions: { metadata: "read" } });
+  assert.equal(f.calls.length, 2);
+});
+
+test("catalog rejects extra grants even where the provider returned metadata-read", async () => {
+  for (const permissions of [
+    { metadata:"read", contents:"read" },
+    { metadata:"read", issues:"read" },
+    { metadata:"read", checks:"read" },
+    { metadata:"read", pull_requests:"write" },
+  ]) {
+    const f = fixture({ permissions });
+    await assert.rejects(
+      () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      /ADMIN_CATALOG_TOKEN_GRANT_INVALID/,
+    );
     assert.equal(f.calls.length, 2);
   }
 });
