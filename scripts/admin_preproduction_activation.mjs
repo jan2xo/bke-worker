@@ -90,7 +90,7 @@ function policyIdentity(app, policies, organization) {
   }
   return { email, issuer: "https://" + authDomain, aud: app.aud };
 }
-async function denyAnonymous(url) {
+async function denyAnonymous(url, accessIssuer) {
   let response;
   try {
     response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(20000) });
@@ -98,8 +98,16 @@ async function denyAnonymous(url) {
   // An origin 401/403 does not prove the edge Access policy is active.
   // Require a recognizable redirect to Cloudflare Access's login challenge.
   const location = response.headers.get("location") || "";
+  let target, original, issuer;
+  try {
+    target = new URL(location, url);
+    original = new URL(url);
+    issuer = new URL(accessIssuer);
+  } catch { fail("ACCESS_ANONYMOUS_NOT_DENIED"); }
   if ([301, 302, 303, 307, 308].includes(response.status) &&
-      (/cloudflareaccess\.com/u.test(location) || /\/cdn-cgi\/access\//u.test(location))) return;
+      target.protocol === "https:" &&
+      (target.hostname === issuer.hostname || target.hostname === original.hostname) &&
+      target.pathname.startsWith("/cdn-cgi/access/")) return;
   fail("ACCESS_ANONYMOUS_NOT_DENIED");
 }
 async function latestDeployment(token, accountId, name) {
@@ -158,7 +166,7 @@ async function preflight(token) {
   requireBinding(command, "GITHUB_TOKEN", "secret_text");
   requireBinding(command, "BKE_PREPRODUCTION", "plain_text");
   noPriorActivation(relay, command);
-  await denyAnonymous(URL);
+  await denyAnonymous(URL, access.issuer);
   return { accountId, relayDeployment, ccDeployment, access };
 }
 async function verifyTargetChanged(token, accountId, name, oldId) {
