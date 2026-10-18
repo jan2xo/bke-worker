@@ -16,7 +16,7 @@ const fixtureRepo = (id, name) => ({
 });
 const createJwt = async () => "test-fixture-jwt";
 
-function fixture({ permissions = { metadata: "read" }, pages, status = 201 } = {}) {
+function fixture({ permissions = { metadata: "read" }, pages, status = 201, token = "ghs_testcredential" } = {}) {
   const calls = [];
   const fetchStub = async (url, options = {}) => {
     calls.push({ url, options });
@@ -26,7 +26,7 @@ function fixture({ permissions = { metadata: "read" }, pages, status = 201 } = {
       } });
     }
     if (url.endsWith("/app/installations/51/access_tokens")) {
-      return Response.json({ token: "ghs_testcredential",
+      return Response.json({ token,
         expires_at: new Date(Date.now() + 35 * 60000).toISOString(),
         permissions }, { status });
     }
@@ -97,4 +97,40 @@ test("catalog rejects invalid repository paths before returning a partial result
     repositories: [{ ...fixtureRepo(10, "ok"), full_name: "jan2xo/../invalid" }] }) });
   await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
     /ADMIN_CATALOG_REPOSITORY_INVALID/);
+});
+
+test("catalog accepts GitHub 2026 stateless JWT-format installation tokens without introspection", async () => {
+  // Synthetic token: no real GitHub credential or signing material in tests.
+  const token = "ghs_12345_" + "a".repeat(75) + ".b_c-d." + "e".repeat(80);
+  const f = fixture({ token });
+  const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+  assert.equal(f.calls[2].options.headers.authorization, "Bearer " + token);
+  assert.equal(result.total_visible, 2);
+  assert.doesNotMatch(JSON.stringify(result), /ghs_|\.b_c-d\./);
+});
+
+test("catalog continues to reject elevated grants, invalid bearer types and header injection", async () => {
+  const accepted = "ghs_12345_" + "a".repeat(75) + ".b_c-d." + "e".repeat(80);
+  for (const permissions of [{ metadata: "read", contents: "read" },
+    { metadata: "read", issues: "write" }, { metadata: "write" }, {},
+    { contents: "write" }]) {
+    const f = fixture({ permissions, token: accepted });
+    await assert.rejects(
+      () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      /ADMIN_CATALOG_TOKEN_SCOPE_INVALID/,
+    );
+    assert.equal(f.calls.length, 2);
+  }
+  for (const token of ["ghu_not_installation", "github_pat_spoof",
+    "ghs_", "ghs_abc def", "ghs_abc" + String.fromCharCode(13, 10) + "X-Evil: injected",
+    "ghs_" + "a".repeat(8193)]) {
+    const f = fixture({ token });
+    await assert.rejects(
+      () => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      /ADMIN_CATALOG_TOKEN_SCOPE_INVALID/,
+    );
+    assert.equal(f.calls.length, 2);
+  }
 });

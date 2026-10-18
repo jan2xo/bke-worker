@@ -119,3 +119,31 @@ test("Public relay HTTP routes never advertise private broker RPC or token", asy
   assert.doesNotMatch(source, /url.pathname === "\/github\/admin\/read-token"/u);
   assert.match(source, /mintReadOnlyGitHubToken/u);
 });
+
+test("read-only broker accepts GitHub stateless bearer and keeps fixed repository scope", async () => {
+  const token = "ghs_12345_" + "x".repeat(90) + ".a-b_c." + "y".repeat(90);
+  const calls = [];
+  const mint = await mintAdminReadToken(env(), async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith("/repos/jan2xo/bke-worker/installation")) {
+      return Response.json({ id: 98765, repository_selection: "selected",
+        permissions: { contents: "write", issues: "write",
+          pull_requests: "write", metadata: "read" } });
+    }
+    if (url.endsWith("/app/installations/98765/access_tokens")) {
+      return Response.json({ token,
+        expires_at: new Date(Date.now() + 35 * 60000).toISOString(),
+      }, { status: 201 });
+    }
+    throw Error("unexpected upstream route");
+  });
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    repository_ids: [1354026486],
+    permissions: { contents: "read", issues: "read", pull_requests: "read" },
+  });
+  assert.equal(mint.token, token);
+  assert.equal(mint.repository, "jan2xo/bke-worker");
+  assert.equal(mint.permissions.contents, "read");
+  const returned = await fulfillCommandCenterAdminRead(env(), scope, async () => mint);
+  assert.equal(returned.token, token);
+});
