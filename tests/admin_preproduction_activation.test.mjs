@@ -50,12 +50,14 @@ test("Anonymous probe rejects an origin 403, accepts only actual Access login ch
   const previous = globalThis.fetch;
   try {
     globalThis.fetch = async () => new Response("denied by application", { status: 403 });
-    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin"), /ACCESS_ANONYMOUS_NOT_DENIED/);
+    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin", "https://project-freedom.cloudflareaccess.com"), /ACCESS_ANONYMOUS_NOT_DENIED/);
     globalThis.fetch = async () => Response.redirect(
       "https://project-freedom.cloudflareaccess.com/cdn-cgi/access/login/example", 302);
-    await denyAnonymous("https://cc.jl-bke.com/admin");
+    await denyAnonymous("https://cc.jl-bke.com/admin", "https://project-freedom.cloudflareaccess.com");
+    globalThis.fetch = async () => Response.redirect("https://evil.example/?continue=cloudflareaccess.com", 302);
+    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin", "https://project-freedom.cloudflareaccess.com"), /ACCESS_ANONYMOUS_NOT_DENIED/);
     globalThis.fetch = async () => new Response("public app", { status: 200 });
-    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin"), /ACCESS_ANONYMOUS_NOT_DENIED/);
+    await assert.rejects(() => denyAnonymous("https://cc.jl-bke.com/admin", "https://project-freedom.cloudflareaccess.com"), /ACCESS_ANONYMOUS_NOT_DENIED/);
   } finally {
     globalThis.fetch = previous;
   }
