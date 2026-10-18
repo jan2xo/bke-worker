@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 
 const [workerArg, commandArg, workerSha, commandSha] = process.argv.slice(2);
 const WRANGLER = "wrangler@4.148.0";
@@ -274,12 +275,19 @@ async function start() {
     throw error;
   }
   console.log("BKE ADMIN: PREPRODUCTION configured; anonymous Access denial verified.");
-  console.log("BKE ADMIN: Human Admin MUST open  " + ADMIN_URL + "  and complete Cloudflare Access login.");
+  console.log("BKE ADMIN: Human Admin MUST open " + ADMIN_URL + " and complete Cloudflare Access login.");
   console.log("BKE ADMIN: OWNER_LOGIN_REQUIRED (NOT YET LIVE ACCEPTED); production LOCKED.");
 }
-// The security predicates are imported by CI tests without launching any CLI.
-export { policyIdentity, noPriorActivation, names, denyAnonymous };
-if (fileURLToPath(import.meta.url) === resolve(process.argv[1] || "")) {
+// Canonicalize physical paths: macOS /var and /private/var may be the same
+// file. Imported tests must never execute a live owner deployment.
+function isDirectRunner(moduleUrl, scriptArg) {
+  if (!scriptArg) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(scriptArg));
+  } catch { return false; }
+}
+export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner };
+if (isDirectRunner(import.meta.url, process.argv[1])) {
 start().catch(error => {
     // Sanitized error code only; no CLI/JWT/token/body details.
     const code = /^[A-Z0-9_]+$/u.test(error?.message || "")
