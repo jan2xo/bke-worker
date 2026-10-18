@@ -438,10 +438,18 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   if (!Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000) {
     throw new Error("ADMIN_CATALOG_TOKEN_EXPIRY_INVALID");
   }
-  if (!tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
-      Array.isArray(tokenInfo.permissions) ||
-      Object.keys(tokenInfo.permissions).length !== 1 ||
-      tokenInfo.permissions.metadata !== "read") {
+  // GitHub documents that GET /installation/repositories needs no
+  // additional repository permissions for an installation token. A granted
+  // empty permissions map is therefore safely sufficient for this catalog;
+  // implicit metadata:read is also safe. NEVER accept optional read/write
+  // grants (contents, issues, settings, etc.) or missing attestation.
+  const granted = tokenInfo.permissions;
+  const safeEmptyGrant = granted && typeof granted === "object" &&
+    !Array.isArray(granted) && Object.keys(granted).length === 0;
+  const safeMetadataGrant = granted && typeof granted === "object" &&
+    !Array.isArray(granted) && Object.keys(granted).length === 1 &&
+    granted.metadata === "read";
+  if (!safeEmptyGrant && !safeMetadataGrant) {
     throw new Error("ADMIN_CATALOG_TOKEN_GRANT_INVALID");
   }
   const out = [];
