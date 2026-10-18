@@ -413,9 +413,29 @@ function safeCatalogRepository(item) {
 // This DOES NOT increase the installed app's GitHub permissions.
 async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt = createGitHubAppJwt) {
   const { appId, privateKeyPem } = requiredAppConfiguration(env);
-  const jwt = await createJwt(appId, privateKeyPem);
-  const installation = await resolveInstallation(jwt, fetchImpl);
-  const response = await fetchImpl(
+  // These narrow diagnostic boundaries disclose only a fixed operation stage,
+  // never the provider exception, token, key material, grants or HTTP body.
+  let jwt;
+  try {
+    jwt = await createJwt(appId, privateKeyPem);
+  } catch {
+    throw new Error("ADMIN_CATALOG_APP_SIGNING_UNAVAILABLE");
+  }
+  let installation;
+  try {
+    installation = await resolveInstallation(jwt, fetchImpl);
+  } catch (error) {
+    const code = typeof error?.message === "string" ? error.message : "";
+    if (/^GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:\d{3}$/u.test(code) ||
+        code === "GITHUB_APP_INSTALLATION_RESPONSE_INVALID" ||
+        /^GITHUB_APP_PERMISSION_REQUIRED:(contents|issues|pull_requests)=(read|write);granted=(none|read|write)$/u.test(code)) {
+      throw error;
+    }
+    throw new Error("ADMIN_CATALOG_INSTALLATION_LOOKUP_UNAVAILABLE");
+  }
+  let response;
+  try {
+    response = await fetchImpl(
     "https://api.github.com/app/installations/" + installation.id + "/access_tokens",
     {
       method: "POST",
@@ -425,7 +445,10 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
       // write grants. Only request mandatory repository metadata read.
       body: JSON.stringify({ permissions: { metadata: "read" } }),
     },
-  );
+    );
+  } catch {
+    throw new Error("ADMIN_CATALOG_TOKEN_TRANSPORT_UNAVAILABLE");
+  }
   if (!response.ok) throw new Error("ADMIN_CATALOG_TOKEN_REJECTED");
   const tokenInfo = await response.json().catch(() => null);
   const token = tokenInfo?.token;
@@ -454,7 +477,9 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
   let expectedTotal = null;
   for (let page = 1; page <= CATALOG_MAX_PAGES; page++) {
     const qs = new URLSearchParams({ per_page: String(CATALOG_PAGE_SIZE), page: String(page) });
-    const dataResponse = await fetchImpl(
+    let dataResponse;
+    try {
+      dataResponse = await fetchImpl(
       "https://api.github.com/installation/repositories?" + qs.toString(),
       {
         method: "GET",
@@ -466,7 +491,10 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
         },
         redirect: "error",
       },
-    );
+      );
+    } catch {
+      throw new Error("ADMIN_CATALOG_REPOSITORIES_TRANSPORT_UNAVAILABLE");
+    }
     if (!dataResponse.ok) throw new Error("ADMIN_CATALOG_REPOSITORIES_UNAVAILABLE");
     const data = await dataResponse.json().catch(() => null);
     if (!Array.isArray(data?.repositories) || data.repositories.length > CATALOG_PAGE_SIZE ||

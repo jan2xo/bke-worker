@@ -240,3 +240,57 @@ test("catalog rejects extra grants even where the provider returned metadata-rea
     assert.equal(f.calls.length, 2);
   }
 });
+
+
+test("catalog runtime stage failures stay fixed, redacted and before unsafe results", async () => {
+  const stages = [
+    { stage:"signing", code:"ADMIN_CATALOG_APP_SIGNING_UNAVAILABLE", calls:0 },
+    { stage:"installation", code:"ADMIN_CATALOG_INSTALLATION_LOOKUP_UNAVAILABLE", calls:1 },
+    { stage:"mint", code:"ADMIN_CATALOG_TOKEN_TRANSPORT_UNAVAILABLE", calls:2 },
+    { stage:"repository-list", code:"ADMIN_CATALOG_REPOSITORIES_TRANSPORT_UNAVAILABLE", calls:3 },
+  ];
+  for (const {stage,code,calls} of stages) {
+    const f = fixture();
+    const fetchMock = async (url, options) => {
+      if ((stage === "installation" && url.includes("/repos/jan2xo/bke-worker/installation")) ||
+          (stage === "mint" && url.includes("/app/installations/51/access_tokens")) ||
+          (stage === "repository-list" && url.includes("/installation/repositories?"))) {
+        f.calls.push({url,options});
+        throw new TypeError("TOKEN_SENSITIVE ghs_private jwt material");
+      }
+      return f.fetchStub(url,options);
+    };
+    const sign = stage === "signing"
+      ? async () => { throw new TypeError("PRIVATE_RSA_MATERIAL"); }
+      : createJwt;
+    await assert.rejects(() => listAdminInstalledRepositories(env,fetchMock,sign), error => {
+      assert.equal(error.message,code);
+      assert.doesNotMatch(error.message,/ghs_|SENSITIVE|RSA_MATERIAL|private|jwt|material/i);
+      return true;
+    });
+    assert.equal(f.calls.length,calls);
+  }
+});
+
+test("catalog keeps bounded safe GitHub HTTP failure codes", async () => {
+  const unavailableInstallation = fixture();
+  const statusInstallation = async (url,options) =>
+    url.includes("/repos/jan2xo/bke-worker/installation")
+      ? new Response("not available",{status:403})
+      : unavailableInstallation.fetchStub(url,options);
+  await assert.rejects(
+    () => listAdminInstalledRepositories(env,statusInstallation,createJwt),
+    /GITHUB_APP_INSTALLATION_RESOLUTION_FAILED:403/);
+  const rejectedToken = fixture({status:422});
+  await assert.rejects(() => listAdminInstalledRepositories(env,rejectedToken.fetchStub,createJwt),
+    /ADMIN_CATALOG_TOKEN_REJECTED/);
+  assert.equal(rejectedToken.calls.length,2);
+  const rejectedList = fixture();
+  const listFetch = async (url,options) =>
+    url.includes("/installation/repositories?")
+      ? new Response("forbidden",{status:403})
+      : rejectedList.fetchStub(url,options);
+  await assert.rejects(() => listAdminInstalledRepositories(env,listFetch,createJwt),
+    /ADMIN_CATALOG_REPOSITORIES_UNAVAILABLE/);
+  assert.equal(rejectedList.calls.length,2);
+});
