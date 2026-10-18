@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { fulfillCommandCenterAdminRead } from "./admin-broker.js";
+import { fulfillCommandCenterAdminRead, fulfillCommandCenterAdminCatalog } from "./admin-broker.js";
 import {
   mintInstallationToken,
   verifyActionsOidcToken,
@@ -341,6 +341,9 @@ export default {
 export class CommandCenterReadBroker extends WorkerEntrypoint {
   async mintReadOnlyGitHubToken(request) {
     return fulfillCommandCenterAdminRead(this.env, request);
+  }
+  async listApprovedGitHubRepositories(request) {
+    return fulfillCommandCenterAdminCatalog(this.env, request);
   }
 }
 

@@ -372,6 +372,108 @@ async function mintAdminReadToken(env, fetchImpl = fetch) {
   };
 }
 
+
+const CATALOG_MAX_PAGES = 5;
+const CATALOG_PAGE_SIZE = 100;
+function safeCatalogRepository(item) {
+  if (!Number.isSafeInteger(item?.id) || item.id <= 0 ||
+      typeof item?.full_name !== "string" ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(item.full_name)) {
+    throw new Error("ADMIN_CATALOG_REPOSITORY_INVALID");
+  }
+  const [owner, name] = item.full_name.split("/");
+  if ([owner, name].some(value => value === "." || value === ".." || value.includes(".."))) {
+    throw new Error("ADMIN_CATALOG_REPOSITORY_INVALID");
+  }
+  return {
+    id: item.id,
+    full_name: item.full_name,
+    default_branch: typeof item.default_branch === "string" &&
+      /^[A-Za-z0-9_./-]{1,250}$/u.test(item.default_branch) ? item.default_branch : null,
+    private: item.private === true,
+    archived: item.archived === true,
+    html_url: "https://github.com/" + owner + "/" + name,
+  };
+}
+
+// Lists only repositories already approved in the EXISTING GitHub App
+// installation. The catalogue token stays inside this Cloudflare relay.
+// This DOES NOT increase the installed app's GitHub permissions.
+async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt = createGitHubAppJwt) {
+  const { appId, privateKeyPem } = requiredAppConfiguration(env);
+  const jwt = await createJwt(appId, privateKeyPem);
+  const installation = await resolveInstallation(jwt, fetchImpl);
+  const response = await fetchImpl(
+    "https://api.github.com/app/installations/" + installation.id + "/access_tokens",
+    {
+      method: "POST",
+      headers: { ...appHeaders(jwt), "content-type": "application/json" },
+      // Explicit empty optional permissions requests metadata-only access;
+      // never omit permissions (that would inherit write scopes).
+      body: JSON.stringify({ permissions: {} }),
+    },
+  );
+  if (!response.ok) throw new Error("ADMIN_CATALOG_TOKEN_REJECTED");
+  const tokenInfo = await response.json().catch(() => null);
+  const token = tokenInfo?.token;
+  const remaining = Date.parse(tokenInfo?.expires_at || "") - Date.now();
+  if (typeof token !== "string" || !/^ghs_[A-Za-z0-9_]+$/u.test(token) ||
+      !Number.isFinite(remaining) || remaining < 120000 || remaining > 3660000 ||
+      !tokenInfo.permissions || typeof tokenInfo.permissions !== "object" ||
+      Array.isArray(tokenInfo.permissions) ||
+      Object.keys(tokenInfo.permissions).length !== 1 ||
+      tokenInfo.permissions.metadata !== "read") {
+    throw new Error("ADMIN_CATALOG_TOKEN_SCOPE_INVALID");
+  }
+  const out = [];
+  const seen = new Set();
+  let expectedTotal = null;
+  for (let page = 1; page <= CATALOG_MAX_PAGES; page++) {
+    const qs = new URLSearchParams({ per_page: String(CATALOG_PAGE_SIZE), page: String(page) });
+    const dataResponse = await fetchImpl(
+      "https://api.github.com/installation/repositories?" + qs.toString(),
+      {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: "Bearer " + token,
+          "user-agent": "bke-admin-installation-catalog",
+          "x-github-api-version": GITHUB_API_VERSION,
+        },
+        redirect: "error",
+      },
+    );
+    if (!dataResponse.ok) throw new Error("ADMIN_CATALOG_REPOSITORIES_UNAVAILABLE");
+    const data = await dataResponse.json().catch(() => null);
+    if (!Array.isArray(data?.repositories) || data.repositories.length > CATALOG_PAGE_SIZE ||
+        !Number.isSafeInteger(data?.total_count) || data.total_count < 0 ||
+        data.total_count > CATALOG_MAX_PAGES * CATALOG_PAGE_SIZE ||
+        (page > 1 && data.total_count !== expectedTotal)) {
+      throw new Error("ADMIN_CATALOG_REPOSITORIES_INVALID");
+    }
+    if (page === 1) expectedTotal = data.total_count;
+    for (const item of data.repositories) {
+      const repo = safeCatalogRepository(item);
+      if (seen.has(repo.id)) throw new Error("ADMIN_CATALOG_DUPLICATE_REPOSITORY");
+      seen.add(repo.id);
+      out.push(repo);
+    }
+    if (out.length === data.total_count) {
+      return {
+        principal: "github_app_installation",
+        authority: "EXISTING_GITHUB_APP_INSTALLATION",
+        repository_scope: "INSTALLATION_APPROVED_ONLY",
+        total_visible: out.length,
+        repositories: out.sort((a, b) => a.full_name.localeCompare(b.full_name)),
+      };
+    }
+    if (page === CATALOG_MAX_PAGES || data.repositories.length === 0) {
+      throw new Error("ADMIN_CATALOG_PAGINATION_INCOMPLETE");
+    }
+  }
+  throw new Error("ADMIN_CATALOG_PAGINATION_INCOMPLETE");
+}
+
 export {
   ACTIONS_OIDC_ISSUER,
   BROKER_AUDIENCE,
@@ -381,6 +483,7 @@ export {
   createGitHubAppJwt,
   mintInstallationToken,
   mintAdminReadToken,
+  listAdminInstalledRepositories,
   resolveInstallation,
   validateActionsClaims,
   validateInstallationPermissions,
