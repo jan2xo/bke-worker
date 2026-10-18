@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner,
+  policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot,
 } from "../scripts/admin_preproduction_activation.mjs";
 
 const app = { domain:"cc.jl-bke.com", type:"self_hosted",
@@ -79,4 +79,59 @@ test("macOS-style symlink path resolves to direct runner without starting activa
     assert.equal(isDirectRunner(pathToFileURL(original).href, join(root, "not-present")), false);
     assert.equal(isDirectRunner(pathToFileURL(original).href, undefined), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Exact Access application selector distinguishes invisibility from ambiguity", () => {
+  const entry = { ...app, id: "e19a0551-aaaa-bbbb-cccc-0123456789ab" };
+  assert.equal(selectAdminAccessApplication([entry]).id, entry.id);
+  assert.throws(() => selectAdminAccessApplication([]), /ACCESS_APPLICATION_NOT_VISIBLE/);
+  assert.throws(() => selectAdminAccessApplication([{...entry,domain:"elsewhere.example"}]),
+    /ACCESS_APPLICATION_NOT_VISIBLE/);
+  assert.throws(() => selectAdminAccessApplication([entry, {...entry, id:"a19a0551-aaaa-bbbb-cccc-0123456789ab"}]),
+    /ACCESS_APPLICATION_AMBIGUOUS/);
+  assert.throws(() => selectAdminAccessApplication({result:[entry]}), /ACCESS_APPLICATION_RESPONSE_INVALID/);
+  assert.throws(() => selectAdminAccessApplication([{...entry,id:"bad-id"}]), /ACCESS_APPLICATION_ID_INVALID/);
+});
+
+test("Access snapshot uses the exact domain filter and verifies selected app detail", async () => {
+  const entry = { ...app, id:"e19a0551-aaaa-bbbb-cccc-0123456789ab" };
+  const original = globalThis.fetch;
+  const paths = [];
+  let mode = "valid";
+  globalThis.fetch = async (url, options) => {
+    const parsed = new URL(url);
+    paths.push(parsed.pathname + parsed.search);
+    assert.equal(options.headers.Authorization, "Bearer fake-cloudflare-token");
+    if (parsed.pathname.endsWith("/access/apps")) {
+      assert.equal(parsed.searchParams.get("domain"), "cc.jl-bke.com");
+      assert.equal(parsed.searchParams.get("exact"), "true");
+      assert.equal(parsed.searchParams.get("page"), "1");
+      return Response.json({success:true,result:mode === "missing" ? [] : [entry]});
+    }
+    if (parsed.pathname.endsWith("/access/apps/" + entry.id)) {
+      return Response.json({success:true,result:mode === "changed" ? {...entry,aud:"changed"} : entry});
+    }
+    if (parsed.pathname.endsWith("/access/apps/" + entry.id + "/policies")) {
+      return Response.json({success:true,result:[p]});
+    }
+    if (parsed.pathname.endsWith("/access/organizations")) {
+      return Response.json({success:true,result:org});
+    }
+    throw new Error("unexpected Cloudflare endpoint");
+  };
+  try {
+    const result = await accessSnapshot("fake-cloudflare-token","a".repeat(32));
+    assert.equal(result.aud, app.aud);
+    assert.equal(result.issuer,"https://project-freedom.cloudflareaccess.com");
+    assert.equal(paths.length,4);
+    assert(paths[0].includes("/access/apps?domain="));
+    mode = "missing";
+    await assert.rejects(() => accessSnapshot("fake-cloudflare-token","a".repeat(32)),
+      /ACCESS_APPLICATION_NOT_VISIBLE/);
+    mode = "changed";
+    await assert.rejects(() => accessSnapshot("fake-cloudflare-token","a".repeat(32)),
+      /ACCESS_APPLICATION_DETAIL_MISMATCH/);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

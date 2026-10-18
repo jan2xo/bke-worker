@@ -124,16 +124,38 @@ async function settings(token, accountId, name) {
   return names((await cfGet(token, "/accounts/" + accountId +
     "/workers/scripts/" + name + "/settings")).bindings);
 }
-async function accessSnapshot(token, accountId) {
-  const apps = await cfGet(token, "/accounts/" + accountId + "/access/apps");
-  const selected = apps.filter(x => x.domain === HOST);
-  if (selected.length !== 1) fail("ACCESS_APPLICATION_AMBIGUOUS");
+// Use Cloudflare's exact domain filter rather than assuming an unfiltered
+// Access app listing is complete or visible to the local Wrangler principal.
+// Zero visible apps is NOT evidence that the actual app was deleted; it may
+// indicate the current CLI token lacks permission to list Access apps.
+function selectAdminAccessApplication(apps) {
+  if (!Array.isArray(apps)) fail("ACCESS_APPLICATION_RESPONSE_INVALID");
+  const selected = apps.filter(x => x?.domain === HOST);
+  if (selected.length === 0) fail("ACCESS_APPLICATION_NOT_VISIBLE");
+  if (selected.length > 1) fail("ACCESS_APPLICATION_AMBIGUOUS");
   const app = selected[0];
-  const [policies, org] = await Promise.all([
+  if (!/^[a-f0-9-]{36}$/u.test(String(app.id || ""))) {
+    fail("ACCESS_APPLICATION_ID_INVALID");
+  }
+  return app;
+}
+async function accessSnapshot(token, accountId) {
+  const path = "/accounts/" + accountId + "/access/apps?domain=" +
+    encodeURIComponent(HOST) + "&exact=true&per_page=100&page=1";
+  const apps = await cfGet(token, path);
+  const app = selectAdminAccessApplication(apps);
+  // Re-read the selected app by authoritative ID. Never accept only a
+  // search result or substitute another Access policy/hostname.
+  const [detail, policies, org] = await Promise.all([
+    cfGet(token, "/accounts/" + accountId + "/access/apps/" + app.id),
     cfGet(token, "/accounts/" + accountId + "/access/apps/" + app.id + "/policies"),
     cfGet(token, "/accounts/" + accountId + "/access/organizations"),
   ]);
-  return policyIdentity(app, policies, org);
+  if (detail?.id !== app.id || detail?.domain !== HOST ||
+      detail?.aud !== app.aud || detail?.type !== app.type) {
+    fail("ACCESS_APPLICATION_DETAIL_MISMATCH");
+  }
+  return policyIdentity(detail, policies, org);
 }
 async function accountForTargets(token) {
   const accounts = await cfGet(token, "/accounts");
@@ -286,7 +308,7 @@ function isDirectRunner(moduleUrl, scriptArg) {
     return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(scriptArg));
   } catch { return false; }
 }
-export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner };
+export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot };
 if (isDirectRunner(import.meta.url, process.argv[1])) {
 start().catch(error => {
     // Sanitized error code only; no CLI/JWT/token/body details.
