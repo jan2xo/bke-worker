@@ -47,7 +47,7 @@ for fragment in required_node:
     assert fragment in node, "Missing activation boundary: " + fragment
 assert node.index('secretPut("BKE_ADMIN_DISCOVERY_ENABLED"') > node.index(
     'secretPut("GITHUB_DISCOVERY_AUTH_MODE"')
-assert node.index("await denyAnonymous(URL)") < node.index('wrangler(["deploy"')
+assert node.index("await denyAnonymous(URL, snapshot.access.issuer)") < node.index('wrangler(["deploy"')
 for forbidden in (
     "gh secret set",
     "wrangler deploy --env production",
