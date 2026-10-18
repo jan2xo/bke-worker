@@ -10,7 +10,7 @@ for command_name in git gh node npm npx; do
     exit 2
   }
 done
-[[ "$(git -C "$ENTRY_DIR" rev-parse --show-toplevel 2>/dev/null)" == "$ENTRY_DIR" ]] ||
+[[ "$(cd "$(git -C "$ENTRY_DIR" rev-parse --show-toplevel 2>/dev/null)" && pwd -P)" == "$ENTRY_DIR" ]] ||
   { echo "BKE ADMIN: FAIL-CLOSED wrong repository root" >&2; exit 2; }
 ORIGIN="$(git -C "$ENTRY_DIR" remote get-url origin)"
 case "$ORIGIN" in
@@ -36,7 +36,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-git -C "$ENTRY_DIR" worktree add --detach "$WORKTREE" "$REMOTE_SHA" --quiet
+git -C "$ENTRY_DIR" worktree add --detach --quiet "$WORKTREE" "$REMOTE_SHA"
 [[ "$(git -C "$WORKTREE" rev-parse HEAD)" == "$REMOTE_SHA" ]] ||
   { echo "BKE ADMIN: FAIL-CLOSED isolated Worker checkout wrong SHA"; exit 2; }
 gh repo clone "$COMMAND_REPO" "$ROOT_TMP/command-center" -- --branch main --single-branch --quiet
