@@ -41,7 +41,8 @@ test("Partial or repeat activation cannot be interpreted as a new clean bootstra
   }
   for(const x of ["BKE_ADMIN_DISCOVERY_ENABLED","BKE_ADMIN_EMAILS","GITHUB_DISCOVERY_AUTH_MODE"]) {
     assert.throws(()=>noPriorActivation(new Map(),new Map([[x,{}]])),
-      /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
+      x === "BKE_ADMIN_EMAILS" ? /ACCESS_CONNECTED_BOOTSTRAP_PARTIAL/ :
+        /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
   }
 });
 test("Cloudflare binding inventory reads only names and type, no values",()=>{
