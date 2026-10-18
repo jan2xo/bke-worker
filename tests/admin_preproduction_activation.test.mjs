@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot,
+  policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot, connectedAccessBootstrap, connectedAccessChallenge, currentAccessSnapshot,
 } from "../scripts/admin_preproduction_activation.mjs";
 
 const app = { domain:"cc.jl-bke.com", type:"self_hosted",
@@ -41,7 +41,8 @@ test("Partial or repeat activation cannot be interpreted as a new clean bootstra
   }
   for(const x of ["BKE_ADMIN_DISCOVERY_ENABLED","BKE_ADMIN_EMAILS","GITHUB_DISCOVERY_AUTH_MODE"]) {
     assert.throws(()=>noPriorActivation(new Map(),new Map([[x,{}]])),
-      /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
+      x === "BKE_ADMIN_EMAILS" ? /ACCESS_CONNECTED_BOOTSTRAP_PARTIAL/ :
+        /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
   }
 });
 test("Cloudflare binding inventory reads only names and type, no values",()=>{
@@ -134,4 +135,54 @@ test("Access snapshot uses the exact domain filter and verifies selected app det
   } finally {
     globalThis.fetch = original;
   }
+});
+
+
+test("Connected Access preflight requires all four encrypted bootstrap bindings", () => {
+  const required = ["BKE_ADMIN_ACCESS_ISSUER", "BKE_ADMIN_ACCESS_AUD",
+    "BKE_ADMIN_EMAILS", "BKE_ADMIN_ACCESS_BOOTSTRAP_SOURCE"];
+  const complete = names(required.map(name => ({name,type:"secret_text"})));
+  assert.equal(connectedAccessBootstrap(new Map()), false);
+  assert.equal(connectedAccessBootstrap(complete), true);
+  assert.equal(noPriorActivation(new Map(), complete), true);
+  for (const missing of required) {
+    const broken = new Map(complete); broken.delete(missing);
+    assert.throws(() => connectedAccessBootstrap(broken), /ACCESS_CONNECTED_BOOTSTRAP_PARTIAL/);
+    assert.throws(() => noPriorActivation(new Map(), broken), /ACCESS_CONNECTED_BOOTSTRAP_PARTIAL/);
+  }
+  const wrongType = new Map(complete);
+  wrongType.set("BKE_ADMIN_EMAILS",{name:"BKE_ADMIN_EMAILS",type:"plain_text"});
+  assert.throws(() => connectedAccessBootstrap(wrongType), /ACCESS_CONNECTED_BOOTSTRAP_PARTIAL/);
+  const alreadyEnabled = new Map(complete);
+  alreadyEnabled.set("BKE_ADMIN_DISCOVERY_ENABLED",{name:"BKE_ADMIN_DISCOVERY_ENABLED",type:"secret_text"});
+  assert.throws(() => noPriorActivation(new Map(), alreadyEnabled),
+    /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
+  assert.throws(() => noPriorActivation(new Map([["BKE_ADMIN_BROKER_ENABLED",{}]]),complete),
+    /ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED/);
+});
+
+test("Connected Access mode witnesses only HTTPS team Access challenge; no Access API credential",async () => {
+  const prior=globalThis.fetch;
+  const url="https://cc.jl-bke.com/admin";
+  let fetched=[];
+  try {
+    globalThis.fetch = async (actual) => {
+      fetched.push(actual);
+      return Response.redirect("https://trusted-team.cloudflareaccess.com/cdn-cgi/access/login/cc",302);
+    };
+    const result=await currentAccessSnapshot("unused-wrangler-oauth","unused-account",true);
+    assert.deepEqual(result,{
+      issuer:"https://trusted-team.cloudflareaccess.com",
+      source:"CONNECTED_CLOUDFLARE_ACCESS",
+    });
+    assert.deepEqual(fetched,[url]); // zero Cloudflare Access management API calls
+    globalThis.fetch = async () => new Response("origin denial",{status:403});
+    await assert.rejects(()=>connectedAccessChallenge(),/ACCESS_ANONYMOUS_NOT_DENIED/);
+    globalThis.fetch = async () => Response.redirect("https://attacker.example/?continue=cloudflareaccess.com",302);
+    await assert.rejects(()=>connectedAccessChallenge(),/ACCESS_ANONYMOUS_NOT_DENIED/);
+    globalThis.fetch = async () => Response.redirect("http://trusted-team.cloudflareaccess.com/cdn-cgi/access/login/cc",302);
+    await assert.rejects(()=>connectedAccessChallenge(),/ACCESS_ANONYMOUS_NOT_DENIED/);
+    globalThis.fetch = async () => Response.redirect("https://trusted-team.cloudflareaccess.com/other",302);
+    await assert.rejects(()=>connectedAccessChallenge(),/ACCESS_ANONYMOUS_NOT_DENIED/);
+  } finally { globalThis.fetch=prior; }
 });

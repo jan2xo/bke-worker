@@ -16,6 +16,12 @@ const SHA = /^[a-f0-9]{40}$/u;
 const ADMIN_FLAG_NAMES = ["BKE_ADMIN_BROKER_ENABLED", "BKE_ADMIN_REPO_CATALOG_ENABLED"];
 const CC_ADMIN_NAMES = ["BKE_ADMIN_DISCOVERY_ENABLED", "BKE_ADMIN_ACCESS_ISSUER",
   "BKE_ADMIN_ACCESS_AUD", "BKE_ADMIN_EMAILS", "GITHUB_DISCOVERY_AUTH_MODE"];
+// These settings may be pre-staged directly in encrypted Cloudflare bindings
+// by a separately authorized Access-read connector after a full policy audit.
+// This avoids asking the Wrangler Workers-deployment OAuth principal to read
+// a Zero Trust resource outside its supported OAuth scopes.
+const CONNECTED_ACCESS_KEYS = ["BKE_ADMIN_ACCESS_ISSUER", "BKE_ADMIN_ACCESS_AUD",
+  "BKE_ADMIN_EMAILS", "BKE_ADMIN_ACCESS_BOOTSTRAP_SOURCE"];
 function fail(code) { throw new Error(code); }
 function run(command, args, cwd, options = {}) {
   const result = spawnSync(command, args, {
@@ -64,10 +70,24 @@ function names(bindings) {
 function requireBinding(found, name, type) {
   if (found.get(name)?.type !== type) fail("CLOUDFLARE_REQUIRED_BINDING_MISSING");
 }
+function connectedAccessBootstrap(command) {
+  const present = CONNECTED_ACCESS_KEYS.filter(x => command.has(x));
+  if (present.length === 0) return false;
+  if (present.length !== CONNECTED_ACCESS_KEYS.length ||
+      CONNECTED_ACCESS_KEYS.some(name => command.get(name)?.type !== "secret_text")) {
+    fail("ACCESS_CONNECTED_BOOTSTRAP_PARTIAL");
+  }
+  return true;
+}
 function noPriorActivation(relay, command) {
-  if (ADMIN_FLAG_NAMES.some(x => relay.has(x)) || CC_ADMIN_NAMES.some(x => command.has(x))) {
+  const staged = connectedAccessBootstrap(command);
+  const forbiddenCommand = CC_ADMIN_NAMES.filter(x => !staged ||
+    !CONNECTED_ACCESS_KEYS.includes(x));
+  if (ADMIN_FLAG_NAMES.some(x => relay.has(x)) ||
+      forbiddenCommand.some(x => command.has(x))) {
     fail("ADMIN_ACTIVATION_ALREADY_OR_PARTIALLY_CONFIGURED");
   }
+  return staged;
 }
 function policyIdentity(app, policies, organization) {
   if (app?.domain !== HOST || app.type !== "self_hosted" ||
@@ -110,6 +130,41 @@ async function denyAnonymous(url, accessIssuer) {
       (target.hostname === issuer.hostname || target.hostname === original.hostname) &&
       target.pathname.startsWith("/cdn-cgi/access/")) return;
   fail("ACCESS_ANONYMOUS_NOT_DENIED");
+}
+// The existing, protected Cloudflare Access edge is a challenge-only issuer
+// witness. We do NOT accept this witness as proof of an Admin allowlist:
+// the connected Cloudflare administrator separately audits the actual policy
+// and stages all four encrypted bootstrap bindings before this code is used.
+async function connectedAccessChallenge() {
+  let response;
+  try {
+    response = await fetch(ADMIN_URL, {
+      redirect: "manual", signal: AbortSignal.timeout(20000),
+    });
+  } catch { fail("ACCESS_ANONYMOUS_PROBE_UNAVAILABLE"); }
+  const location = response.headers.get("location") || "";
+  let url;
+  try { url = new URL(location, ADMIN_URL); }
+  catch { fail("ACCESS_ANONYMOUS_NOT_DENIED"); }
+  if (![301, 302, 303, 307, 308].includes(response.status) ||
+      url.protocol !== "https:" ||
+      !/^[a-z0-9-]+\.cloudflareaccess\.com$/u.test(url.hostname) ||
+      !url.pathname.startsWith("/cdn-cgi/access/")) {
+    fail("ACCESS_ANONYMOUS_NOT_DENIED");
+  }
+  return { issuer: url.origin, source: "CONNECTED_CLOUDFLARE_ACCESS" };
+}
+async function currentAccessSnapshot(token, accountId, staged) {
+  return staged ? connectedAccessChallenge() : accessSnapshot(token, accountId);
+}
+async function assertAccessUnchanged(token, snapshot) {
+  const now = await currentAccessSnapshot(token, snapshot.accountId, snapshot.connectedAccess);
+  if (snapshot.connectedAccess) {
+    if (now.issuer !== snapshot.access.issuer) fail("ACCESS_ISSUER_CHANGED");
+  } else if (JSON.stringify(now) !== JSON.stringify(snapshot.access)) {
+    fail("ACCESS_POLICY_CHANGED");
+  }
+  await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
 }
 async function latestDeployment(token, accountId, name) {
   const result = await cfGet(token, "/accounts/" + accountId +
@@ -174,10 +229,9 @@ async function accountForTargets(token) {
 }
 async function preflight(token) {
   const accountId = await accountForTargets(token);
-  const [relay, command, access, relayDeployment, ccDeployment] = await Promise.all([
+  const [relay, command, relayDeployment, ccDeployment] = await Promise.all([
     settings(token, accountId, TARGET_RELAY),
     settings(token, accountId, TARGET_CC),
-    accessSnapshot(token, accountId),
     latestDeployment(token, accountId, TARGET_RELAY),
     latestDeployment(token, accountId, TARGET_CC),
   ]);
@@ -188,9 +242,10 @@ async function preflight(token) {
   requireBinding(command, "BKE_ACCESS_POLICY_VERIFIED", "secret_text");
   requireBinding(command, "GITHUB_TOKEN", "secret_text");
   requireBinding(command, "BKE_PREPRODUCTION", "plain_text");
-  noPriorActivation(relay, command);
+  const connectedAccess = noPriorActivation(relay, command);
+  const access = await currentAccessSnapshot(token, accountId, connectedAccess);
   await denyAnonymous(ADMIN_URL, access.issuer);
-  return { accountId, relayDeployment, ccDeployment, access };
+  return { accountId, relayDeployment, ccDeployment, access, connectedAccess };
 }
 async function verifyTargetChanged(token, accountId, name, oldId) {
   const current = await latestDeployment(token, accountId, name);
@@ -252,9 +307,7 @@ async function start() {
   if (beforeRelay !== snapshot.relayDeployment || beforeCC !== snapshot.ccDeployment) {
     fail("DEPLOYMENT_BASELINE_CHANGED");
   }
-  const stillAllowed = await accessSnapshot(token, snapshot.accountId);
-  if (JSON.stringify(stillAllowed) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-  await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
+  await assertAccessUnchanged(token, snapshot);
   checkpoint("PREFLIGHT_PASS", workerSha, commandSha);
   console.log("BKE ADMIN: deploying authenticated PREPRODUCTION relay.");
   let phase = "RELAY_DEPLOY_STARTED";
@@ -275,14 +328,20 @@ async function start() {
     wrangler(["deploy", "--env", "preproduction"], commandRoot, { code: "COMMAND_CENTER_DEPLOY_FAILED" });
     await verifyTargetChanged(token, snapshot.accountId, TARGET_CC, beforeCC);
     await verifyBoundRpc(token, snapshot.accountId);
+    if (snapshot.connectedAccess) {
+      // Any lost bootstrap binding MUST be detected before enabling Admin,
+      // since encrypted provider-verified values are not readable by Wrangler.
+      const ccStaged = await settings(token, snapshot.accountId, TARGET_CC);
+      for (const name of CONNECTED_ACCESS_KEYS) requireBinding(ccStaged, name, "secret_text");
+    }
     checkpoint("COMMAND_CENTER_SOURCE_AND_PRIVATE_BINDING", workerSha, commandSha);
     phase = "ADMIN_IDENTITY_CONFIG_STARTED";
-    const afterAccess = await accessSnapshot(token, snapshot.accountId);
-    if (JSON.stringify(afterAccess) !== JSON.stringify(snapshot.access)) fail("ACCESS_POLICY_CHANGED");
-    await denyAnonymous(ADMIN_URL, snapshot.access.issuer);
-    secretPut("BKE_ADMIN_ACCESS_ISSUER", snapshot.access.issuer, commandRoot);
-    secretPut("BKE_ADMIN_ACCESS_AUD", snapshot.access.aud, commandRoot);
-    secretPut("BKE_ADMIN_EMAILS", snapshot.access.email, commandRoot);
+    await assertAccessUnchanged(token, snapshot);
+    if (!snapshot.connectedAccess) {
+      secretPut("BKE_ADMIN_ACCESS_ISSUER", snapshot.access.issuer, commandRoot);
+      secretPut("BKE_ADMIN_ACCESS_AUD", snapshot.access.aud, commandRoot);
+      secretPut("BKE_ADMIN_EMAILS", snapshot.access.email, commandRoot);
+    }
     secretPut("GITHUB_DISCOVERY_AUTH_MODE", "catalog", commandRoot);
     // Enable last: Access JWT verified before RPC, only fixed approved catalog.
     secretPut("BKE_ADMIN_DISCOVERY_ENABLED", "true", commandRoot);
@@ -308,7 +367,7 @@ function isDirectRunner(moduleUrl, scriptArg) {
     return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(scriptArg));
   } catch { return false; }
 }
-export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot };
+export { policyIdentity, noPriorActivation, names, denyAnonymous, isDirectRunner, selectAdminAccessApplication, accessSnapshot, connectedAccessBootstrap, connectedAccessChallenge, currentAccessSnapshot };
 if (isDirectRunner(import.meta.url, process.argv[1])) {
 start().catch(error => {
     // Sanitized error code only; no CLI/JWT/token/body details.

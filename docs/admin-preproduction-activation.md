@@ -29,6 +29,27 @@ The operator entrypoint queries `GET /accounts/{account_id}/access/apps?domain=c
 
 The fail-closed read happens *before any deployment* during preflight. The script does not create or modify an Access application, broaden its policy or print an Admin email or JWT. After credential/scope recovery, retry the same canonical one-command entrypoint from current main; it rechecks that no partial mutation occurred.
 
+## Connected Cloudflare Access bootstrap (preferred)
+
+**Reason:** Wrangler 4.148.0's built-in OAuth scopes do not include the Cloudflare Access Apps & Policies read permission. A Workers deployment credential does not necessarily authorize inspecting Zero Trust apps and policies.
+
+An already-authorized, separately connected Cloudflare administration integration can verify the exact protected hostname **cc.jl-bke.com**, the Access application AUD and issuer, and the single allowed human Admin identity. It can stage four values **directly into encrypted PREPRODUCTION Command Center Worker secret bindings**, with no URLs, IDs, tokens or configuration pasted by the operator:
+
+- **BKE_ADMIN_ACCESS_ISSUER:** verified Cloudflare Access issuer
+- **BKE_ADMIN_ACCESS_AUD:** verified application AUD
+- **BKE_ADMIN_EMAILS:** single operator allowlisted email
+- **BKE_ADMIN_ACCESS_BOOTSTRAP_SOURCE:** encrypted marker identifying the separately authorized connector bootstrap
+
+All FOUR secret bindings must exist and be typed **secret_text**. The policy audit is performed using that separate authorized Cloudflare integration, not silently inherited from the Wrangler login.
+
+The one-command operator entrypoint accepts either its original complete live-Access-read mode or this explicitly configured connected bootstrap. In connected mode it **does not** query Access Apps/Policies through insufficient Wrangler OAuth scope and **never reads, prints or replaces** the pre-staged encrypted values. It verifies the anonymous HTTPS Cloudflare Access challenge from the protected hostname and rechecks the four bindings after source deployment, before enabling the Admin flag last.
+
+**Important trust qualification:** the Wrangler script cannot decrypt those bindings or independently repeat the connector's Access policy audit. The Cloudflare-connected verification must be genuine and current. A redirect challenge alone is not equivalent to a verified allowed-Admin policy. The signed Admin JWT still requires an exact issuer/AUD/allowlisted email, and live human Access acceptance is separately REQUIRED after rollout.
+
+If one or more bindings are absent/wrong type, the script fails closed with **ACCESS_CONNECTED_BOOTSTRAP_PARTIAL**. It will NOT accept guessed manual values, a GitHub comment as proof, or a different Access application. Policy changes require renewed authorized connector verification and secret update. The script refuses repeated or partially enabled Admin deployments.
+
+Production, GitHub App permissions, stored browser profiles, and Android certification remain LOCKED.
+
 ## Explicitly authorized PREPRODUCTION mutation only
 
 - Deploy `bke-worker-relay-preproduction` from verified current Worker main, verify new deployment.
