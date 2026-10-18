@@ -66,7 +66,7 @@ test("catalog returns only approved repository metadata and no credential", asyn
 
 test("catalog fails closed on extra permissions or missing grant", async () => {
   for (const permissions of [{ metadata: "read", contents: "read" },
-    { metadata: "write" }, {}, { issues: "write" }, []]) {
+    { metadata: "write" }, { issues: "write" }, [], null]) {
     const f = fixture({ permissions });
     await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
       /ADMIN_CATALOG_TOKEN_GRANT_INVALID/);
@@ -114,7 +114,7 @@ test("catalog accepts GitHub 2026 stateless JWT-format installation tokens witho
 test("catalog continues to reject elevated grants, invalid bearer types and header injection", async () => {
   const accepted = "ghs_12345_" + "a".repeat(75) + ".b_c-d." + "e".repeat(80);
   for (const permissions of [{ metadata: "read", contents: "read" },
-    { metadata: "read", issues: "write" }, { metadata: "write" }, {},
+    { metadata: "read", issues: "write" }, { metadata: "write" },
     { contents: "write" }]) {
     const f = fixture({ permissions, token: accepted });
     await assert.rejects(
@@ -156,7 +156,7 @@ test("malformed bearer and excessive grants stay distinct and stop before catalo
     { token: "ghs_abc" + String.fromCharCode(13, 10) + "X-Evil: injected",
       expected: "ADMIN_CATALOG_TOKEN_BEARER_INVALID" },
     { token: null, expected: "ADMIN_CATALOG_TOKEN_BEARER_INVALID" },
-    { token: "ghs_1234567", permissions: {},
+    { token: "ghs_1234567", permissions: { checks: "read" },
       expected: "ADMIN_CATALOG_TOKEN_GRANT_INVALID" },
     { token: "ghs_1234567", permissions: { metadata: "read", contents: "read" },
       expected: "ADMIN_CATALOG_TOKEN_GRANT_INVALID" },
@@ -183,4 +183,32 @@ test("valid metadata-only token still enumerates only existing approved reposito
   assert.equal(result.total_visible, 2);
   assert.equal(f.calls.length, 3);
   assert.doesNotMatch(JSON.stringify(result), /ghs_|payload.signature/);
+});
+
+test("GitHub catalog allows zero optional grants without broadening App authority", async () => {
+  const f = fixture({
+    permissions: {},
+    token: "ghs_12345_" + "a".repeat(68) + ".payload.signature",
+  });
+  const result = await listAdminInstalledRepositories(env, f.fetchStub, createJwt);
+  assert.equal(result.total_visible, 2);
+  assert.deepEqual(JSON.parse(f.calls[1].options.body), { permissions: {} });
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(result.repositories.map(r => r.full_name),
+    ["jan2xo/BKE_RENDER_DOCK", "jan2xo/bke-worker"]);
+  assert.doesNotMatch(JSON.stringify(result), /ghs_|payload.signature/);
+});
+
+test("catalog rejects all optional grants including read, write, metadata-write and missing grant object", async () => {
+  for (const permissions of [
+    {contents:"read"}, {contents:"write"}, {issues:"read"},
+    {metadata:"read", contents:"read"},
+    {metadata:"read", checks:"read"}, {metadata:"write"},
+    {actions:"read"}, ["metadata", "read"], null, "metadata",
+  ]) {
+    const f = fixture({permissions});
+    await assert.rejects(() => listAdminInstalledRepositories(env, f.fetchStub, createJwt),
+      /ADMIN_CATALOG_TOKEN_GRANT_INVALID/);
+    assert.equal(f.calls.length, 2);
+  }
 });
