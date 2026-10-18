@@ -39,7 +39,7 @@ required_node = (
     '["secret", "put", key, "--env", "preproduction"]',
     '["auth", "token", "--json"]',
     '"OWNER_ACCESS_LOGIN_REQUIRED"',
-    "await denyAnonymous(URL)",
+    "await denyAnonymous(URL, snapshot.access.issuer)",
     "await verifyBoundRpc(token, snapshot.accountId)",
     'checkpoint("BLOCKED_AFTER_MUTATION_" + phase',
 )
