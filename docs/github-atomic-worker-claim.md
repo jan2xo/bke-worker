@@ -9,6 +9,18 @@ that can be certified with adversarial fixtures. Its callbacks and snapshots
 are **not proof** that an actual GitHub App token or OS/browser session was
 authenticated.
 
+**Adversarial callback limitation:** a set of four fabricated but internally
+consistent callbacks can make this model *appear* to publish a child even when
+no remote GitHub ref exists. No validation within a pure callback model can
+prove external GitHub identity, ref provenance, authenticated PR observations,
+privileged history integrity or write authorization. Accordingly, the return
+state is `UNVERIFIED_CALLBACK_MODEL_ONLY`, with `evidence_authority: NONE`,
+`assignment_authority: NONE`, `dispatch_authority: NONE`, and
+`wake_authority: NONE`. The returned `arbiter_head` is **unverified input
+trace**, never a real claim receipt, authorization decision, worker lease, or
+evidence that a real GitHub write occurred. A future live writer must not
+elevate this model receipt to authority.
+
 Current `bke-worker:<worker_id>` PR labels remain the **authoritative
 delegation record**. A separate, single Git ref is proposed only as a
 serialization barrier for cooperative assignment writers, not as a second
@@ -51,8 +63,10 @@ A trusted future actor would:
    retrying, assigning or waking a worker.
 6. Separately reconcile/confirm the authoritative PR label and current
    head. Until separate cross-resource authority, session and delivery
-   gates are certified, the result is **RESERVATION_RECORDED_ONLY**,
-   with assignment, wake and dispatch authority `NONE`.
+   gates are certified, the result is **UNVERIFIED_CALLBACK_MODEL_ONLY**,
+   with evidence, assignment, wake and dispatch authority all `NONE`.
+   Even a fully forged but internally self-consistent callback sequence
+   cannot grant any of those authorities.
 
 GitHub documents `force:false` as a non-overwriting fast-forward
 update: https://docs.github.com/en/rest/git/refs#update-a-reference .
@@ -86,6 +100,38 @@ prove a multi-object transaction over independent PR labels.
   protocol while the v1 serial dispatcher or a human can bypass its
   reservation gate for a worker/PR in scope.
 
+## Live GitHub activation prerequisites — separate security intent
+
+Source fixtures can detect **inconsistent** callback lies: a stale initial
+ref, false child SHA/parent, malformed inspected parent, a ref-update callback
+that reports success without moving the observed ref, an API exception or
+a stale post-update reread. Fixtures **cannot** detect collusion among all
+injected callbacks when their fabricated responses are self-consistent.
+The adversarial coherent-forgery test intentionally demonstrates this and
+confirms the returned object has no evidence/assignment/wake/dispatch authority.
+
+Before any live path can consume or trust this model, independently certify a
+server-private GitHub App installation adapter that:
+- Authenticates the actual installation and fixed owner-approved repository/ref
+  scope; prevents client-supplied selectors or callbacks and limits write
+  credentials to the dedicated arbiter writer.
+- Uses the real REST ref/commit/tree APIs, `force:false`, verified ancestry
+  and a **trusted remote** ref reread, with explicit uncertainty reconciliation
+  and cross-repository ownership/PR-head checks.
+- Protects against **privileged history rewrite** outside this code: enforce
+  least-privilege branch/ref write policies, forbid force/administrative bypass
+  for the active writer, and independently detect unexpected regressions or
+  replaced manifest history before accepting any claim. Application-level
+  append-only checks are not protection against privileged remote rollback.
+- Reconciles separate authoritative PR-label writes with ref reservations
+  and separately certifies fresh worker identity/lease/session, safe delivery,
+  and owner-controlled recovery; never treats an unverified model result
+  as admission, claim or dispatch authority.
+
+Live GitHub race ordering, actual auth/REST semantics, branch protection and
+rollback resistance are **NOT_RUN** here; neither test doubles nor CI
+establish live atomicity.
+
 ## Operational trust gaps (deliberately unresolved)
 
 1. Command Center cannot yet supply the independently verified live
@@ -115,5 +161,7 @@ or browser dispatch is activated by this PR.** The protected
 Adversarial fixture coverage includes same-PR races, same-worker/different
 PR races, valid independent workers, stale PR heads/labels, crash points,
 timeout/retry/replay, expiration, uncertain prompt delivery, append-only
-successor validation, mutation/deletion/rollback rejection, caller-trust
-limits and non-fast-forward/API failure.
+successor validation, mutation/deletion/rollback rejection,
+adversarial inconsistent callback reads/creates/inspections/updates,
+fully self-consistent forged callback responses granting NO authority,
+caller-trust limits and non-fast-forward/API failure.
