@@ -173,7 +173,10 @@ export async function listInstalledWorkerAssignments(
       reject("ADMIN_ASSIGNMENT_REPOSITORIES_INCOMPLETE");
     }
   }
-  if (repos.length !== count) reject("ADMIN_ASSIGNMENT_REPOSITORIES_INCOMPLETE");
+  if (repos.length !== count || count === 0 ||
+      !repos.some(r => r.id === 1354026486 && r.name === "jan2xo/bke-worker")) {
+    reject("ADMIN_ASSIGNMENT_REPOSITORIES_INCOMPLETE");
+  }
 
   const assignments = [];
   const workerClaims = new Set();
