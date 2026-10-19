@@ -60,7 +60,7 @@ function fixture({
   return { fetcher, calls };
 }
 const collect = async f => listInstalledWorkerAssignments(env, f.fetcher, sign);
-const denied = async (call, code) => assert.rejects(call, new RegExp("^" + code + "$"));
+const denied = async (call, code) => assert.rejects(call, { message: code });
 
 test("private RPC is default locked and has strict purpose-only request", async () => {
   let invoked = 0;
