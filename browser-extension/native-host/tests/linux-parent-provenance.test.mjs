@@ -18,7 +18,8 @@ const config=()=>({
 });
 async function invoke(c,debug=false){
  return await new Promise((resolve,reject)=>{
-   const cp=spawn(process.execPath,[fixture],{stdio:["pipe","pipe","pipe"],\n      env:{...process.env,BKE_PRIVATE_PROC_TEST_DIAGNOSTICS:debug?"1":"0"}});
+   const cp=spawn(process.execPath,[fixture],{stdio:["pipe","pipe","pipe"],
+      env:{...process.env,BKE_PRIVATE_PROC_TEST_DIAGNOSTICS:debug?"1":"0"}});
    let stdout="",stderr="";
    cp.stdout.setEncoding("utf8");
    cp.stderr.setEncoding("utf8");
