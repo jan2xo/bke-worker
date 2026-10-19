@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     policy_file.chmod(0o600)
     good_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
     # Source-only install against sandbox, then exact manifest verification and idempotent verify.
-    r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\\n",capture_output=True,text=True)
+    r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
     manifest=sandbox/"chrome/NativeMessagingHosts/com.bke.worker.native_host.json"
     assert manifest.is_file()
