@@ -72,6 +72,11 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     symlink_root_env={**env,"BKE_NATIVE_HOST_TEST_ROOT":str(root_link)}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=symlink_root_env,capture_output=True,text=True)
     assert r.returncode!=0 and "test root" in r.stderr.lower()
+    broad_root=temp/"broad-root"; broad_root.mkdir(mode=0o755); broad_root.chmod(0o755)
+    broad_env={**env,"BKE_NATIVE_HOST_TEST_ROOT":str(broad_root)}
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=broad_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "private owner-only" in r.stderr.lower()
+    assert list(broad_root.iterdir())==[]
     for args,patch in [(["unknown"],{}),(["inspect"],{"BKE_NATIVE_HOST_EXTENSION_ORIGIN":"https://invalid.example/"})]:
         r=subprocess.run(cmd+args,cwd="/",env={**env,**patch},capture_output=True,text=True)
         assert r.returncode!=0,r.stdout
