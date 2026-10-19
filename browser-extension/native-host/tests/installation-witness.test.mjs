@@ -98,7 +98,7 @@ test("symlinked launcher, manifest or ancestor always fail without deleting it",
  await denied({...f.opts,manifestPath:forgedManifest});
  const parentLink=join(f.dir,"linked-installer");
  await symlink(f.install,parentLink);
- await denied({...f.opts,statePath:join(parentLink,"..","state","transaction.json")});
+ await denied({...f.opts,statePath:parentLink+"/../state/transaction.json"});
 });
 test("writable policy, nonexecutable launcher and unsafe parent mode fail closed",async t=>{
  const f=await fixture(t);
