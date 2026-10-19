@@ -5,6 +5,9 @@ import os, subprocess, shutil, tempfile
 root = Path(__file__).resolve().parents[1]
 script = root / "scripts/prepare-chrome-native-host.sh"
 text = script.read_text(encoding="utf-8")
+guard = (root / ".github/workflows/pr-guard.yml").read_text(encoding="utf-8")
+assert 'file.filename==="scripts/prepare-chrome-native-host.sh"' in guard
+assert 'file.filename==="tests/chrome_native_host_installer_contract.py"' in guard
 for token in (
     'HOST_NAME="bke.worker.desktop"', 'Darwin|Linux)', 'unsupported OS:',
     'entry.mjs', 'host.mjs', 'validNativeHostPolicy', 'allowed_origins',
