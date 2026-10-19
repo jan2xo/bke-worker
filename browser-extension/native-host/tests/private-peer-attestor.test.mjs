@@ -67,7 +67,7 @@ test("replay, non-canonical nonce, malformed challenge, and input smuggling fail
   {version:2,request_nonce:NONCE},
   {version:1,request_nonce:NONCE,approved:true},
   {version:1,request_nonce:NONCE.slice(0,42)+"="},
-  {version:1,request_nonce:NONCE.toLowerCase()},
+  // Last Base64URL sextet must have canonical zero unused pad bits.\n  {version:1,request_nonce:NONCE.slice(0,-1)+"B"},
   null,
  ]){
   await assert.rejects(sign(LINK,invalid),/REQUEST_DENIED/);
