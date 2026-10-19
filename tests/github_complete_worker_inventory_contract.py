@@ -137,7 +137,7 @@ class InventoryTests(unittest.TestCase):
                 else "GITHUB_PAGE_PAGINATION_UNCERTAIN",
                 lambda:run(lambda repo,page:(raw,next_page)))
         self.denied("GITHUB_PAGE_LIMIT_EXCEEDED",
-                    lambda:run(lambda repo,page:([pr(page*100+n)
+                    lambda:run(lambda repo,page:([pr(page*100+n,repo)
                         for n in range(100)],True)))
 
     def test_invalid_pr_identity_bad_base_repo_and_labels_are_denied(self):
