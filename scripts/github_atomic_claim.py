@@ -242,12 +242,16 @@ def publish_by_fast_forward(
     update_ref_nonforce: Callable[[str], bool],
     read_ref: Callable[[], str],
 ) -> dict[str, str]:
-    """Source-only transport protocol. Real adapter MUST PATCH force:false.
+    """UNTRUSTED callback model, never an authoritative GitHub write receipt.
 
-    A commit with exactly expected_head as its sole parent cannot update a
-    ref already advanced to a sibling by normal GitHub fast-forward rules.
-    The callbacks here are fixtures/untrusted until server-private certified.
-    A lost response is *unknown*, not a successful claim or safe retry.
+    A child commit with expected_head as sole parent cannot fast-forward over
+    a sibling if a real GitHub ref applies non-force update semantics. But an
+    injected adapter can lie about every read, commit and update, including a
+    perfectly self-consistent fabricated history. This function CANNOT prove
+    that a remote GitHub ref exists or was advanced; its return value NEVER
+    authorizes claims, assignment, delivery or wake. A future authenticated
+    server-private GitHub App adapter needs its own integration certification.
+    A lost callback response is *unknown*, not safe to blindly retry.
     """
     if type(expected_head) is not str or not _SHA.fullmatch(expected_head):
         _deny("CLAIM_ARBITER_HEAD_INVALID")
@@ -286,10 +290,13 @@ def publish_by_fast_forward(
         raise
     except Exception:
         _deny("CLAIM_REF_UPDATE_UNCERTAIN")
+    # Even completely forged but internally consistent callbacks can reach
+    # here. This is a model trace, NOT a remote publication receipt.
     return {
-        "state": "RESERVATION_RECORDED_ONLY",
+        "state": "UNVERIFIED_CALLBACK_MODEL_ONLY",
         "arbiter_ref": ARBITER_REF,
         "arbiter_head": new_head,
+        "evidence_authority": "NONE",
         "assignment_authority": "NONE",
         "dispatch_authority": "NONE",
         "wake_authority": "NONE",
