@@ -2,7 +2,7 @@
 # BKE Worker Chrome native host registration preparation. Source-only until a human runs install.
 set -Eeuo pipefail
 umask 077
-readonly HOST_NAME="com.bke.worker.native_host"
+readonly HOST_NAME="bke.worker.desktop"
 readonly ENTRY_REL="browser-extension/native-host/entry.mjs"
 readonly HOST_MODULE_REL="browser-extension/native-host/host.mjs"
 readonly FRAMING_REL="browser-extension/native-host/framing.mjs"
@@ -163,7 +163,7 @@ manifest_matches(){
 import {readFileSync} from "node:fs";
 const [p,path,origin]=process.argv.slice(2);let m;try{m=JSON.parse(readFileSync(p,"utf8"))}catch{process.exit(1)}
 const keys=["allowed_origins","description","name","path","type"].sort().join(",");
-if(!m||typeof m!=="object"||Array.isArray(m)||Object.keys(m).sort().join(",")!==keys||m.name!=="com.bke.worker.native_host"||m.type!=="stdio"||m.description!=="BKE Worker local native host (source-only preparation)"||m.path!==path||!Array.isArray(m.allowed_origins)||m.allowed_origins.length!==1||m.allowed_origins[0]!==origin)process.exit(1)
+if(!m||typeof m!=="object"||Array.isArray(m)||Object.keys(m).sort().join(",")!==keys||m.name!=="bke.worker.desktop"||m.type!=="stdio"||m.description!=="BKE Worker local native host (source-only preparation)"||m.path!==path||!Array.isArray(m.allowed_origins)||m.allowed_origins.length!==1||m.allowed_origins[0]!==origin)process.exit(1)
 NODE
 }
 inspect(){
@@ -248,13 +248,13 @@ NODE
  cp -- "$HOST_ENTRY" "$stage_entry"; cp -- "$HOST_DIR/host.mjs" "$stage_host"; cp -- "$HOST_DIR/framing.mjs" "$stage_framing"; cp -- "$POLICY" "$stage_policy"; chmod 700 "$stage_launcher"; chmod 600 "$stage_entry" "$stage_host" "$stage_framing" "$stage_policy"
  "$NODE_BIN" - "$stage_manifest" "$LAUNCHER" "$origin" <<'NODE'
 import{writeFileSync}from"node:fs";const[p,path,origin]=process.argv.slice(2);
-writeFileSync(p,JSON.stringify({name:"com.bke.worker.native_host",description:"BKE Worker local native host (source-only preparation)",path,type:"stdio",allowed_origins:[origin]})+"\n",{mode:0o600,flag:"w"});
+writeFileSync(p,JSON.stringify({name:"bke.worker.desktop",description:"BKE Worker local native host (source-only preparation)",path,type:"stdio",allowed_origins:[origin]})+"\n",{mode:0o600,flag:"w"});
 NODE
  # Transaction records exact hashes of source-staged bytes before any installation path appears.
  STAGE_MANIFEST="$stage_manifest" STAGE_LAUNCHER="$stage_launcher" STAGE_ENTRY="$stage_entry" STAGE_HOST="$stage_host" STAGE_FRAMING="$stage_framing" STAGE_POLICY="$stage_policy" "$NODE_BIN" - "$stage_state" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$origin" <<'NODE'
 import{writeFileSync,readFileSync}from"node:fs";import{createHash}from"node:crypto";
 const[p,manifest,launcher,entry,host,framing,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
-const s={version:1,host:"com.bke.worker.native_host",manifest,launcher,entry,host_module:host,framing_module:framing,policy,origin,created_by:"prepare-chrome-native-host.sh",
+const s={version:1,host:"bke.worker.desktop",manifest,launcher,entry,host_module:host,framing_module:framing,policy,origin,created_by:"prepare-chrome-native-host.sh",
 sha256:{manifest:hash(process.env.STAGE_MANIFEST),launcher:hash(process.env.STAGE_LAUNCHER),entry:hash(process.env.STAGE_ENTRY),host:hash(process.env.STAGE_HOST),framing:hash(process.env.STAGE_FRAMING),policy:hash(process.env.STAGE_POLICY)}};
 writeFileSync(p,JSON.stringify(s)+"\n",{mode:0o600,flag:"w"});
 NODE
@@ -290,7 +290,7 @@ NODE
  "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record mismatch; preserving all files."
 import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
 const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
-if(s.version!==1||s.host!=="com.bke.worker.native_host"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
+if(s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
 const checks=[[manifest,s.sha256?.manifest],[launcher,s.sha256?.launcher],[entry,s.sha256?.entry],[host,s.sha256?.host],[framing,s.sha256?.framing],[policy,s.sha256?.policy]];
 for(const[p,h]of checks){const st=lstatSync(p);if(!st.isFile()||st.isSymbolicLink()||createHash("sha256").update(readFileSync(p)).digest("hex")!==h)process.exit(1)}
 NODE
