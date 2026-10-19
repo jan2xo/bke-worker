@@ -229,6 +229,10 @@ NODE
   ln -- "$src" "$dst"||fail "destination appeared during install; refusing overwrite."
   TX_CREATED_PATHS+=("$dst"); TX_CREATED_IDS+=("$(file_identity "$dst")")
   rm -- "$src"
+  link_index=$((link_index + 1))
+  if [[ "$TESTING" -eq 1 && "${BKE_NATIVE_HOST_TEST_FAIL_AFTER_LINK:-}" = "$link_index" ]]; then
+    fail "test-only injected installation interruption."
+  fi
  done
  ln -- "$stage_manifest" "$MANIFEST"||fail "manifest destination appeared during install; refusing overwrite."
  TX_CREATED_PATHS+=("$MANIFEST"); TX_CREATED_IDS+=("$(file_identity "$MANIFEST")")
