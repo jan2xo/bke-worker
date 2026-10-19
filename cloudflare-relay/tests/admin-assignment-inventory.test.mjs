@@ -22,6 +22,7 @@ function fixture({
   prPages, repoPages, installation = {
     id: 51, repository_selection: "selected", permissions: { pull_requests: "write" },
   }, expiresAt, token = "ghs_scopedopaque", redirects = [], throws = [], status = {},
+  overrideGraph,
 } = {}) {
   const calls = [];
   const fetcher = async (url, options = {}) => {
@@ -48,12 +49,50 @@ function fixture({
         repositories: page === 1 ? repositories : [],
       }, { status: status.repos || 200 });
     }
-    const match = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/u.exec(u.pathname);
-    if (match) {
-      const repository = match[1] + "/" + match[2];
-      const page = Number(u.searchParams.get("page"));
-      const provided = prPages?.(repository, page);
-      return Response.json(provided ?? [], { status: status.pr || 200 });
+    if (u.pathname === "/graphql") {
+      const body = JSON.parse(options.body);
+      assert.equal(typeof body.query, "string");
+      assert.match(body.query, /pullRequests\(first:100,states:OPEN/u);
+      assert.doesNotMatch(body.query, /mutation|contents|issues/u);
+      const data = {};
+      for (let i = 0; Object.hasOwn(body.variables, "owner" + i); i++) {
+        const name = body.variables["owner" + i] + "/" + body.variables["name" + i];
+        const match = repositories.find(x => x.full_name === name);
+        const cursor = body.variables["cursor" + i];
+        const page = cursor === null ? 1 : Number(String(cursor).replace("page", ""));
+        const get = p => {
+          const arr = prPages?.(name, p);
+          return Array.isArray(arr) ? arr : [];
+        };
+        const first = get(1);
+        let totalCount = first.length;
+        if (first.length === 100) {
+          for (let p = 2; p <= 5; p++) {
+            const next = get(p);
+            totalCount += next.length;
+            if (next.length < 100) break;
+          }
+        }
+        const items = get(page);
+        data["r" + i] = {
+          databaseId: match?.id, nameWithOwner: name,
+          pullRequests: {
+            totalCount,
+            pageInfo: {
+              hasNextPage: page * 100 < totalCount,
+              endCursor: "page" + (page + 1),
+            },
+            nodes: items.map(x => ({
+              number: x.number,
+              state: typeof x.state === "string" ? x.state.toUpperCase() : x.state,
+              headRefOid: x.head?.sha,
+              labels: { nodes: x.labels, pageInfo: { hasNextPage: false } },
+            })),
+          },
+        };
+      }
+      return Response.json(overrideGraph ? overrideGraph(data) : { data },
+        { status: status.pr || 200 });
     }
     throw Error("unexpected fixture request");
   };
@@ -106,7 +145,7 @@ test("exact read-only GitHub installation permissions; no token crosses RPC", as
   assert.deepEqual(JSON.parse(mint.options.body), {
     permissions: { metadata: "read", pull_requests: "read" },
   });
-  assert.equal(f.calls.length, 5);
+  assert.equal(f.calls.length, 4);
   for (const item of f.calls) assert.equal(item.options.redirect, "manual");
   assert.doesNotMatch(JSON.stringify(safe), /ghs_|fixture-app-jwt|expires_at|private-key/u);
 });
@@ -144,7 +183,7 @@ test("installation permission, identity and origin resolved server-side", async 
 
 test("rejects redirect and transport failures before returning partial claims", async () => {
   for (const path of ["/installation", "/access_tokens",
-    "/installation/repositories", "/pulls"]) {
+    "/installation/repositories", "/graphql"]) {
     await denied(() => collect(fixture({ redirects: [path] })),
       "ADMIN_ASSIGNMENT_REDIRECT_BLOCKED");
     const stage = path === "/installation" ? "INSTALLATION" :
@@ -163,7 +202,7 @@ test("all 100 installation-approved repositories must be fully checked", async (
   const result = await collect(f);
   assert.equal(result.total_visible_repositories, 100);
   assert.equal(result.worker_assignments.length, 1);
-  assert.equal(f.calls.filter(x => x.url.includes("/pulls?")).length, 100);
+  assert.equal(f.calls.filter(x => x.url.endsWith("/graphql")).length, 13);
   await denied(() => collect(fixture({
     repositories: [...hundred, repo(101, "r100")],
   })), "ADMIN_ASSIGNMENT_REPOSITORIES_INCOMPLETE");
@@ -188,13 +227,13 @@ test("all PR pages are checked, including exact-full first page", async () => {
   const r = await collect(f);
   assert.equal(r.enumerated_open_pull_requests, 101);
   assert.deepEqual(r.worker_assignments.map(x => x.number), [101]);
-  assert.equal(f.calls.filter(x => x.url.includes("/pulls?")).length, 2);
+  assert.equal(f.calls.filter(x => x.url.endsWith("/graphql")).length, 2);
 });
 
 test("PR page limit or duplicate PRs cannot be treated as complete", async () => {
   const f = fixture({ repositories: [repo(1354026486, "bke-worker")],
     prPages: (_, page) => Array.from({ length: 100 }, (_, i) => pr((page - 1) * 100 + i + 1)) });
-  await denied(() => collect(f), "ADMIN_ASSIGNMENT_PAGINATION_INCOMPLETE");
+  await denied(() => collect(f), "ADMIN_ASSIGNMENT_PULL_REQUESTS_INVALID");
   const f2 = fixture({ repositories: [repo(1354026486, "bke-worker")],
     prPages: (_, page) => page === 1 ? [pr(1), pr(1)] : [] });
   await denied(() => collect(f2), "ADMIN_ASSIGNMENT_PR_DUPLICATE");
