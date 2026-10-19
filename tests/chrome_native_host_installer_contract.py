@@ -42,7 +42,24 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert r.returncode==0,(r.stdout,r.stderr)
     assert str(manifest_path) in r.stdout
     assert not manifest_path.exists()
+    r=subprocess.run(cmd+["dry-run"],cwd="/",env=env,capture_output=True,text=True)
+    assert r.returncode==0 and str(manifest_path) in r.stdout,(r.stdout,r.stderr)
+    assert not manifest_path.exists()
     assert not (sandbox/"chrome").exists()
+    # Unsafe Node executable paths are rejected before any operator state is prepared.
+    real_node=subprocess.check_output(["node","-p",'require("node:fs").realpathSync(process.execPath)'],text=True).strip()
+    node_link=sandbox/"node-link"; node_link.symlink_to(real_node)
+    for node_candidate in (str(sandbox/"node-does-not-exist"),str(node_link)):
+        node_env={**env,"BKE_NATIVE_HOST_TEST_NODE_PATH":node_candidate}
+        r=subprocess.run(cmd+["inspect"],cwd="/",env=node_env,capture_output=True,text=True)
+        assert r.returncode!=0 and "Node executable validation failed" in r.stderr
+        assert not manifest_path.exists()
+    # A symlinked native-host module is rejected before registration.
+    framing=fake/"browser-extension/native-host/framing.mjs"
+    framing.unlink(); framing.symlink_to(root/"browser-extension/native-host/framing.mjs")
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
+    assert r.returncode!=0 and "symlinked" in r.stderr.lower()
+    framing.unlink(); shutil.copy2(root/"browser-extension/native-host/framing.mjs",framing)
     # macOS and Linux must select distinct canonical user-profile paths; unsupported systems fail closed.
     mac_env={**env,"BKE_NATIVE_HOST_TEST_OS":"Darwin"}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=mac_env,capture_output=True,text=True)
@@ -67,6 +84,10 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     r=subprocess.run(cmd+["install"],cwd="/",env=bad_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode!=0 and "policy" in r.stderr.lower(),(r.stdout,r.stderr)
     assert not manifest_path.exists()
+    missing_policy_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(sandbox/"policy/missing-owner-policy.json")}
+    r=subprocess.run(cmd+["install"],cwd="/",env=missing_policy_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+    assert r.returncode!=0 and "policy" in r.stderr.lower()
+    assert not manifest_path.exists()
 
     # Valid shape-only owner fixture uses fixed non-secret test fingerprints.
     policy_obj={
@@ -80,6 +101,14 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     policy_file.write_text(json.dumps(policy_obj) + chr(10))
     policy_file.chmod(0o600)
     good_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
+    # A valid policy with a different pinned origin is rejected.
+    valid_bytes=policy_file.read_bytes()
+    wrong_origin={**policy_obj,"allowed_origin":"chrome-extension://"+"b"*32+"/"}
+    policy_file.write_text(json.dumps(wrong_origin)+chr(10)); policy_file.chmod(0o600)
+    r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+    assert r.returncode!=0 and "policy" in r.stderr.lower()
+    assert not manifest_path.exists()
+    policy_file.write_bytes(valid_bytes); policy_file.chmod(0o600)
     # Source-only install against sandbox, then exact manifest verification and idempotent verify.
     # Unsafe policy symlinks, writable modes and relative paths must all be rejected.
     symlink_policy=policy/"policy-symlink.json"; symlink_policy.symlink_to(policy_file)
