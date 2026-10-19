@@ -6,7 +6,7 @@ Single command:
 bash scripts/prepare-chrome-native-host.sh
 ```
 
-The default `inspect` mode is read-only. Explicit modes include `dry-run` (read-only inspection), `install`, `verify`, and `rollback`. Automated tests run only against an existing private disposable directory supplied through the test hook; no test writes to the actual browser configuration.
+The default `inspect` mode is read-only. Explicit modes include `dry-run` (read-only inspection), `install`, `verify`, and `rollback`. Automated tests run only against an existing private disposable directory supplied through the test hook; no test writes to the actual browser configuration. Real invocations require the exact canonical `https://github.com/jan2xo/bke-worker` origin, a clean `main` worktree, and a successful fetch proving `HEAD == origin/main`; dirty, detached, non-main, stale, or wrong-origin source trees fail closed before persistent registration. CI's isolated test hook exercises the transaction in disposable fixture repositories and is not available as an installation shortcut.
 
 Supported platforms are macOS (Chrome stable user profile) and Linux (Google Chrome user config). Other platforms fail closed. Linux `XDG_CONFIG_HOME`, when set, must be absolute. Node.js 22 or newer is required; the resolved Node executable must be canonical, executable, owned by the current user or root, and not group/world writable during a real installation.
 
