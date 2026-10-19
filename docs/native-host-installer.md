@@ -10,7 +10,7 @@ The default `inspect` mode is read-only. Explicit modes include `dry-run` (read-
 
 Supported platforms are macOS (Chrome stable user profile) and Linux (Google Chrome user config). Other platforms fail closed. Linux `XDG_CONFIG_HOME`, when set, must be absolute. Node.js 22 or newer is required; the resolved Node executable must be canonical, executable, owned by the current user or root, and not group/world writable during a real installation.
 
-The manifest uses Chrome's native messaging schema with host name `com.bke.worker.native_host`, `type: stdio`, an absolute launcher path, and one exactly validated `chrome-extension://[a-p]{32}/` origin. Chrome provides the caller-origin argument; the generated launcher passes the existing absolute policy path as argument one to `entry.mjs`, preserving the two-argument host contract.
+The manifest uses Chrome's native messaging schema with host name `bke.worker.desktop`, `type: stdio`, an absolute launcher path, and one exactly validated `chrome-extension://[a-p]{32}/` origin. Chrome provides the caller-origin argument; the generated launcher passes the existing absolute policy path as argument one to `entry.mjs`, preserving the two-argument host contract.
 
 The source manifest cannot reveal the locally generated Chrome extension ID, so the operator is prompted for it when not supplied through the explicitly documented input. Before install, an existing owner-pinned policy must be present at `~/.config/bke-worker/native-host/owner-policy.json`, at an absolute `BKE_NATIVE_HOST_POLICY_PATH`, or at an absolute path entered inside the installer when the default is missing. The installer validates that policy through `validNativeHostPolicy` in `host.mjs` and never creates worker IDs or trust pins.
 
