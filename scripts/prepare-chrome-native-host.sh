@@ -16,8 +16,9 @@ note(){ printf 'INFO: %s\n' "$1"; }
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
 command -v node >/dev/null 2>&1 || fail "Node.js required."
-NODE_BIN="$(command -v node)"
-[[ "$NODE_BIN" = /* && -f "$NODE_BIN" && ! -L "$NODE_BIN" ]] || fail "Node binary must be absolute and non-symlinked."
+NODE_BIN="$(node -p 'process.execPath' 2>/dev/null)" || fail "could not resolve Node executable."
+[[ "$NODE_BIN" = /* && -f "$NODE_BIN" ]] || fail "Node executable must resolve to an absolute file."
+[[ "$(cd -- "$(dirname -- "$NODE_BIN")" && pwd -P)/$(basename -- "$NODE_BIN")" = "$NODE_BIN" ]] || fail "Node executable path is not canonical."
 NODE_VERSION="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')" || fail "could not inspect Node."
 [[ "$NODE_VERSION" =~ ^[0-9]+$ && "$NODE_VERSION" -ge 22 ]] || fail "Node.js 22+ required."
 HOST_DIR="$ROOT_DIR/browser-extension/native-host"
@@ -138,6 +139,7 @@ install_host(){
   fail "refusing to overwrite conflicting registration, launcher, policy, or transaction."
  fi
  local stage_manifest stage_launcher stage_entry stage_host stage_framing stage_policy stage_state
+ stage_manifest="" stage_launcher="" stage_entry="" stage_host="" stage_framing="" stage_policy="" stage_state=""
  local committed=0
  local created=()
  stage_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-host.XXXXXX")"
