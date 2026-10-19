@@ -21,6 +21,7 @@ fi
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
 command -v node >/dev/null 2>&1 || fail "Node.js required."
 NODE_BIN="$(node -p 'require("node:fs").realpathSync(process.execPath)' 2>/dev/null)" || fail "could not resolve Node executable."
+NODE_DISCOVERED_BIN="$NODE_BIN"
 [[ "$NODE_BIN" = /* && -f "$NODE_BIN" ]] || fail "Node executable must resolve to an absolute file."
 [[ "$(cd -- "$(dirname -- "$NODE_BIN")" && pwd -P)/$(basename -- "$NODE_BIN")" = "$NODE_BIN" ]] || fail "Node executable path is not canonical."
 NODE_VERSION="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')" || fail "could not inspect Node."
@@ -53,6 +54,7 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
  INSTALL_DIR="$TEST_ROOT/install"; LAUNCHER="$INSTALL_DIR/launch-native-host.sh"; INSTALLED_ENTRY="$INSTALL_DIR/entry.mjs"; INSTALLED_HOST="$INSTALL_DIR/host.mjs"; INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"; INSTALLED_POLICY="$INSTALL_DIR/owner-policy.json"
  POLICY="${BKE_NATIVE_HOST_POLICY_PATH:-$TEST_ROOT/policy/owner-policy.json}"
  STATE_DIR="$TEST_ROOT/state"; STATE="$STATE_DIR/transaction.json"; TESTING=1
+ if [[ -n "${BKE_NATIVE_HOST_TEST_NODE_PATH:-}" ]]; then NODE_BIN="$BKE_NATIVE_HOST_TEST_NODE_PATH"; fi
 fi
 valid_origin(){ [[ "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]; }
 origin="${BKE_NATIVE_HOST_EXTENSION_ORIGIN:-}"
@@ -101,7 +103,15 @@ safe_runtime(){
  uid="$(id -u)"
  if [[ "$owner" != "$uid" && "$owner" != "0" ]]; then SAFE_RUNTIME_REASON="unexpected-owner"; return 1; fi
  mode="$((8#$mode))"
- if (( (mode & 0022) != 0 )); then SAFE_RUNTIME_REASON="group-or-world-writable"; return 1; fi
+ if (( (mode & 0022) != 0 )); then
+   # Hosted CI may expose a root-owned, writable runtime inside its ephemeral runner.
+   # This exception is limited to a redirected test root and never applies to a real install
+   # or an explicitly substituted test executable.
+   if [[ "$TESTING" -eq 1 && -z "${BKE_NATIVE_HOST_TEST_NODE_PATH:-}" && "$owner" = "0" && "$NODE_BIN" = "$NODE_DISCOVERED_BIN" ]]; then
+     SAFE_RUNTIME_REASON="isolated-test-host-runtime"; return 0
+   fi
+   SAFE_RUNTIME_REASON="group-or-world-writable"; return 1
+ fi
  SAFE_RUNTIME_REASON="ok"
  return 0
 }
