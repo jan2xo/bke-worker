@@ -238,7 +238,7 @@ jobs:
             const files=await github.paginate(github.rest.pulls.listFiles,{
               owner,repo,pull_number:context.issue.number,per_page:100
             });
-            const changed=files.some(file=>file.filename.startsWith("browser-extension/"));
+            const changed=files.some(file=>file.filename.startsWith("browser-extension/") || file.filename==="scripts/prepare-chrome-native-host.sh" || file.filename==="tests/chrome_native_host_installer_contract.py");
             core.setOutput("run",changed?"true":"false");
 
       - name: Checkout exact untrusted PR head for isolated testing
