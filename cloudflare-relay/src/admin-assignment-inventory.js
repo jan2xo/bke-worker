@@ -1,7 +1,7 @@
 // Private, on-demand GitHub App PR ownership inventory; source-only until a
 // separately authorized PREPRODUCTION broker release and trusted CC consumer.
 // No token, PEM, arbitrary GitHub URL, PR body or non-worker label crosses RPC.
-import { createGitHubAppJwt, resolveInstallation } from "./github-app.js";
+import { createGitHubAppJwt } from "./github-app.js";
 
 const API = "https://api.github.com";
 const VERSION = "2026-03-10";
@@ -105,12 +105,26 @@ export async function listInstalledWorkerAssignments(
   let jwt;
   try { jwt = await signJwt(appId, pem); }
   catch { reject("ADMIN_ASSIGNMENT_SIGNING_UNAVAILABLE"); }
-  let installation;
-  try { installation = await resolveInstallation(jwt, fetchImpl); }
-  catch { reject("ADMIN_ASSIGNMENT_INSTALLATION_UNAVAILABLE"); }
-  if (!/^[1-9][0-9]{0,19}$/u.test(installation?.id || "") ||
-      !["all", "selected"].includes(installation?.repositorySelection)) {
-    reject("ADMIN_ASSIGNMENT_INSTALLATION_INVALID");
+  // Dedicated read-side installation resolution. Do NOT import the
+  // write-scoped serial-dispatcher resolver or follow upstream redirects.
+  const installationResponse = await safeFetch(fetchImpl,
+    API + "/repos/jan2xo/bke-worker/installation",
+    { method: "GET", headers: {
+      accept: "application/vnd.github+json",
+      authorization: "Bearer " + jwt,
+      "user-agent": "bke-admin-worker-ownership",
+      "x-github-api-version": VERSION,
+    } }, "INSTALLATION");
+  const installationInfo = await json(installationResponse,
+    "ADMIN_ASSIGNMENT_INSTALLATION_INVALID");
+  const installation = {
+    id: String(installationInfo.id || ""),
+    repositorySelection: installationInfo.repository_selection,
+  };
+  if (!/^[1-9][0-9]{0,19}$/u.test(installation.id) ||
+      !["all", "selected"].includes(installation.repositorySelection) ||
+      !["read", "write"].includes(installationInfo.permissions?.pull_requests)) {
+    reject("ADMIN_ASSIGNMENT_INSTALLATION_SCOPE_INVALID");
   }
   const mint = await safeFetch(fetchImpl,
     API + "/app/installations/" + installation.id + "/access_tokens",
