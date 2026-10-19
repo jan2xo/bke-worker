@@ -65,6 +65,30 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
  STATE_DIR="$TEST_ROOT/state"; STATE="$STATE_DIR/transaction.json"; TESTING=1
  if [[ -n "${BKE_NATIVE_HOST_TEST_NODE_PATH:-}" ]]; then NODE_BIN="$BKE_NATIVE_HOST_TEST_NODE_PATH"; fi
 fi
+check_trusted_source(){
+ if [[ "$TESTING" -eq 1 ]]; then note "test fixture: repository provenance check isolated"; return 0; fi
+ local remote branch state head remote_head
+ [[ "$(git -C "$ROOT_DIR" rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || fail "trusted Git worktree required."
+ remote="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null)" || fail "origin remote unavailable; source provenance unknown."
+ case "$remote" in
+  https://github.com/jan2xo/bke-worker|https://github.com/jan2xo/bke-worker.git|git@github.com:jan2xo/bke-worker.git|git@github.com:jan2xo/bke-worker|ssh://git@github.com/jan2xo/bke-worker.git|ssh://git@github.com/jan2xo/bke-worker) ;;
+  *) fail "origin is not the trusted jan2xo/bke-worker repository."; ;;
+ esac
+ branch="$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" || fail "detached HEAD; trusted source branch cannot be established."
+ [[ "$branch" = "main" ]] || fail "source must run from main, not '$branch'."
+ state="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all 2>/dev/null)" || fail "cannot verify source worktree cleanliness."
+ [[ -z "$state" ]] || fail "source worktree is dirty; refusing persistent registration."
+ GIT_TERMINAL_PROMPT=0 git -C "$ROOT_DIR" fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main || fail "could not refresh origin/main; source revision is not trusted."
+ head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null)" || fail "current source revision unavailable."
+ remote_head="$(git -C "$ROOT_DIR" rev-parse refs/remotes/origin/main 2>/dev/null)" || fail "origin/main revision unavailable."
+ [[ "$head" = "$remote_head" ]] || fail "HEAD is not exact current origin/main; rerun from a fresh trusted main checkout."
+ [[ -z "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all 2>/dev/null)" ]] || fail "worktree changed while checking source provenance."
+ for p in "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
+  git -C "$ROOT_DIR" ls-files --error-unmatch "${p#"$ROOT_DIR"/}" >/dev/null 2>&1 || fail "required source is not tracked by trusted main."
+ done
+ note "trusted source provenance: origin/main=$remote_head; clean main worktree."
+}
+check_trusted_source
 valid_origin(){ [[ "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]; }
 origin="${BKE_NATIVE_HOST_EXTENSION_ORIGIN:-}"
 mode="${1:-inspect}"
