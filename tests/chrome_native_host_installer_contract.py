@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import os, subprocess, shutil, tempfile, json
+import os, subprocess, shutil, tempfile
 
 root = Path(__file__).resolve().parents[1]
 script = root / "scripts/prepare-chrome-native-host.sh"
 text = script.read_text(encoding="utf-8")
 for token in (
-    'HOST_NAME="com.bke.worker.native_host"', 'Darwin|Linux)', 'unsupported operating system',
+    'HOST_NAME="com.bke.worker.native_host"', 'Darwin|Linux)', 'unsupported OS:',
     'entry.mjs', 'host.mjs', 'validNativeHostPolicy', 'allowed_origins',
-    'refusing to overwrite unknown registration', 'FAIL-CLOSED', 'rollback)',
+    'refusing to overwrite conflicting registration', 'FAIL-CLOSED', 'rollback)',
     'BKE_NATIVE_HOST_TEST_ROOT', 'INSTALL USER-LEVEL CHROME HOST',
 ):
     assert token in text, token
@@ -34,18 +34,16 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
         assert r.returncode!=0,r.stdout
         assert "FAIL-CLOSED" in r.stderr,r.stderr
     assert not (sandbox/"chrome").exists()
-    # Malformed owner policy and unsupported owner state never prepare a manifest.
+    # Test owner policy enforcement without creating any registration.
     policy=sandbox/"policy"; policy.mkdir(mode=0o700)
-    (policy/"owner-policy.json").write_text('{"not":"a policy"}')
-    (policy/"owner-policy.json").chmod(0o600)
-    bad_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy/"owner-policy.json")}
+    policy_file=policy/"owner-policy.json"; policy_file.write_text('{"not":"a policy"}'); policy_file.chmod(0o600)
+    bad_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
     r=subprocess.run(cmd+["install"],cwd="/",env=bad_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
-    assert r.returncode!=0
+    assert r.returncode!=0 and "policy" in r.stderr.lower(),(r.stdout,r.stderr)
     assert not (sandbox/"chrome/NativeMessagingHosts/com.bke.worker.native_host.json").exists()
-    # A conflicting manifest is never overwritten by inspect or verify.
+    # Conflicts are not overwritten.
     chrome=sandbox/"chrome/NativeMessagingHosts"; chrome.mkdir(parents=True,mode=0o700)
     conflict=chrome/"com.bke.worker.native_host.json"; conflict.write_text('{"unrelated":true}'); conflict.chmod(0o600)
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
-    assert r.returncode!=0
-    assert conflict.read_text()=='{"unrelated":true}'
+    assert r.returncode!=0 and conflict.read_text()=='{"unrelated":true}'
 print("BKE Chrome native host installer contract: PASS")
