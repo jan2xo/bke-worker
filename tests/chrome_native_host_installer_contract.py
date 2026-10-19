@@ -19,6 +19,8 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     temp=Path(td); fake=temp/"repo"; home=temp/"home"; sandbox=temp/"sandbox"
     (fake/"scripts").mkdir(parents=True); (fake/"browser-extension/native-host").mkdir(parents=True)
     (fake/"browser-extension/manifest.json").write_text(manifest_src)
+    for d in (fake, fake/"scripts", fake/"browser-extension", fake/"browser-extension/native-host"):
+        d.chmod(0o700)
     shutil.copy2(script,fake/"scripts/prepare-chrome-native-host.sh")
     subprocess.run(["git","init","-q",str(fake)],check=True)
     subprocess.run(["git","-C",str(fake),"config","user.email","test@example.invalid"],check=True)
@@ -28,6 +30,8 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for name in ("entry.mjs","host.mjs","framing.mjs"):
         shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     home.mkdir(mode=0o700); sandbox.mkdir(mode=0o700)
+    for d in (temp, fake, home, sandbox, sandbox/"policy"):
+        if d.exists(): d.chmod(0o700)
     env={**os.environ,"HOME":str(home),"BKE_NATIVE_HOST_TEST_ROOT":str(sandbox),
          "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
     cmd=["bash",str(fake/"scripts/prepare-chrome-native-host.sh")]
