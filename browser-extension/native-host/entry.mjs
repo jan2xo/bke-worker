@@ -3,7 +3,8 @@
 // NOT registered in Chrome: operator-controlled native manifest/OS origin
 // authorization and server-side host attestation are separate acceptance.
 import { open,constants } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runNativeProofHost } from "./host.mjs";
 
 async function readOwnerPinnedPolicy(path) {
@@ -11,12 +12,14 @@ async function readOwnerPinnedPolicy(path) {
     throw Error("NATIVE_POLICY_PATH_INVALID");
   // Policy is not a secret, but MUST NOT be writable by other OS accounts
   // (it pins worker ID, extension origin, public key and target fingerprints).
-  const handle=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+  if(typeof process.getuid!=="function"||!constants.O_NOFOLLOW)
+    throw Error("NATIVE_OS_POLICY_NOT_CERTIFIED");
+  const handle=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);
   try{
     const info=await handle.stat();
     if(!info.isFile()||info.size<8||info.size>4096||
       (info.mode&0o022)!==0||
-      (typeof process.getuid==="function"&&info.uid!==process.getuid()))
+      info.uid!==process.getuid())
       throw Error("NATIVE_POLICY_OWNER_INVALID");
     const raw=await handle.readFile({encoding:"utf8"});
     return JSON.parse(raw);
@@ -32,7 +35,7 @@ export async function main(args=process.argv.slice(2)) {
   });
 }
 
-if(process.argv[1]&&import.meta.url===new URL("file://"+process.argv[1]).href){
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   main().then(()=>{process.exitCode=0;},
     ()=>{
       // Never emit policy, frame, URL, key or stack to stderr/logging;
