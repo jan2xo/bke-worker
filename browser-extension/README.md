@@ -2,7 +2,7 @@
 
 This directory contains the first Chromium extension foundation for BKE Worker.
 
-It is intentionally **not yet the canonical autonomous browser adapter**. The current canonical runtime remains the .NET + Playwright/CDP path until the extension path is locally certified against a real human-authenticated ChatGPT profile.
+It is the selected **desktop browser surface** of BKE Worker, but remains **probe-only and not live-certified for autonomous dispatch**. The Android GeckoView/WebExtension surface is the other selected target. The .NET + Playwright/CDP implementation remains preserved as legacy evidence, not the target architecture.
 
 ## Current capability
 
@@ -15,7 +15,8 @@ The extension currently:
 - keeps transient page observations in `chrome.storage.session`;
 - exposes a small popup for worker ID, future controller URL, and manual probe;
 - validates controller URLs as `wss://` by default, allowing `ws://` only for loopback development;
-- does not read or store ChatGPT message contents.
+- does not read or store ChatGPT message contents;
+- can create a **nonexportable P-256 device identity** locally in the extension profile's IndexedDB on an explicit popup action, showing only the public thumbprint. This key is not paired and cannot authorize dispatch.
 
 The extension currently does **not**:
 
@@ -24,6 +25,7 @@ The extension currently does **not**:
 - send ChatGPT prompts;
 - expose CDP;
 - connect to a remote controller;
+- expose the private device signer to page scripts, popup messages, or remote callers;
 - accept remote commands;
 - execute arbitrary JavaScript supplied by a controller.
 
@@ -53,6 +55,6 @@ Then start Chromium with `scripts/start-chatgpt-browser.sh`. The host script val
 
 For ad-hoc inspection you may still use `chrome://extensions` -> Developer mode -> Load unpacked, but that does not certify the Worker startup/profile binding.
 
-Once loaded, open the extension popup, set a worker ID such as `worker-a`, and press **Probe** against the worker's normal human-authenticated `chatgpt.com` session.
+Once loaded, open the extension popup, set a worker ID such as `worker-a`, and press **Probe** against the worker's normal human-authenticated `chatgpt.com` session. The separate **Create device identity** action creates an isolated local P-256 key but does not connect, pair, or claim GitHub work. Changing worker IDs after key creation is refused by the identity boundary.
 
 Do not use this extension as a production control surface until the bridge transport and command boundary are separately implemented and certified.
