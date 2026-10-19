@@ -126,7 +126,7 @@ install_host(){
  for p in "$CHROME_HOST_DIR" "$INSTALL_DIR" "$STATE_DIR";do ensure_dir "$p";done
  [[ -f "$POLICY" && ! -L "$POLICY" ]]||fail "owner-pinned policy must exist at $POLICY; no pins are invented."
  check_policy
- if [[ -e "$MANIFEST" || -L "$MANIFEST" || -e "$LAUNCHER" || -L "$LAUNCHER" || -e "$INSTALLED_ENTRY" || -L "$INSTALLED_ENTRY" || -e "$INSTALLED_POLICY" || -L "$INSTALLED_POLICY" || -e "$STATE" || -L "$STATE" ]];then
+ if [[ -e "$MANIFEST" || -L "$MANIFEST" || -e "$LAUNCHER" || -L "$LAUNCHER" || -e "$INSTALLED_ENTRY" || -L "$INSTALLED_ENTRY" || -e "$INSTALLED_HOST" || -L "$INSTALLED_HOST" || -e "$INSTALLED_FRAMING" || -L "$INSTALLED_FRAMING" || -e "$INSTALLED_POLICY" || -L "$INSTALLED_POLICY" || -e "$STATE" || -L "$STATE" ]];then
   if manifest_matches&&verify;then pass "matching registration already exists; idempotent no-op.";return;fi
   fail "refusing to overwrite conflicting registration, launcher, policy, or transaction."
  fi
