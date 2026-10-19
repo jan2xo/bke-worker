@@ -33,11 +33,24 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for d in (temp, fake, home, sandbox, sandbox/"policy"):
         if d.exists(): d.chmod(0o700)
     env={**os.environ,"HOME":str(home),"BKE_NATIVE_HOST_TEST_ROOT":str(sandbox),
+         "BKE_NATIVE_HOST_TEST_OS":"Linux",
          "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
+    registration_dir=sandbox/"xdg/google-chrome/NativeMessagingHosts"
+    manifest_path=registration_dir/"com.bke.worker.native_host.json"
     cmd=["bash",str(fake/"scripts/prepare-chrome-native-host.sh")]
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
+    assert str(manifest_path) in r.stdout
+    assert not manifest_path.exists()
     assert not (sandbox/"chrome").exists()
+    # macOS and Linux must select distinct canonical user-profile paths; unsupported systems fail closed.
+    mac_env={**env,"BKE_NATIVE_HOST_TEST_OS":"Darwin"}
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=mac_env,capture_output=True,text=True)
+    expected_mac=sandbox/"home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.bke.worker.native_host.json"
+    assert r.returncode==0 and str(expected_mac) in r.stdout,(r.stdout,r.stderr)
+    unsupported_env={**env,"BKE_NATIVE_HOST_TEST_OS":"FreeBSD"}
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=unsupported_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "unsupported OS: FreeBSD" in r.stderr
     for args,patch in [(["unknown"],{}),(["inspect"],{"BKE_NATIVE_HOST_EXTENSION_ORIGIN":"https://invalid.example/"})]:
         r=subprocess.run(cmd+args,cwd="/",env={**env,**patch},capture_output=True,text=True)
         assert r.returncode!=0,r.stdout
@@ -49,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     bad_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
     r=subprocess.run(cmd+["install"],cwd="/",env=bad_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode!=0 and "policy" in r.stderr.lower(),(r.stdout,r.stderr)
-    assert not (sandbox/"chrome/NativeMessagingHosts/com.bke.worker.native_host.json").exists()
+    assert not manifest_path.exists()
 
     # Valid shape-only owner fixture uses fixed non-secret test fingerprints.
     policy_obj={
@@ -64,9 +77,26 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     policy_file.chmod(0o600)
     good_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
     # Source-only install against sandbox, then exact manifest verification and idempotent verify.
+    # Unsafe policy symlinks, writable modes and relative paths must all be rejected.
+    symlink_policy=policy/"policy-symlink.json"; symlink_policy.symlink_to(policy_file)
+    for patch in (
+        {"BKE_NATIVE_HOST_POLICY_PATH":str(symlink_policy)},
+        {"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)},
+    ):
+        bad={**good_env,**patch}
+        original_mode=policy_file.stat().st_mode & 0o777
+        if patch["BKE_NATIVE_HOST_POLICY_PATH"]==str(policy_file): policy_file.chmod(0o666)
+        r=subprocess.run(cmd+["install"],cwd="/",env=bad,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+        assert r.returncode!=0,(r.stdout,r.stderr)
+        assert not manifest_path.exists()
+        policy_file.chmod(original_mode)
+    relative_env={**good_env,"BKE_NATIVE_HOST_POLICY_PATH":"policy/owner-policy.json"}
+    r=subprocess.run(cmd+["install"],cwd="/",env=relative_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+    assert r.returncode!=0 and not manifest_path.exists()
+
     r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
-    manifest=sandbox/"chrome/NativeMessagingHosts/com.bke.worker.native_host.json"
+    manifest=manifest_path
     assert manifest.is_file()
     import json
     parsed=json.loads(manifest.read_text())
@@ -89,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert not (sandbox/"install/owner-policy.json").exists()
     assert not (sandbox/"state/transaction.json").exists()
     # Conflicts are not overwritten.
-    chrome=sandbox/"chrome/NativeMessagingHosts"; chrome.mkdir(parents=True,exist_ok=True,mode=0o700)
+    chrome=registration_dir; chrome.mkdir(parents=True,exist_ok=True,mode=0o700)
     conflict=chrome/"com.bke.worker.native_host.json"; conflict.write_text('{"unrelated":true}'); conflict.chmod(0o600)
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode!=0 and conflict.read_text()=='{"unrelated":true}'
