@@ -79,16 +79,47 @@ safe_dir(){
  mode="$((8#$mode))"; (( (mode & 0022) == 0 ))
 }
 ensure_dir(){ local p="$1"; safe_dir "$p" || fail "unsafe directory or owner: $p"; if [[ ! -d "$p" ]]; then mkdir -p -- "$p" || fail "cannot create directory"; chmod 700 "$p"; fi; safe_dir "$p" || fail "directory validation failed"; }
+safe_runtime(){
+ local mode owner uid
+ [[ "$NODE_BIN" = /* && -f "$NODE_BIN" && -x "$NODE_BIN" && ! -L "$NODE_BIN" ]] || return 1
+ [[ "$(cd -- "$(dirname -- "$NODE_BIN")" && pwd -P)/$(basename -- "$NODE_BIN")" = "$NODE_BIN" ]] || return 1
+ mode="$(stat -c '%a' "$NODE_BIN" 2>/dev/null || stat -f '%Lp' "$NODE_BIN" 2>/dev/null)" || return 1
+ owner="$(stat -c '%u' "$NODE_BIN" 2>/dev/null || stat -f '%u' "$NODE_BIN" 2>/dev/null)" || return 1
+ uid="$(id -u)"; [[ "$owner" = "$uid" || "$owner" = "0" ]] || return 1
+ mode="$((8#$mode))"; (( (mode & 0022) == 0 ))
+}
+safe_parent(){
+ local p="$1" mode owner bits uid
+ [[ -d "$p" && ! -L "$p" ]] || return 1
+ mode="$(stat -c '%a' "$p" 2>/dev/null || stat -f '%Lp' "$p" 2>/dev/null)" || return 1
+ owner="$(stat -c '%u' "$p" 2>/dev/null || stat -f '%u' "$p" 2>/dev/null)" || return 1
+ bits="$((8#$mode))"; uid="$(id -u)"
+ if [[ "$owner" = "$uid" ]]; then
+   (( (bits & 0022) == 0 ))
+ elif [[ "$owner" = "0" ]] && (( (bits & 01000) != 0 )); then
+   # System sticky directories such as /tmp may be shared; private child paths are validated separately.
+   (( (bits & 0002) != 0 ))
+ elif [[ "$owner" = "0" ]]; then
+   (( (bits & 0022) == 0 ))
+ else
+   return 1
+ fi
+}
 check_policy(){
- [[ "$POLICY" = /* && -f "$POLICY" && ! -L "$POLICY" ]] || fail "owner-pinned policy must be existing absolute non-symlink file."
- secure_file "$POLICY" "$POLICY_MAX" || fail "owner policy ownership/mode/size invalid."
- "$NODE_BIN" --input-type=module - "$HOST_DIR/host.mjs" "$POLICY" "$origin" <<'NODE' || fail "policy does not match existing native-host contract."
+ local policy="${1:-$POLICY}" host_path="${2:-$HOST_DIR/host.mjs}"
+ [[ "$policy" = /* && -f "$policy" && ! -L "$policy" ]] || fail "owner-pinned policy must be existing absolute non-symlink file."
+ secure_file "$policy" "$POLICY_MAX" || fail "owner policy ownership/mode/size invalid."
+ "$NODE_BIN" --input-type=module - "$host_path" "$policy" "$origin" <<'NODE' || fail "policy does not match existing native-host contract."
 import {readFileSync} from "node:fs";import{pathToFileURL}from"node:url";
 const [hostPath,policyPath,origin]=process.argv.slice(2);const{validNativeHostPolicy}=await import(pathToFileURL(hostPath).href);
 const raw=readFileSync(policyPath,"utf8");if(Buffer.byteLength(raw)>4096)process.exit(1);
 const p=JSON.parse(raw);if(!validNativeHostPolicy(p)||p.allowed_origin!==origin)process.exit(1);
 NODE
 }
+safe_runtime || fail "Node executable ownership, permissions or canonical path invalid."
+for source in "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
+ secure_file "$source" 16384 || fail "native host source ownership, permissions or path invalid."
+done
 manifest_matches(){
  [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || return 1
  secure_file "$MANIFEST" 16384 || return 1
@@ -111,6 +142,7 @@ verify(){
  secure_file "$INSTALLED_FRAMING" 16384||fail "installed framing module invalid."
  secure_file "$INSTALLED_POLICY" "$POLICY_MAX"||fail "installed policy invalid."
  [[ -x "$LAUNCHER" ]]||fail "launcher is not executable."
+ check_policy "$INSTALLED_POLICY" "$INSTALLED_HOST"
  pass "registration and launcher files verified."
 }
 install_host(){
