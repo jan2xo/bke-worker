@@ -226,8 +226,8 @@ test("malformed labels, PR heads, repository paths and counts fail closed", asyn
 });
 
 test("private RPC independently rejects polluted upstream and duplicate assignments", async () => {
-  const good = await collect(fixture({ prPages: () =>
-    [pr(1, ["bke-worker:worker-a"])] }));
+  const good = await collect(fixture({ prPages: name =>
+    name.endsWith("/bke-worker") ? [pr(1, ["bke-worker:worker-a"])] : [] }));
   for (const value of [
     { ...good, token: "ghs_exfiltrate" },
     { ...good, worker_assignments: [...good.worker_assignments,
