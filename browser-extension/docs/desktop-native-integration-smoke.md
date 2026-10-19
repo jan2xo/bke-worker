@@ -12,7 +12,7 @@ From any worktree of the canonical repository, run:
 
 **bash scripts/smoke-desktop-native-integration.sh**
 
-The entrypoint validates the canonical origin, fetches current origin/main, creates a disposable detached worktree at that exact SHA, and runs the Node 22 smoke suite there. It does not write to the caller's checkout, open a browser, inspect a browser profile, edit an extension manifest, register a Chrome host, enable permissions, or perform any network/device enrollment. Node packages are installed in the disposable worktree with install scripts disabled.
+Use this entrypoint after the smoke harness has merged to main. The entrypoint validates the canonical origin, fetches current origin/main, creates a disposable detached worktree at that exact SHA, and runs the Node 22 smoke suite there. It does not modify tracked source files in the caller's checkout. It writes only the ignored JSON evidence report under artifacts/desktop-native-smoke/, does not open a browser or inspect a browser profile, and does not edit an extension manifest, register a Chrome host, enable permissions, or perform any network/device enrollment. Node packages are installed in the disposable worktree with install scripts disabled. Before merge, the PR Guard runs the same suite directly against the exact PR head.
 
 The JSON evidence report is written under:
 
