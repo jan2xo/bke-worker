@@ -489,11 +489,18 @@ async function listAdminInstalledRepositories(env, fetchImpl = fetch, createJwt 
           "user-agent": "bke-admin-installation-catalog",
           "x-github-api-version": GITHUB_API_VERSION,
         },
-        redirect: "error",
+        // Never automatically follow a provider redirect with the temporary
+        // installation bearer. Inspect 3xx as an HTTP response instead of
+        // having redirect:error obscure it as a transport exception.
+        redirect: "manual",
       },
       );
     } catch {
       throw new Error("ADMIN_CATALOG_REPOSITORIES_TRANSPORT_UNAVAILABLE");
+    }
+    if (dataResponse.status >= 300 && dataResponse.status < 400) {
+      // Do not read, log, follow or expose the Location header.
+      throw new Error("ADMIN_CATALOG_REPOSITORIES_REDIRECT_BLOCKED");
     }
     if (!dataResponse.ok) throw new Error("ADMIN_CATALOG_REPOSITORIES_UNAVAILABLE");
     const data = await dataResponse.json().catch(() => null);

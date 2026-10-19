@@ -294,3 +294,56 @@ test("catalog keeps bounded safe GitHub HTTP failure codes", async () => {
     /ADMIN_CATALOG_REPOSITORIES_UNAVAILABLE/);
   assert.equal(rejectedList.calls.length,2);
 });
+
+
+test("catalog treats GitHub 3xx as blocked redirect without forwarding bearer", async () => {
+  for (const status of [301,302,303,307,308]) {
+    const f=fixture();
+    let redirectFetches=0;
+    const mock=async (url,options) => {
+      if (url.startsWith("https://api.github.com/installation/repositories?")) {
+        f.calls.push({url,options});
+        assert.equal(options.redirect,"manual");
+        return new Response(null,{status,headers:{
+          Location:"https://untrusted.example/collect-installation-token",
+        }});
+      }
+      if (url.includes("untrusted.example")) redirectFetches++;
+      return f.fetchStub(url,options);
+    };
+    await assert.rejects(() => listAdminInstalledRepositories(env,mock,createJwt), error=>{
+      assert.equal(error.message,"ADMIN_CATALOG_REPOSITORIES_REDIRECT_BLOCKED");
+      assert.doesNotMatch(error.message,/untrusted|ghs_|collect|Location/i);
+      return true;
+    });
+    assert.equal(f.calls.length,3);
+    assert.equal(redirectFetches,0);
+  }
+});
+
+test("catalog continues to expose distinct genuine fetch transport error", async () => {
+  const f=fixture();
+  const mock=async (url,options)=>{
+    if (url.startsWith("https://api.github.com/installation/repositories?")) {
+      f.calls.push({url,options});
+      assert.equal(options.redirect,"manual");
+      throw new TypeError("ghs_SECRET bearer was not leaked");
+    }
+    return f.fetchStub(url,options);
+  };
+  await assert.rejects(()=>listAdminInstalledRepositories(env,mock,createJwt),error=>{
+    assert.equal(error.message,"ADMIN_CATALOG_REPOSITORIES_TRANSPORT_UNAVAILABLE");
+    assert.doesNotMatch(error.message,/ghs_|SECRET/);
+    return true;
+  });
+  assert.equal(f.calls.length,3);
+});
+
+test("successful catalog request uses manual redirects and exact narrow token", async () => {
+  const f=fixture();
+  const result=await listAdminInstalledRepositories(env,f.fetchStub,createJwt);
+  assert.equal(f.calls[2].options.redirect,"manual");
+  assert.deepEqual(JSON.parse(f.calls[1].options.body),{permissions:{metadata:"read"}});
+  assert.equal(result.total_visible,2);
+  assert.doesNotMatch(JSON.stringify(result),/ghs_|test-fixture-jwt/);
+});
