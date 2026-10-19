@@ -90,7 +90,7 @@ test("identity can never silently switch worker IDs within one extension profile
   const db=store(),b=bridge(db);const first=await b.initialize("worker-a");
   assert.equal((await b.initialize("worker-b")).code,"IDENTITY_WORKER_MISMATCH");
   assert.equal((await b.read("worker-b")).code,"IDENTITY_WORKER_MISMATCH");
-  assert.equal((await b.sign("worker-b",proposal("worker-b"))).code,"IDENTITY_CHALLENGE_REJECTED");
+  assert.equal((await b.sign("worker-b",proposal("worker-b"))).code,"IDENTITY_WORKER_MISMATCH");
   assert.equal((await b.read("worker-a")).public_key_sha256,first.public_key_sha256);
   assert.equal(db.writes(),1);
 });
