@@ -37,7 +37,9 @@ function validNativeProof(v:unknown,worker:string,now:number):v is NativeProofCh
     typeof v.expires_at_ms!=="number"||!Number.isSafeInteger(v.expires_at_ms)||
     v.expires_at_ms<=now||v.expires_at_ms>now+15_000||
     !exact(v.resources,NATIVE_RESOURCES))return false;
-  return NATIVE_RESOURCES.every(k=>typeof v.resources[k]==="string"&&SHA.test(v.resources[k]));
+  const resources=v.resources;
+  if(!exact(resources,NATIVE_RESOURCES))return false;
+  return NATIVE_RESOURCES.every(k=>typeof resources[k]==="string"&&SHA.test(resources[k] as string));
 }
 export function canonicalNativeProofMessage(v:NativeProofChallenge):string {
   return JSON.stringify([NATIVE_AUD,"prove",v.origin,v.worker_id,v.public_key_sha256,
