@@ -201,6 +201,38 @@ def fence_uncertain_delivery(
     return validated_manifest(value)
 
 
+def _validate_successor(parent: Any, proposal: Any) -> dict[str, Any]:
+    """Allow only one append or one irreversible delivery uncertainty fence.
+
+    Fast-forward ancestry alone does not prove a child preserves existing
+    reservations. An authorized future writer must also enforce transitions.
+    This source-only check does not authenticate the writer or external input.
+    """
+    previous = validated_manifest(parent)
+    candidate = validated_manifest(proposal)
+    if candidate["sequence"] != previous["sequence"] + 1:
+        _deny("CLAIM_TRANSITION_INVALID")
+    before, after = previous["claims"], candidate["claims"]
+    if len(after) == len(before) + 1:
+        if after[:-1] != before or after[-1]["state"] != "RESERVED":
+            _deny("CLAIM_TRANSITION_INVALID")
+    elif len(after) == len(before):
+        changed = 0
+        for old_row, new_row in zip(before, after):
+            if old_row == new_row:
+                continue
+            expected = dict(old_row)
+            expected["state"] = "DELIVERY_UNCERTAIN"
+            if old_row["state"] != "RESERVED" or new_row != expected:
+                _deny("CLAIM_TRANSITION_INVALID")
+            changed += 1
+        if changed != 1:
+            _deny("CLAIM_TRANSITION_INVALID")
+    else:
+        _deny("CLAIM_TRANSITION_INVALID")
+    return candidate
+
+
 def publish_by_fast_forward(
     *,
     expected_head: str,
@@ -227,6 +259,12 @@ def publish_by_fast_forward(
     try:
         if read_ref() != expected_head:
             _deny("CLAIM_ARBITER_MOVED")
+        parent_commit = inspect_commit(expected_head)
+        if not _exact(parent_commit, frozenset({"parents", "manifest"})):
+            _deny("CLAIM_PARENT_INVALID")
+        # Enforce append-only reservations / irreversible uncertainty fences.
+        # A valid descendant is not sufficient if it deletes an older claim.
+        _validate_successor(parent_commit["manifest"], proposed_manifest)
         new_head = create_child_commit(expected_head, deepcopy(proposed_manifest))
         if type(new_head) is not str or not _SHA.fullmatch(new_head) or new_head == expected_head:
             _deny("CLAIM_CHILD_INVALID")
