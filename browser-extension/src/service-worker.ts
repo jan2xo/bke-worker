@@ -7,6 +7,7 @@ import {
   type BridgeStatus,
   type ChatGptPageStatus,
 } from "./protocol.js";
+import { createDeviceIdentityBridge, createIndexedDbIdentityStore, publicIdentitySummary } from "./device-identity.js";
 
 const CONFIG_KEY = "bridgeConfig";
 const STATUS_KEY = "chatGptStatus";
@@ -15,6 +16,8 @@ const GET_STATUS_MESSAGE = "bke.status.get";
 const GET_CONFIG_MESSAGE = "bke.config.get";
 const SET_CONFIG_MESSAGE = "bke.config.set";
 const PROBE_MESSAGE = "bke.chatgpt.probe";
+const IDENTITY_STATUS_MESSAGE = "bke.device.identity.status";
+const IDENTITY_INIT_MESSAGE = "bke.device.identity.initialize";
 
 const DEFAULT_CONFIG: BridgeConfig = {
   workerId: "",
@@ -138,6 +141,29 @@ chrome.runtime.onStartup.addListener(() => {
   void initializeBridge();
 });
 
+// Only the extension popup can initialize or inspect the local device key.
+// Neither ChatGPT content scripts nor externally-connected pages can sign.
+function isTrustedPopup(sender: any): boolean {
+  return sender?.id === chrome.runtime.id &&
+    sender?.url === chrome.runtime.getURL("popup.html") &&
+    !sender?.tab;
+}
+
+async function deviceIdentityAction(kind: "read" | "initialize") {
+  try {
+    const config = await getConfig();
+    if (!validateConfig(config.workerId, config.controllerUrl).ok) {
+      return { state: "BLOCKED", code: "IDENTITY_CONFIGURATION_INVALID" };
+    }
+    const bridge = createDeviceIdentityBridge({store:createIndexedDbIdentityStore()});
+    if (kind === "initialize") {
+      const result = await bridge.initialize(config.workerId);
+      if (result.state !== "READY") return result;
+    }
+    return publicIdentitySummary(bridge, config.workerId);
+  } catch { return { state: "BLOCKED", code: "IDENTITY_UNAVAILABLE" }; }
+}
+
 chrome.runtime.onMessage.addListener(
   (
     message: any,
@@ -145,6 +171,16 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (response: unknown) => void,
   ) => {
     const type = message?.type;
+
+    if (type === IDENTITY_STATUS_MESSAGE || type === IDENTITY_INIT_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ state: "BLOCKED", code: "IDENTITY_SENDER_REJECTED" });
+        return false;
+      }
+      void deviceIdentityAction(type === IDENTITY_INIT_MESSAGE ? "initialize" : "read")
+        .then(sendResponse, () => sendResponse({state:"BLOCKED",code:"IDENTITY_UNAVAILABLE"}));
+      return true;
+    }
 
     if (type === STATUS_MESSAGE) {
       void recordChatGptStatus(message.payload, sender).then(sendResponse);
@@ -157,11 +193,19 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (type === GET_CONFIG_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ok:false,error:"CONFIG_SENDER_REJECTED"});
+        return false;
+      }
       void getConfig().then(sendResponse);
       return true;
     }
 
     if (type === SET_CONFIG_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ok:false,error:"CONFIG_SENDER_REJECTED"});
+        return false;
+      }
       const workerId = String(message?.workerId ?? "");
       const controllerUrl = String(message?.controllerUrl ?? "");
       const result = validateConfig(workerId, controllerUrl);
