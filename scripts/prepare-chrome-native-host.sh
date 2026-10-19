@@ -19,6 +19,9 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_OS:-}" ]]; then
  OS="$BKE_NATIVE_HOST_TEST_OS"
 fi
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
+if [[ "$OS" = "Linux" && -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME" != /* ]]; then
+ fail "XDG_CONFIG_HOME must be absolute on Linux."
+fi
 command -v node >/dev/null 2>&1 || fail "Node.js required."
 NODE_BIN="$(node -p 'require("node:fs").realpathSync(process.execPath)' 2>/dev/null)" || fail "could not resolve Node executable."
 NODE_DISCOVERED_BIN="$NODE_BIN"
@@ -198,6 +201,7 @@ install_host(){
    local walk="$p"
    while [[ "$walk" != "/" ]]; do
      [[ ! -L "$walk" ]] || fail "symlinked installation parent refused."
+     if [[ -d "$walk" ]]; then safe_parent "$walk" || fail "unsafe existing parent directory."; fi
      walk="$(dirname -- "$walk")"
    done
  done
@@ -238,7 +242,7 @@ install_host(){
  stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"; TX_STAGE_STATE="$stage_state"
  "$NODE_BIN" - "$stage_launcher" "$NODE_BIN" <<'NODE'
 import {writeFileSync} from"node:fs";
-const[p,node]=process.argv.slice(2),q=JSON.stringify(node);
+const[p,node]=process.argv.slice(2),q="'"+node.replace(/'/g,"'\\''")+"'";
 writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE_BIN=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]||exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]]||exit 2\nexec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
 NODE
  cp -- "$HOST_ENTRY" "$stage_entry"; cp -- "$HOST_DIR/host.mjs" "$stage_host"; cp -- "$HOST_DIR/framing.mjs" "$stage_framing"; cp -- "$POLICY" "$stage_policy"; chmod 700 "$stage_launcher"; chmod 600 "$stage_entry" "$stage_host" "$stage_framing" "$stage_policy"
