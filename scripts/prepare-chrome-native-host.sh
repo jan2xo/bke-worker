@@ -8,9 +8,11 @@ readonly HOST_MODULE_REL="browser-extension/native-host/host.mjs"
 readonly FRAMING_REL="browser-extension/native-host/framing.mjs"
 readonly POLICY_MAX=4096
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null)" || { echo "FAIL-CLOSED: repository root not found." >&2; exit 2; }
 ROOT_DIR="$(cd -- "$ROOT_DIR" && pwd -P)"
 fail(){ printf 'FAIL-CLOSED: %s\n' "$1" >&2; exit 2; }
+[[ ! -L "$SCRIPT_PATH" && "$SCRIPT_PATH" = "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" ]] || fail "must run the canonical tracked entrypoint path."
 pass(){ printf 'PASS: %s\n' "$1"; }
 note(){ printf 'INFO: %s\n' "$1"; }
 OS="$(uname -s)"
@@ -195,15 +197,43 @@ inspect(){
  if [[ -e "$MANIFEST" || -L "$MANIFEST" ]];then manifest_matches||fail "existing manifest conflicts; no overwrite attempted.";pass "manifest matches expected contract.";else note "not registered; inspect is read-only.";fi
 }
 verify(){
- manifest_matches||fail "manifest absent, unsafe, or mismatched."
- secure_file "$LAUNCHER" 16384||fail "launcher ownership/mode invalid."
- secure_file "$INSTALLED_ENTRY" 16384||fail "installed entry invalid."
- secure_file "$INSTALLED_HOST" 16384||fail "installed host module invalid."
- secure_file "$INSTALLED_FRAMING" 16384||fail "installed framing module invalid."
- secure_file "$INSTALLED_POLICY" "$POLICY_MAX"||fail "installed policy invalid."
- [[ -x "$LAUNCHER" ]]||fail "launcher is not executable."
+ secure_file "$STATE" 8192 || fail "transaction record owner/mode invalid."
+ for p in "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY"; do
+  secure_file "$p" 16384 || fail "installed artifact owner/mode invalid."
+ done
+ [[ -x "$LAUNCHER" ]] || fail "launcher is not executable."
+ "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record or installed artifact hashes mismatch."
+import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
+const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);
+let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
+const top=["created_by","entry","framing_module","host","host_module","launcher","manifest","origin","policy","sha256","version"];
+if(!s||typeof s!=="object"||Array.isArray(s)||Object.keys(s).sort().join(",")!==top.sort().join(",")||
+ s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||
+ s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||
+ s.created_by!=="prepare-chrome-native-host.sh"||
+ typeof s.origin!=="string"||!/^chrome-extension:\/\/[a-p]{32}\/$/.test(s.origin))process.exit(1);
+const hashKeys=["entry","framing","host","launcher","manifest","policy"];
+if(!s.sha256||typeof s.sha256!=="object"||Array.isArray(s.sha256)||
+ Object.keys(s.sha256).sort().join(",")!==hashKeys.sort().join(",")||
+ !Object.values(s.sha256).every(h=>typeof h==="string"&&/^[0-9a-f]{64}$/.test(h)))process.exit(1);
+const checks=[[manifest,s.sha256.manifest],[launcher,s.sha256.launcher],[entry,s.sha256.entry],
+ [host,s.sha256.host],[framing,s.sha256.framing],[policy,s.sha256.policy]];
+for(const[p,h]of checks){
+ let st;try{st=lstatSync(p)}catch{process.exit(1)}
+ if(!st.isFile()||st.isSymbolicLink()||
+  createHash("sha256").update(readFileSync(p)).digest("hex")!==h)process.exit(1);
+}
+let m;try{m=JSON.parse(readFileSync(manifest,"utf8"))}catch{process.exit(1)}
+const manifestKeys=["allowed_origins","description","name","path","type"];
+if(!m||typeof m!=="object"||Array.isArray(m)||Object.keys(m).sort().join(",")!==manifestKeys.sort().join(",")||
+ m.name!=="bke.worker.desktop"||m.type!=="stdio"||
+ m.description!=="BKE Worker local native host (source-only preparation)"||
+ m.path!==launcher||!Array.isArray(m.allowed_origins)||m.allowed_origins.length!==1||
+ m.allowed_origins[0]!==s.origin)process.exit(1);
+NODE
+ manifest_matches || fail "manifest absent, unsafe, or mismatched."
  check_policy "$INSTALLED_POLICY" "$INSTALLED_HOST"
- pass "registration and launcher files verified."
+ pass "registration, transaction hashes and launcher files verified."
 }
 install_host(){
  if ((TESTING==0));then
