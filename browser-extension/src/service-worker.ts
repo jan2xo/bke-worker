@@ -193,11 +193,19 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (type === GET_CONFIG_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ok:false,error:"CONFIG_SENDER_REJECTED"});
+        return false;
+      }
       void getConfig().then(sendResponse);
       return true;
     }
 
     if (type === SET_CONFIG_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ok:false,error:"CONFIG_SENDER_REJECTED"});
+        return false;
+      }
       const workerId = String(message?.workerId ?? "");
       const controllerUrl = String(message?.controllerUrl ?? "");
       const result = validateConfig(workerId, controllerUrl);
