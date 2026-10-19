@@ -156,7 +156,10 @@ def prepare_reservation(
     _clock(now_ms)
     old = validated_manifest(manifest)
     worker, repo, number, head = _verified_shape_only(preflight, current_pr)
-    if type(expected_labels) is not list or sorted(expected_labels) != sorted(current_pr["labels"]):
+    if (type(expected_labels) is not list or
+            any(type(label) is not str for label in expected_labels)):
+        _deny("CLAIM_PR_LABELS_INVALID")
+    if sorted(expected_labels) != sorted(current_pr["labels"]):
         _deny("CLAIM_PR_LABELS_CHANGED")
     if len(old["claims"]) >= MAX_CLAIMS:
         _deny("CLAIM_CAPACITY_REQUIRES_OWNER_RECOVERY")
