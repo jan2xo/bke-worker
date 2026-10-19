@@ -20,7 +20,7 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_OS:-}" ]]; then
 fi
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
 command -v node >/dev/null 2>&1 || fail "Node.js required."
-NODE_BIN="$(node -p 'process.execPath' 2>/dev/null)" || fail "could not resolve Node executable."
+NODE_BIN="$(node -p 'require("node:fs").realpathSync(process.execPath)' 2>/dev/null)" || fail "could not resolve Node executable."
 [[ "$NODE_BIN" = /* && -f "$NODE_BIN" ]] || fail "Node executable must resolve to an absolute file."
 [[ "$(cd -- "$(dirname -- "$NODE_BIN")" && pwd -P)/$(basename -- "$NODE_BIN")" = "$NODE_BIN" ]] || fail "Node executable path is not canonical."
 NODE_VERSION="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')" || fail "could not inspect Node."
