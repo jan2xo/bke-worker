@@ -204,32 +204,35 @@ verify(){
  [[ -x "$LAUNCHER" ]] || fail "launcher is not executable."
  "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record or installed artifact hashes mismatch."
 import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
+const reject=code=>{process.stderr.write("VERIFY_FAIL:"+code+"\\n");process.exit(1)};
 const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);
-let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
+let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{reject("state-json")}
 const top=["created_by","entry","framing_module","host","host_module","launcher","manifest","origin","policy","sha256","version"];
-if(!s||typeof s!=="object"||Array.isArray(s)||Object.keys(s).sort().join(",")!==top.sort().join(",")||
- s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||
+if(!s||typeof s!=="object"||Array.isArray(s)||Object.keys(s).sort().join(",")!==top.sort().join(","))reject("state-keys");
+if(s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||
  s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||
  s.created_by!=="prepare-chrome-native-host.sh"||
- typeof s.origin!=="string"||!/^chrome-extension:\/\/[a-p]{32}\/$/.test(s.origin))process.exit(1);
+ typeof s.origin!=="string"||!/^chrome-extension:\/\/[a-p]{32}\/$/.test(s.origin))reject("state-identity");
 const hashKeys=["entry","framing","host","launcher","manifest","policy"];
 if(!s.sha256||typeof s.sha256!=="object"||Array.isArray(s.sha256)||
  Object.keys(s.sha256).sort().join(",")!==hashKeys.sort().join(",")||
- !Object.values(s.sha256).every(h=>typeof h==="string"&&/^[0-9a-f]{64}$/.test(h)))process.exit(1);
-const checks=[[manifest,s.sha256.manifest],[launcher,s.sha256.launcher],[entry,s.sha256.entry],
- [host,s.sha256.host],[framing,s.sha256.framing],[policy,s.sha256.policy]];
-for(const[p,h]of checks){
- let st;try{st=lstatSync(p)}catch{process.exit(1)}
- if(!st.isFile()||st.isSymbolicLink()||
-  createHash("sha256").update(readFileSync(p)).digest("hex")!==h)process.exit(1);
+ !Object.values(s.sha256).every(h=>typeof h==="string"&&/^[0-9a-f]{64}$/.test(h)))reject("state-hash-shape");
+const checks=[["manifest",manifest,s.sha256.manifest],["launcher",launcher,s.sha256.launcher],
+ ["entry",entry,s.sha256.entry],["host",host,s.sha256.host],["framing",framing,s.sha256.framing],
+ ["policy",policy,s.sha256.policy]];
+for(const[label,p,h]of checks){
+ let st;try{st=lstatSync(p)}catch{reject(label+"-missing")}
+ if(!st.isFile()||st.isSymbolicLink())reject(label+"-not-regular-file");
+ if(createHash("sha256").update(readFileSync(p)).digest("hex")!==h)reject(label+"-hash");
 }
-let m;try{m=JSON.parse(readFileSync(manifest,"utf8"))}catch{process.exit(1)}
+let m;try{m=JSON.parse(readFileSync(manifest,"utf8"))}catch{reject("manifest-json")}
 const manifestKeys=["allowed_origins","description","name","path","type"];
 if(!m||typeof m!=="object"||Array.isArray(m)||Object.keys(m).sort().join(",")!==manifestKeys.sort().join(",")||
  m.name!=="bke.worker.desktop"||m.type!=="stdio"||
  m.description!=="BKE Worker local native host (source-only preparation)"||
  m.path!==launcher||!Array.isArray(m.allowed_origins)||m.allowed_origins.length!==1||
- m.allowed_origins[0]!==s.origin)process.exit(1);
+ m.allowed_origins[0]!==s.origin)reject("manifest-schema-or-origin");
+
 NODE
  manifest_matches || fail "manifest absent, unsafe, or mismatched."
  check_policy "$INSTALLED_POLICY" "$INSTALLED_HOST"
