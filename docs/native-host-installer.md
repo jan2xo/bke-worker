@@ -1,21 +1,19 @@
 # Chrome native-host operator entrypoint (source-only)
 
-Run from any working directory inside a checkout:
+Single command:
 
 ```bash
 bash scripts/prepare-chrome-native-host.sh
 ```
 
-Default mode is read-only `inspect`. Optional explicit modes are `install`, `verify`, and `rollback`. CI and the repository test suite never execute registration against the real home directory.
+The default `inspect` mode is read-only. Supported explicit modes are `install`, `verify`, and `rollback`. Automated tests run only against an existing disposable directory supplied through the test hook; no test writes to the actual browser configuration.
 
-Supported targets: macOS Chrome user profile and Linux Google Chrome user config. Other operating systems fail closed. Node.js 22+ is required.
+Supported platforms are macOS (Chrome user profile) and Linux (Google Chrome user config). Other platforms fail closed. Node.js 22 or newer is required.
 
-The installer uses the existing native host executable contract:
-`entry.mjs <absolute-policy-path> <Chrome-calling-origin>`.
-Chrome supplies the last argument; the generated launcher supplies its absolute policy path first. It does not infer an extension ID from the source manifest; if the origin cannot be safely discovered it requests it interactively. The origin must be a Chrome extension origin with exactly 32 characters in the Chrome ID alphabet.
+The manifest uses Chrome's native messaging schema with host name `com.bke.worker.native_host`, `type: stdio`, an absolute launcher path, and one exactly validated `chrome-extension://[a-p]{32}/` origin. Chrome provides the caller-origin argument; the generated launcher passes the existing absolute policy path as argument one to `entry.mjs`, preserving the two-argument host contract.
 
-Before `install`, an owner-pinned policy must already exist at `~/.config/bke-worker/native-host/owner-policy.json`, or a path selected via `BKE_NATIVE_HOST_POLICY_PATH`. The policy is integrity-sensitive and validated by the exact `validNativeHostPolicy` contract in `host.mjs`; the installer never invents a key, resource pin or worker identity.
+The source manifest cannot reveal the locally generated Chrome extension ID, so the operator is prompted for it when not supplied through the explicitly documented input. Before install, an existing owner-pinned policy must be present at `~/.config/bke-worker/native-host/owner-policy.json` or at `BKE_NATIVE_HOST_POLICY_PATH`. The installer validates that policy through `validNativeHostPolicy` in `host.mjs` and never creates worker IDs or trust pins.
 
-Install explicitly prompts for confirmation (unless a disposable test root is supplied). It refuses to overwrite any existing manifest, launcher, host source, policy copy, or transaction record. A successful transaction writes a transaction record containing only paths/origin and removes only the exact artifacts it created on rollback; if state changed since install, rollback refuses.
+Installation is explicit and interactive on real user paths. It refuses conflicting files, symlinks, unsafe ownership/modes, or unknown state. Files are staged, installed without clobbering, and the manifest is exposed last. A transaction record holds hashes for each installed artifact; rollback removes files only when all relevant artifacts still match recorded hashes and safe ownership/modes. Unknown or changed state is preserved for manual review.
 
-No registration is activated by testing. The installer does not edit the extension manifest, grant `nativeMessaging`, enroll a device, or claim that P-256 possession or argv origin constitutes server attestation. The WebExtension native client and a separately trusted server-side host identity/admission path remain dependencies before a real end-to-end enrollment can be certified.
+This is not server attestation. A Chrome argv origin and local P-256 proof alone are not trusted admission. The script does not launch Chrome, grant `nativeMessaging`, modify the extension manifest/source, enroll a device, or touch production/PREPRODUCTION. The separate WebExtension native client and server-verified host identity/admission path remain prerequisites before end-to-end enrollment.
