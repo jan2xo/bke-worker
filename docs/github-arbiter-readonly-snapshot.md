@@ -22,6 +22,17 @@ installation token supplied by an independently authenticated server caller.
   mismatch, noncanonical or duplicate-key JSON, malformed manifest and head
   movement between reads. Reject unverifiable provider responses, do not fall
   back to user credentials or a PAT.
+- **Credential-bound transport boundary:** the bearer-bearing
+  `GitHubAppArbiterReader` constructor does **not** accept any injected
+  `opener`, URL, host or proxy. It constructs its own direct HTTPS urllib
+  opener with an explicitly empty proxy configuration and a no-redirect
+  handler; responses must also report exactly the original requested URL.
+  A foreign final URL fails closed, and no HTTP 30x is followed. Do not
+  reintroduce a pluggable transport that can receive real installation
+  tokens. Tests substitute deterministic synthetic responses by patching
+  the opener builder **only around construction with disposable fake tokens**
+  or by injecting `fetch_json` into the pure `inspect_arbiter` parser.
+  Patching the module runtime itself is not a supported credentialed API.
 - A parsed result always declares `UNVERIFIED_GITHUB_REF_SNAPSHOT_ONLY` and
   `evidence_authority=NONE`, `assignment_authority=NONE`,
   `dispatch_authority=NONE`, `wake_authority=NONE`. Even mutually consistent
