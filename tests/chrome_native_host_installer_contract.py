@@ -15,7 +15,7 @@ for token in (
 manifest_src = (root / "browser-extension/manifest.json").read_text(encoding="utf-8")
 assert "nativeMessaging" not in manifest_src
 assert "wrangler deploy" not in text and "gh workflow run" not in text
-for token in ('remote get-url origin', 'git fetch --quiet --no-tags origin',
+for token in ('remote get-url origin', 'fetch --quiet --no-tags origin',
               'refs/remotes/origin/main', 'worktree is dirty',
               'source must run from main', 'trusted jan2xo/bke-worker repository'):
     assert token in text, token
