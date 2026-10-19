@@ -58,6 +58,7 @@ discover_origin(){
  printf '%s' "$v"
 }
 if [[ "$mode" != rollback ]]; then origin="$(discover_origin)"; fi
+file_identity(){ stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1" 2>/dev/null; }
 secure_file(){
  local p="$1" max="$2" mode owner size
  [[ "$p" = /* && -f "$p" && ! -L "$p" ]] || return 1
@@ -137,23 +138,31 @@ install_host(){
   fail "refusing to overwrite conflicting registration, launcher, policy, or transaction."
  fi
  local stage_manifest stage_launcher stage_entry stage_host stage_framing stage_policy stage_state
- stage_manifest="" stage_launcher="" stage_entry="" stage_host="" stage_framing="" stage_policy="" stage_state=""
- local committed=0
- local created=()
- stage_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-host.XXXXXX")"
- stage_launcher="$(mktemp "$INSTALL_DIR/.bke-launcher.XXXXXX")"
- stage_entry="$(mktemp "$INSTALL_DIR/.bke-entry.XXXXXX")"
- stage_policy="$(mktemp "$INSTALL_DIR/.bke-policy.XXXXXX")"
- stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"
- cleanup(){
-  local rc=$?
-  if ((rc!=0&&committed==0));then
-   rm -f -- "${stage_manifest:-}" "${stage_launcher:-}" "${stage_entry:-}" "${stage_host:-}" "${stage_framing:-}" "${stage_policy:-}" "${stage_state:-}"
-   # Every path created by this transaction is tracked at the exact successful no-clobber link.
-   for p in "${created[@]:-}";do [[ -n "$p" ]]&&rm -f -- "$p";done
+ TX_COMMITTED=0
+ TX_CREATED_PATHS=()
+ TX_CREATED_IDS=()
+ TX_STAGE_MANIFEST="" TX_STAGE_LAUNCHER="" TX_STAGE_ENTRY="" TX_STAGE_HOST="" TX_STAGE_FRAMING="" TX_STAGE_POLICY="" TX_STAGE_STATE=""
+ stage_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-host.XXXXXX")"; TX_STAGE_MANIFEST="$stage_manifest"
+ stage_launcher="$(mktemp "$INSTALL_DIR/.bke-launcher.XXXXXX")"; TX_STAGE_LAUNCHER="$stage_launcher"
+ stage_entry="$(mktemp "$INSTALL_DIR/.bke-entry.XXXXXX")"; TX_STAGE_ENTRY="$stage_entry"
+ stage_host="$(mktemp "$INSTALL_DIR/.bke-host-module.XXXXXX")"; TX_STAGE_HOST="$stage_host"
+ stage_framing="$(mktemp "$INSTALL_DIR/.bke-framing-module.XXXXXX")"; TX_STAGE_FRAMING="$stage_framing"
+ stage_policy="$(mktemp "$INSTALL_DIR/.bke-policy.XXXXXX")"; TX_STAGE_POLICY="$stage_policy"
+ stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"; TX_STAGE_STATE="$stage_state"
+ cleanup_install(){
+  local rc=$? idx path identity
+  if ((rc!=0 && TX_COMMITTED==0));then
+   rm -f -- "$TX_STAGE_MANIFEST" "$TX_STAGE_LAUNCHER" "$TX_STAGE_ENTRY" "$TX_STAGE_HOST" "$TX_STAGE_FRAMING" "$TX_STAGE_POLICY" "$TX_STAGE_STATE"
+   # Delete only targets whose device/inode still matches the no-clobber link created by this transaction.
+   for ((idx=0; idx<${#TX_CREATED_PATHS[@]}; idx++)); do
+    path="${TX_CREATED_PATHS[$idx]}"
+    [[ -f "$path" && ! -L "$path" ]] || continue
+    identity="$(file_identity "$path" 2>/dev/null || true)"
+    if [[ -n "$identity" && "$identity" == "${TX_CREATED_IDS[$idx]}" ]];then rm -f -- "$path";fi
+   done
   fi
  }
- trap cleanup EXIT
+ trap cleanup_install EXIT
  "$NODE_BIN" - "$stage_launcher" "$NODE_BIN" <<'NODE'
 import {writeFileSync} from"node:fs";
 const[p,node]=process.argv.slice(2),q=JSON.stringify(node);
@@ -174,11 +183,16 @@ writeFileSync(p,JSON.stringify(s)+"\n",{mode:0o600,flag:"w"});
 NODE
  # Install all payload files by no-clobber hard link; register the manifest last.
  for spec in "$stage_launcher:$LAUNCHER" "$stage_entry:$INSTALLED_ENTRY" "$stage_host:$INSTALLED_HOST" "$stage_framing:$INSTALLED_FRAMING" "$stage_policy:$INSTALLED_POLICY" "$stage_state:$STATE";do
-  src="${spec%%:*}";dst="${spec#*:}";ln -- "$src" "$dst"||fail "destination appeared during install; refusing overwrite.";rm -- "$src";created+=("$dst")
+  src="${spec%%:*}";dst="${spec#*:}"
+  ln -- "$src" "$dst"||fail "destination appeared during install; refusing overwrite."
+  TX_CREATED_PATHS+=("$dst"); TX_CREATED_IDS+=("$(file_identity "$dst")")
+  rm -- "$src"
  done
- ln -- "$stage_manifest" "$MANIFEST"||fail "manifest destination appeared during install; refusing overwrite.";rm -- "$stage_manifest";created+=("$MANIFEST")
+ ln -- "$stage_manifest" "$MANIFEST"||fail "manifest destination appeared during install; refusing overwrite."
+ TX_CREATED_PATHS+=("$MANIFEST"); TX_CREATED_IDS+=("$(file_identity "$MANIFEST")")
+ rm -- "$stage_manifest"
  verify
- committed=1;trap - EXIT
+ TX_COMMITTED=1;trap - EXIT
  pass "registration prepared; no browser launched and no extension permission granted."
 }
 rollback(){
