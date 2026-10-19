@@ -59,8 +59,8 @@ fi
 valid_origin(){ [[ "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]; }
 origin="${BKE_NATIVE_HOST_EXTENSION_ORIGIN:-}"
 mode="${1:-inspect}"
-[[ $# -le 1 ]] || fail "usage: bash scripts/prepare-chrome-native-host.sh [inspect|install|verify|rollback]"
-case "$mode" in inspect|install|verify|rollback) ;; *) fail "unsupported mode: $mode";; esac
+[[ $# -le 1 ]] || fail "usage: bash scripts/prepare-chrome-native-host.sh [inspect|dry-run|install|verify|rollback]"
+case "$mode" in inspect|dry-run|install|verify|rollback) ;; *) fail "unsupported mode: $mode";; esac
 discover_origin(){
  local v="$origin"
  if [[ -z "$v" ]]; then [[ -t 0 ]] || fail "extension ID cannot be inferred from source; supply it interactively."; printf '%s' 'Chrome extension origin (chrome-extension:// plus exactly 32 letters a-p): ' >&2; IFS= read -r v || fail "no origin supplied."; fi
@@ -283,4 +283,4 @@ NODE
  rm -- "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$STATE"
  pass "removed only byte-identical installer-owned artifacts."
 }
-case "$mode" in inspect)inspect;;install)install_host;;verify)verify;;rollback)rollback;;esac
+case "$mode" in inspect|dry-run)inspect;;install)install_host;;verify)verify;;rollback)rollback;;esac
