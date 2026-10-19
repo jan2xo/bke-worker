@@ -36,17 +36,17 @@ async function parentsAreSafe(p,uid){
   }
   fail();
 }
-async function safeRead(p,limit,uid){
+async function safeRead(p,limit,uid,executable=false){
   if(!canonical(p))fail();
   await parentsAreSafe(p,uid);
   const before=await lstat(p);
   if(!before.isFile()||before.isSymbolicLink()||before.uid!==uid||
-    (before.mode&0o022)!==0||before.size<1||before.size>limit)fail();
+    (before.mode&0o022)!==0||(executable&&(before.mode&0o100)===0)||before.size<1||before.size>limit)fail();
   if(!constants.O_NOFOLLOW)fail();
   const h=await open(p,constants.O_RDONLY|constants.O_NOFOLLOW);
   try{
     const st=await h.stat();
-    if(!st.isFile()||st.uid!==uid||(st.mode&0o022)!==0||st.size<1||st.size>limit||
+    if(!st.isFile()||st.uid!==uid||(st.mode&0o022)!==0||(executable&&(st.mode&0o100)===0)||st.size<1||st.size>limit||
       st.ino!==before.ino||st.dev!==before.dev)fail();
     const bytes=await h.readFile();
     if(bytes.length!==st.size)fail();
@@ -89,7 +89,7 @@ export async function verifyOwnerPinnedChromeInstallation({
     }
     const all={};
     for(const [k,p]of Object.entries(paths)){
-      const bytes=await safeRead(p,k==="policy"?4096:16384,uid);
+      const bytes=await safeRead(p,k==="policy"?4096:16384,uid,k==="launcher");
       const hash=digest(bytes);
       if(hash!==st.sha256[k]||hash!==ownerReviewedSha256[k])fail();
       all[k]=bytes;
