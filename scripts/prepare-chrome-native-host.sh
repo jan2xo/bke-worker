@@ -180,7 +180,13 @@ install_host(){
   local answer;IFS= read -r answer||fail "missing acknowledgement."
   [[ "$answer" == "INSTALL USER-LEVEL CHROME HOST" ]]||fail "installation not acknowledged."
  fi
- local p
+ local p link_index=0
+ if [[ ! -e "$POLICY" && ! -L "$POLICY" && "$TESTING" -eq 0 ]]; then
+  [[ -t 0 ]] || fail "owner-pinned policy is missing; set BKE_NATIVE_HOST_POLICY_PATH or rerun interactively."
+  printf 'Existing absolute owner-policy path [%s]: ' "$POLICY" >&2
+  local policy_answer; IFS= read -r policy_answer || fail "no policy path supplied."
+  [[ -n "$policy_answer" ]] && POLICY="$policy_answer"
+ fi
  # Reject a symlinked or unsafe ancestor anywhere under the chosen user-state roots.
  for p in "$(dirname -- "$CHROME_HOST_DIR")" "$INSTALL_DIR" "$STATE_DIR"; do
    local walk="$p"
