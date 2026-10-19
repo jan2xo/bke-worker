@@ -5,14 +5,12 @@ umask 077
 readonly HOST_NAME="com.bke.worker.native_host"
 readonly HOST_ENTRY_REL="browser-extension/native-host/entry.mjs"
 readonly MAX_POLICY_BYTES=4096
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null)" || { echo "FAIL-CLOSED: entrypoint must be in the repository." >&2; exit 2; }
 ROOT_DIR="$(cd -- "$ROOT_DIR" && pwd -P)"
 fail(){ printf 'FAIL-CLOSED: %s\n' "$1" >&2; exit 2; }
 pass(){ printf 'PASS: %s\n' "$1"; }
 note(){ printf 'INFO: %s\n' "$1"; }
-
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported operating system: $OS";; esac
 command -v node >/dev/null 2>&1 || fail "Node.js is required."
@@ -25,7 +23,6 @@ HOST_ENTRY="$ROOT_DIR/$HOST_ENTRY_REL"
 HOST_DIR="$(cd -- "$(dirname -- "$HOST_ENTRY")" && pwd -P)"
 [[ "$HOST_DIR" = "$ROOT_DIR/browser-extension/native-host" ]] || fail "native host canonical path mismatch."
 for f in "$HOST_DIR/entry.mjs" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do [[ -f "$f" && ! -L "$f" ]] || fail "native host source set incomplete or symlinked."; done
-
 case "$OS" in
  Darwin) CHROME_HOST_DIR="${HOME%/}/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
  Linux) CHROME_HOST_DIR="${XDG_CONFIG_HOME:-${HOME%/}/.config}/google-chrome/NativeMessagingHosts";;
@@ -39,13 +36,13 @@ STATE_HOME="${HOME%/}/.bke-native-host-installer"
 STATE_PATH="$STATE_HOME/transaction.json"
 TESTING=0
 if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
-  [[ "$BKE_NATIVE_HOST_TEST_ROOT" = /* && -d "$BKE_NATIVE_HOST_TEST_ROOT" && ! -L "$BKE_NATIVE_HOST_TEST_ROOT" ]] || fail "test root must already exist as an absolute non-symlink directory."
-  TEST_ROOT="$(cd -- "$BKE_NATIVE_HOST_TEST_ROOT" && pwd -P)"
-  CHROME_HOST_DIR="$TEST_ROOT/chrome/NativeMessagingHosts"; CHROME_HOST_MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
-  LAUNCHER_HOME="$TEST_ROOT/launcher"; LAUNCHER_PATH="$LAUNCHER_HOME/launch-native-host.sh"
-  POLICY_HOME="$TEST_ROOT/policy"; POLICY_PATH="$TEST_ROOT/policy/owner-policy.json"
-  STATE_HOME="$TEST_ROOT/state"; STATE_PATH="$STATE_HOME/transaction.json"
-  TESTING=1
+ [[ "$BKE_NATIVE_HOST_TEST_ROOT" = /* && -d "$BKE_NATIVE_HOST_TEST_ROOT" && ! -L "$BKE_NATIVE_HOST_TEST_ROOT" ]] || fail "test root must already exist as an absolute non-symlink directory."
+ TEST_ROOT="$(cd -- "$BKE_NATIVE_HOST_TEST_ROOT" && pwd -P)"
+ CHROME_HOST_DIR="$TEST_ROOT/chrome/NativeMessagingHosts"; CHROME_HOST_MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
+ LAUNCHER_HOME="$TEST_ROOT/launcher"; LAUNCHER_PATH="$LAUNCHER_HOME/launch-native-host.sh"
+ POLICY_HOME="$TEST_ROOT/policy"; POLICY_PATH="$TEST_ROOT/policy/owner-policy.json"
+ STATE_HOME="$TEST_ROOT/state"; STATE_PATH="$STATE_HOME/transaction.json"
+ TESTING=1
 fi
 valid_origin(){ [[ "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]; }
 secure_file(){
@@ -74,11 +71,7 @@ mode="${1:-inspect}"
 case "$mode" in inspect|install|verify|rollback) ;; *) fail "unsupported mode: $mode";; esac
 discover_origin(){
  local found="$origin"
- if [[ -z "$found" ]]; then
-  [[ -t 0 ]] || fail "extension origin not discoverable in non-interactive mode."
-  printf '%s' 'Chrome extension origin (chrome-extension:// plus 32 letters a-p): ' >&2
-  IFS= read -r found || fail "no origin supplied."
- fi
+ if [[ -z "$found" ]]; then [[ -t 0 ]] || fail "extension origin not discoverable in non-interactive mode."; printf '%s' 'Chrome extension origin (chrome-extension:// plus 32 letters a-p): ' >&2; IFS= read -r found || fail "no origin supplied."; fi
  valid_origin "$found" || fail "malformed Chrome extension origin."
  printf '%s' "$found"
 }
@@ -90,7 +83,7 @@ check_policy(){
  secure_file "$policy" "$MAX_POLICY_BYTES" || fail "owner policy owner/mode/size validation failed."
  "$NODE_BIN" --input-type=module - "$HOST_DIR/host.mjs" "$policy" "$expected" <<'NODE' || fail "owner policy does not satisfy existing host contract."
 import {readFileSync} from "node:fs"; import {pathToFileURL} from "node:url";
-const [host, p, origin]=process.argv.slice(2);
+const [host,p,origin]=process.argv.slice(2);
 const {validNativeHostPolicy}=await import(pathToFileURL(host).href);
 const raw=readFileSync(p,"utf8"); if(Buffer.byteLength(raw)>4096)process.exit(1);
 const obj=JSON.parse(raw); if(!validNativeHostPolicy(obj)||obj.allowed_origin!==origin)process.exit(1);
@@ -98,6 +91,7 @@ NODE
 }
 manifest_matches(){
  [[ -f "$CHROME_HOST_MANIFEST" && ! -L "$CHROME_HOST_MANIFEST" ]] || return 1
+ secure_file "$CHROME_HOST_MANIFEST" 16384 || return 1
  "$NODE_BIN" - "$CHROME_HOST_MANIFEST" "$LAUNCHER_PATH" "$origin" <<'NODE'
 import {readFileSync} from "node:fs";
 const [p,path,origin]=process.argv.slice(2); let x;
@@ -115,7 +109,6 @@ inspect(){
 }
 verify(){
  manifest_matches || fail "manifest missing/unsafe/mismatched."
- secure_file "$CHROME_HOST_MANIFEST" 16384 || fail "manifest mode/owner validation failed."
  secure_file "$LAUNCHER_PATH" 16384 || fail "launcher mode/owner validation failed."
  secure_file "$POLICY_PATH" "$MAX_POLICY_BYTES" || fail "policy mode/owner validation failed."
  [[ -x "$LAUNCHER_PATH" ]] || fail "launcher is not executable."
@@ -130,6 +123,9 @@ install_host(){
   local answer; IFS= read -r answer || fail "confirmation missing."
   [[ "$answer" = "INSTALL USER-LEVEL CHROME HOST" ]] || fail "installation not acknowledged."
  fi
+ # Refuse symlinked parents anywhere the installer would rely on.
+ local parent; parent="$(dirname -- "$CHROME_HOST_DIR")"
+ while [[ "$parent" != "/" ]]; do [[ ! -L "$parent" ]] || fail "symlinked parent directory is not supported."; parent="$(dirname -- "$parent")"; done
  for d in "$CHROME_HOST_DIR" "$LAUNCHER_HOME" "$POLICY_HOME" "$STATE_HOME"; do ensure_dir "$d"; done
  [[ -f "$POLICY_PATH" && ! -L "$POLICY_PATH" ]] || fail "owner-pinned policy must already exist at $POLICY_PATH; installer will not invent trust pins."
  check_policy "$POLICY_PATH" "$origin"
@@ -138,21 +134,33 @@ install_host(){
   fail "refusing to overwrite unknown registration, launcher, policy copy, or transaction state."
  fi
  local staged_manifest staged_launcher staged_entry staged_policy staged_state node_escape
- local created=()
- cleanup(){ local rc=$?; if (( rc != 0 )); then for p in "${created[@]:-}"; do [[ -n "$p" ]] && rm -f -- "$p"; done; fi; }
- trap cleanup EXIT
+ local committed=0
  staged_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-manifest.XXXXXX")"
  staged_launcher="$(mktemp "$LAUNCHER_HOME/.bke-launcher.XXXXXX")"
  staged_entry="$(mktemp "$LAUNCHER_HOME/.bke-entry.XXXXXX")"
  staged_policy="$(mktemp "$LAUNCHER_HOME/.bke-policy.XXXXXX")"
  staged_state="$(mktemp "$STATE_HOME/.bke-state.XXXXXX")"
- node_escape="$("$NODE_BIN" -p 'JSON.stringify(process.argv[1])' -- "$NODE_BIN")"
- # NODE variable is shell syntax; JSON escaping keeps paths with spaces correct.
+ cleanup(){
+   local rc=$?
+   if (( rc != 0 && committed == 0 )); then
+     rm -f -- "${staged_manifest:-}" "${staged_launcher:-}" "${staged_entry:-}" "${staged_policy:-}" "${staged_state:-}"
+     for p in "$CHROME_HOST_MANIFEST" "$LAUNCHER_PATH" "$LAUNCHER_HOME/entry.mjs" "$LAUNCHER_HOME/owner-policy.json" "$STATE_PATH"; do
+       if [[ -f "$p" && ! -L "$p" ]]; then
+         if "$NODE_BIN" - "$p" "$origin" <<'NODE'
+import {readFileSync} from "node:fs";
+const [p,origin]=process.argv.slice(2); const t=readFileSync(p,"utf8");
+process.exit(t.includes(origin) && (t.includes("prepare-chrome-native-host.sh")||t.includes("BKE Worker local native host")||t.includes("owner-policy.json")) ? 0 : 1);
+NODE
+         then rm -f -- "$p"; fi
+       fi
+     done
+   fi
+ }
+ trap cleanup EXIT
  "$NODE_BIN" - "$staged_launcher" "$NODE_BIN" <<'NODE'
 import {writeFileSync} from "node:fs";
-const [p,node]=process.argv.slice(2);
-const q=JSON.stringify(node);
-writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]] || exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]] || exit 2\nexec "$NODE" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
+const [p,node]=process.argv.slice(2),q=JSON.stringify(node);
+writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE_BIN=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]] || exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]] || exit 2\nexec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
 NODE
  cp -- "$HOST_ENTRY" "$staged_entry"; cp -- "$POLICY_PATH" "$staged_policy"
  chmod 700 "$staged_launcher"; chmod 600 "$staged_entry" "$staged_policy"
@@ -166,13 +174,15 @@ import {writeFileSync} from "node:fs";
 const [p,manifest,launcher,entry,policy,origin]=process.argv.slice(2);
 writeFileSync(p,JSON.stringify({version:1,host:"com.bke.worker.native_host",manifest,launcher,entry,policy,origin,created_by:"prepare-chrome-native-host.sh"})+"\n",{mode:0o600,flag:"w"});
 NODE
- # Record rollback targets before exposure. Atomic same-filesystem renames.
- created+=("$CHROME_HOST_MANIFEST" "$LAUNCHER_PATH" "$LAUNCHER_HOME/entry.mjs" "$LAUNCHER_HOME/owner-policy.json" "$STATE_PATH")
- mv -- "$staged_launcher" "$LAUNCHER_PATH"
- mv -- "$staged_entry" "$LAUNCHER_HOME/entry.mjs"
- mv -- "$staged_policy" "$LAUNCHER_HOME/owner-policy.json"
- mv -- "$staged_state" "$STATE_PATH"
- mv -- "$staged_manifest" "$CHROME_HOST_MANIFEST"
+ committed=0
+ # Use no-clobber hard-link commits within each filesystem. Rollback manifest
+ # marker is written last: before it exists, cleanup removes partial artifacts.
+ for pair in "$staged_launcher:$LAUNCHER_PATH" "$staged_entry:$LAUNCHER_HOME/entry.mjs" "$staged_policy:$LAUNCHER_HOME/owner-policy.json" "$staged_state:$STATE_PATH" "$staged_manifest:$CHROME_HOST_MANIFEST"; do
+   src="${pair%%:*}"; dst="${pair#*:}"
+   ln -- "$src" "$dst" || fail "destination appeared during preparation; no overwrite attempted."
+   rm -- "$src"
+ done
+ committed=1
  trap - EXIT
  verify
  pass "registration prepared; no browser launched and no extension permission granted."
