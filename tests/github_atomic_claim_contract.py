@@ -97,6 +97,23 @@ class AtomicClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(ClaimDenied, "^" + code + "$"):
             fn()
 
+    def assert_no_authority(self, receipt):
+        self.assertEqual(receipt["state"], "UNVERIFIED_CALLBACK_MODEL_ONLY")
+        for field in ("evidence_authority", "assignment_authority",
+                      "dispatch_authority", "wake_authority"):
+            self.assertEqual(receipt[field], "NONE")
+        self.assertNotIn("authorized", receipt)
+        self.assertNotIn("delivery_token", receipt)
+
+    def publish_with(self, git, pending, **changes):
+        callbacks = dict(
+            expected_head=START, proposed_manifest=pending,
+            create_child_commit=git.child, inspect_commit=git.inspect,
+            update_ref_nonforce=git.update, read_ref=git.read_ref,
+        )
+        callbacks.update(changes)
+        return publish_by_fast_forward(**callbacks)
+
     def test_reservation_is_source_only_and_blocks_same_worker_or_pr(self):
         m, key = reserve()
         self.assertEqual(len(m["claims"]), 1)
@@ -154,7 +171,7 @@ class AtomicClaimTests(unittest.TestCase):
         current = git.inspect(git.head)["manifest"]
         combined, _ = reserve(current, preflight("worker-b", number=116))
         receipt = git.publish(git.head, combined)
-        self.assertEqual(receipt["state"], "RESERVATION_RECORDED_ONLY")
+        self.assertEqual(receipt["state"], "UNVERIFIED_CALLBACK_MODEL_ONLY")
         self.assertEqual(receipt["assignment_authority"], "NONE")
         self.assertEqual(receipt["dispatch_authority"], "NONE")
         self.assertEqual(receipt["wake_authority"], "NONE")
@@ -259,11 +276,11 @@ class AtomicClaimTests(unittest.TestCase):
         git = FakeGitRef()
         initial, claim_id = reserve()
         first = git.publish(START, initial)
-        self.assertEqual(first["state"], "RESERVATION_RECORDED_ONLY")
+        self.assertEqual(first["state"], "UNVERIFIED_CALLBACK_MODEL_ONLY")
         fenced = fence_uncertain_delivery(
             manifest=initial, claim_id=claim_id, now_ms=NOW + 1)
         second = git.publish(git.head, fenced)
-        self.assertEqual(second["state"], "RESERVATION_RECORDED_ONLY")
+        self.assertEqual(second["state"], "UNVERIFIED_CALLBACK_MODEL_ONLY")
         self.assertEqual(
             git.inspect(git.head)["manifest"]["claims"][0]["state"],
             "DELIVERY_UNCERTAIN")
@@ -323,6 +340,101 @@ class AtomicClaimTests(unittest.TestCase):
         git.commits[START] = {"bad": "commit"}
         self.denied("CLAIM_PARENT_INVALID",
                     lambda: git.publish(START, planned))
+
+    def test_forged_coherent_callbacks_cannot_grant_authority(self):
+        # Every callback lies consistently and there is NO actual remote ref.
+        # No pure function can cryptographically detect this. Its result must
+        # never be interpreted as a verified GitHub write or worker lease.
+        proposed, _ = reserve()
+        child = "f" * 40
+        observed_head = [START, child]
+        fake_writes = []
+        def read_ref():
+            return observed_head.pop(0)
+        def inspect(sha):
+            if sha == START:
+                return {"parents": [], "manifest": manifest()}
+            if sha == child:
+                return {"parents": [START], "manifest": deepcopy(proposed)}
+            raise AssertionError("Unexpected commit")
+        def create(parent, value):
+            self.assertEqual(parent, START)
+            self.assertEqual(value, proposed)
+            return child
+        def claim_success_without_remote_write(sha):
+            fake_writes.append(sha)
+            return True
+        receipt = publish_by_fast_forward(
+            expected_head=START, proposed_manifest=proposed,
+            create_child_commit=create, inspect_commit=inspect,
+            update_ref_nonforce=claim_success_without_remote_write,
+            read_ref=read_ref,
+        )
+        self.assertEqual(fake_writes, [child])
+        self.assert_no_authority(receipt)
+        self.assertEqual(receipt["arbiter_head"], child)
+        # The fake 'success' above is deliberately not evidence of GitHub.
+
+    def test_untrusted_initial_ref_read_rejected_when_stale(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        self.denied("CLAIM_ARBITER_MOVED", lambda: self.publish_with(
+            git, pending, read_ref=lambda: "f" * 40))
+        self.assertEqual(git.head, START)
+
+    def test_untrusted_child_create_and_inspect_lies_rejected(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        self.denied("CLAIM_CHILD_INVALID", lambda: self.publish_with(
+            git, pending, create_child_commit=lambda _head, _value: START))
+        def forged_child(_head, _value):
+            return "f" * 40
+        def forged_inspect(sha):
+            if sha == START:
+                return git.inspect(START)
+            return {"parents": ["e" * 40], "manifest": pending}
+        self.denied("CLAIM_CHILD_INVALID", lambda: self.publish_with(
+            git, pending, create_child_commit=forged_child,
+            inspect_commit=forged_inspect))
+        self.assertEqual(git.head, START)
+
+    def test_untrusted_parent_inspection_cannot_authorize_bad_shape(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        def fraudulent_parent(sha):
+            if sha == START:
+                return {"parents": [], "manifest": {"version": 1, "sequence": 2,
+                    "claims": []}}
+            return git.inspect(sha)
+        self.denied("CLAIM_TRANSITION_INVALID", lambda: self.publish_with(
+            git, pending, inspect_commit=fraudulent_parent))
+        self.assertEqual(git.head, START)
+
+    def test_untrusted_update_claims_success_without_ref_move(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        self.denied("CLAIM_REF_UPDATE_UNCERTAIN", lambda: self.publish_with(
+            git, pending, update_ref_nonforce=lambda _head: True))
+        self.assertEqual(git.head, START)
+
+    def test_untrusted_update_false_or_exception_fails_closed(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        self.denied("CLAIM_REF_UPDATE_UNCERTAIN", lambda: self.publish_with(
+            git, pending, update_ref_nonforce=lambda _head: False))
+        def unavailable(_head):
+            raise OSError("private provider error")
+        self.denied("CLAIM_REF_UPDATE_UNCERTAIN", lambda: self.publish_with(
+            git, pending, update_ref_nonforce=unavailable))
+        self.assertEqual(git.head, START)
+
+    def test_untrusted_post_update_ref_read_cannot_verify_commit(self):
+        git = FakeGitRef()
+        pending, _ = reserve()
+        # The fake ref *does* advance; a lying stale reread cannot verify it.
+        self.denied("CLAIM_REF_UPDATE_UNCERTAIN", lambda: self.publish_with(
+            git, pending, read_ref=lambda: START))
+        self.assertNotEqual(git.head, START)
 
     def test_replays_do_not_create_second_claim_or_prompt(self):
         git = FakeGitRef()
