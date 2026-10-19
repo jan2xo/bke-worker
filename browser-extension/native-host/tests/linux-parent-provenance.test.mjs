@@ -17,11 +17,11 @@ const config=()=>({
   ownerPinnedHostExecutablePath:host,
   expectedUid:process.getuid?.(),
 });
-async function invoke(c){
+async function invoke(c,diagnostics=false){
  return await new Promise((resolve,reject)=>{
    // Keep root-installed Bash alive as the immediate OS parent.
    const cp=spawn("/usr/bin/bash",["-c",'"$1" "$2"; exit $?',"bke-test",process.execPath,fixture],
-      {stdio:["pipe","pipe","pipe"]});
+      {stdio:["pipe","pipe","pipe"],env:{...process.env,BKE_PRIVATE_PROC_TEST_DIAGNOSTICS:diagnostics?"1":"0"}});
    let stdout="",stderr="";
    cp.stdout.setEncoding("utf8");
    cp.stderr.setEncoding("utf8");
@@ -33,7 +33,7 @@ async function invoke(c){
  });
 }
 test("real /proc kernel: host's immediate hardened Bash parent matches independently pinned SHA256", {skip:!linux},async()=>{
- const r=await invoke(config());
+ const r=await invoke(config(),true);
  assert.equal(r.status,0,JSON.stringify(r));
  assert.equal(r.stderr,"");
  assert.deepEqual(JSON.parse(r.stdout),{
