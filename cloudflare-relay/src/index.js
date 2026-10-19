@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { fulfillCommandCenterAdminRead, fulfillCommandCenterAdminCatalog } from "./admin-broker.js";
+import { fulfillCommandCenterAdminRead, fulfillCommandCenterAdminCatalog, fulfillCommandCenterAdminAssignments } from "./admin-broker.js";
 import {
   mintInstallationToken,
   verifyActionsOidcToken,
@@ -344,6 +344,9 @@ export class CommandCenterReadBroker extends WorkerEntrypoint {
   }
   async listApprovedGitHubRepositories(request) {
     return fulfillCommandCenterAdminCatalog(this.env, request);
+  }
+  async listVerifiedWorkerAssignments(request) {
+    return fulfillCommandCenterAdminAssignments(this.env, request);
   }
 }
 
