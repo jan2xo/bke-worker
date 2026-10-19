@@ -9,7 +9,7 @@ for token in (
     'HOST_NAME="bke.worker.desktop"', 'Darwin|Linux)', 'unsupported OS:',
     'entry.mjs', 'host.mjs', 'validNativeHostPolicy', 'allowed_origins',
     'refusing to overwrite conflicting registration', 'FAIL-CLOSED', 'rollback)',
-    'BKE_NATIVE_HOST_TEST_ROOT', 'INSTALL USER-LEVEL CHROME HOST',
+    'BKE_NATIVE_HOST_TEST_ROOT', 'INSTALL USER-LEVEL CHROME HOST', 'SCRIPT_PATH', 'canonical tracked entrypoint',
 ):
     assert token in text, token
 manifest_src = (root / "browser-extension/manifest.json").read_text(encoding="utf-8")
@@ -42,6 +42,13 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     registration_dir=sandbox/"xdg/google-chrome/NativeMessagingHosts"
     manifest_path=registration_dir/"bke.worker.desktop.json"
     cmd=["bash",str(fake/"scripts/prepare-chrome-native-host.sh")]
+    # A symlink alias must not execute the entrypoint outside its canonical tracked path.
+    alternate=fake/"scripts/alternate-entry.sh"; alternate.symlink_to("prepare-chrome-native-host.sh")
+    alias_env={**os.environ,"HOME":str(home),
+               "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
+    r=subprocess.run(["bash",str(alternate),"inspect"],cwd="/",env=alias_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "canonical tracked entrypoint" in r.stderr
+    alternate.unlink()
     # Outside test mode, an untrusted remote is rejected before even read-only inspection.
     provenance_env={**os.environ,"HOME":str(home),
                     "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
@@ -186,6 +193,17 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     # Matching second install is an idempotent no-op.
     r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode==0 and "idempotent no-op" in r.stdout,(r.stdout,r.stderr)
+    # A modified launcher must fail verification and never be treated as an idempotent registration.
+    original_launcher=launcher.read_bytes()
+    launcher.write_bytes(original_launcher+b"\n# tamper probe\n"); launcher.chmod(0o700)
+    r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "artifact hashes mismatch" in r.stderr,(r.stdout,r.stderr)
+    r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+    assert r.returncode!=0 and "refusing to overwrite conflicting" in r.stderr,(r.stdout,r.stderr)
+    assert manifest.exists()
+    launcher.write_bytes(original_launcher); launcher.chmod(0o700)
+    r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode==0,(r.stdout,r.stderr)
     # Changed module content makes rollback fail closed and preserves all artifacts.
     host_file=sandbox/"install/host.mjs"; original_host=host_file.read_bytes()
     host_file.write_bytes(original_host+b"\\n// tamper probe")
