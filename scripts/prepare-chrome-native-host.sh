@@ -87,14 +87,20 @@ safe_dir(){
  mode="$((8#$mode))"; (( (mode & 0022) == 0 ))
 }
 ensure_dir(){ local p="$1"; safe_dir "$p" || fail "unsafe directory or owner: $p"; if [[ ! -d "$p" ]]; then mkdir -p -- "$p" || fail "cannot create directory"; chmod 700 "$p"; fi; safe_dir "$p" || fail "directory validation failed"; }
+SAFE_RUNTIME_REASON="unknown"
 safe_runtime(){
- local mode owner uid
- [[ "$NODE_BIN" = /* && -f "$NODE_BIN" && -x "$NODE_BIN" && ! -L "$NODE_BIN" ]] || return 1
- [[ "$(cd -- "$(dirname -- "$NODE_BIN")" && pwd -P)/$(basename -- "$NODE_BIN")" = "$NODE_BIN" ]] || return 1
- mode="$(stat -c '%a' "$NODE_BIN" 2>/dev/null || stat -f '%Lp' "$NODE_BIN" 2>/dev/null)" || return 1
- owner="$(stat -c '%u' "$NODE_BIN" 2>/dev/null || stat -f '%u' "$NODE_BIN" 2>/dev/null)" || return 1
- uid="$(id -u)"; [[ "$owner" = "$uid" || "$owner" = "0" ]] || return 1
- mode="$((8#$mode))"; (( (mode & 0022) == 0 ))
+ local mode owner uid canonical
+ if [[ "$NODE_BIN" != /* || ! -f "$NODE_BIN" || ! -x "$NODE_BIN" || -L "$NODE_BIN" ]]; then SAFE_RUNTIME_REASON="file-type-or-executable"; return 1; fi
+ canonical="$(cd -- "$(dirname -- "$NODE_BIN")" 2>/dev/null && pwd -P)/$(basename -- "$NODE_BIN")"
+ if [[ "$canonical" != "$NODE_BIN" ]]; then SAFE_RUNTIME_REASON="noncanonical-path"; return 1; fi
+ mode="$(stat -c '%a' "$NODE_BIN" 2>/dev/null || stat -f '%Lp' "$NODE_BIN" 2>/dev/null)" || { SAFE_RUNTIME_REASON="mode-stat"; return 1; }
+ owner="$(stat -c '%u' "$NODE_BIN" 2>/dev/null || stat -f '%u' "$NODE_BIN" 2>/dev/null)" || { SAFE_RUNTIME_REASON="owner-stat"; return 1; }
+ uid="$(id -u)"
+ if [[ "$owner" != "$uid" && "$owner" != "0" ]]; then SAFE_RUNTIME_REASON="unexpected-owner"; return 1; fi
+ mode="$((8#$mode))"
+ if (( (mode & 0022) != 0 )); then SAFE_RUNTIME_REASON="group-or-world-writable"; return 1; fi
+ SAFE_RUNTIME_REASON="ok"
+ return 0
 }
 safe_parent(){
  local p="$1" mode owner bits uid
@@ -124,7 +130,7 @@ const raw=readFileSync(policyPath,"utf8");if(Buffer.byteLength(raw)>4096)process
 const p=JSON.parse(raw);if(!validNativeHostPolicy(p)||p.allowed_origin!==origin)process.exit(1);
 NODE
 }
-safe_runtime || fail "Node executable ownership, permissions or canonical path invalid."
+safe_runtime || fail "Node executable validation failed ($SAFE_RUNTIME_REASON)."
 for source in "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
  secure_file "$source" 16384 || fail "native host source ownership, permissions or path invalid."
 done
