@@ -12,6 +12,8 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 ROOT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null)" || { echo "FAIL-CLOSED: repository root not found." >&2; exit 2; }
 ROOT_DIR="$(cd -- "$ROOT_DIR" && pwd -P)"
 fail(){ printf 'FAIL-CLOSED: %s\n' "$1" >&2; exit 2; }
+[[ -n "${HOME:-}" && "$HOME" = /* && -d "$HOME" ]] || fail "HOME must be an existing absolute directory."
+HOME="$(cd -- "$HOME" && pwd -P)" || fail "cannot canonicalize HOME."
 [[ ! -L "$SCRIPT_PATH" && "$SCRIPT_PATH" = "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" ]] || fail "must run the canonical tracked entrypoint path."
 pass(){ printf 'PASS: %s\n' "$1"; }
 note(){ printf 'INFO: %s\n' "$1"; }
@@ -21,8 +23,11 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_OS:-}" ]]; then
  OS="$BKE_NATIVE_HOST_TEST_OS"
 fi
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
-if [[ "$OS" = "Linux" && -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME" != /* ]]; then
- fail "XDG_CONFIG_HOME must be absolute on Linux."
+if [[ "$OS" = "Linux" && -n "${XDG_CONFIG_HOME:-}" ]]; then
+ [[ "$XDG_CONFIG_HOME" = /* ]] || fail "XDG_CONFIG_HOME must be absolute on Linux."
+ XDG_CONFIG_HOME="${XDG_CONFIG_HOME%/}"
+ [[ -n "$XDG_CONFIG_HOME" && "$XDG_CONFIG_HOME" != "/" ]] || fail "XDG_CONFIG_HOME cannot be filesystem root."
+ case "$XDG_CONFIG_HOME" in *"/../"*|*"/./"*|*"//"*) fail "XDG_CONFIG_HOME contains noncanonical path components.";; esac
 fi
 command -v node >/dev/null 2>&1 || fail "Node.js required."
 NODE_BIN="$(node -p 'require("node:fs").realpathSync(process.execPath)' 2>/dev/null)" || fail "could not resolve Node executable."
