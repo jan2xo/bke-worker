@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     unsupported_env={**env,"BKE_NATIVE_HOST_TEST_OS":"FreeBSD"}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=unsupported_env,capture_output=True,text=True)
     assert r.returncode!=0 and "unsupported OS: FreeBSD" in r.stderr
-    path_traversal_env={**env,"XDG_CONFIG_HOME":str(sandbox/"../escaped")}
+    path_traversal_env={**env,"XDG_CONFIG_HOME":str(sandbox/"..")}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=path_traversal_env,capture_output=True,text=True)
     assert r.returncode!=0 and "XDG_CONFIG_HOME" in r.stderr
     root_link=temp/"sandbox-link"; root_link.symlink_to(sandbox,target_is_directory=True)
