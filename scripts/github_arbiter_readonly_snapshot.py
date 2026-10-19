@@ -178,13 +178,23 @@ class GitHubAppArbiterReader:
     This class neither mints tokens nor verifies the caller's identity.
     No output from this adapter alone is assignment or session evidence.
     """
-    def __init__(self, scoped_installation_token: str, *, opener=None):
+    def __init__(self, scoped_installation_token: str):
+        """Never accept a caller-supplied HTTP opener with a bearer token.
+
+        The credentialed transport is owned by this module. Source-only
+        fixtures should inject response data into inspect_arbiter(fetch_json),
+        not receive credential-bearing requests via a public opener seam.
+        """
         if (type(scoped_installation_token) is not str or
                 not 10 <= len(scoped_installation_token) <= 1000 or
                 any(c.isspace() for c in scoped_installation_token)):
             _deny("ARBITER_APP_TOKEN_REQUIRED")
         self.__token = scoped_installation_token
-        self.__opener = opener if opener is not None else urllib.request.build_opener(_NoRedirect())
+        # Forbid environment-selected HTTP proxies and all HTTP redirects.
+        # HTTPS uses urllib's normal certificate/hostname verification.
+        self.__opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoRedirect()
+        )
 
     def _fetch(self, path: str) -> Any:
         if (type(path) is not str or not path.startswith(_BASE_PATH) or
@@ -192,7 +202,8 @@ class GitHubAppArbiterReader:
                     re.escape(_BASE_PATH) + r"(?:commits|trees|blobs)/[a-f0-9]{40}", path
                 ))):
             _deny("ARBITER_PATH_DENIED")
-        req = urllib.request.Request(API_ORIGIN + path, headers={
+        expected_url = API_ORIGIN + path
+        req = urllib.request.Request(expected_url, headers={
             "Accept": "application/vnd.github+json",
             "Authorization": "Bearer " + self.__token,
             "User-Agent": "bke-arbiter-ref-inspector",
@@ -200,6 +211,10 @@ class GitHubAppArbiterReader:
         }, method="GET")
         try:
             with self.__opener.open(req, timeout=15) as response:
+                # Defense in depth; rejects unexpected/mismatched effective
+                # URL before parsing the response as trusted GitHub content.
+                if response.geturl() != expected_url:
+                    _deny("ARBITER_REDIRECT_DENIED")
                 if response.getcode() != 200:
                     _deny("ARBITER_PROVIDER_UNAVAILABLE")
                 data = response.read(MAX_JSON_BYTES + 1)
