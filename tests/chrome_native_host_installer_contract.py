@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert r.returncode!=0 and "policy" in r.stderr.lower(),(r.stdout,r.stderr)
     assert not (sandbox/"chrome/NativeMessagingHosts/com.bke.worker.native_host.json").exists()
     # Conflicts are not overwritten.
-    chrome=sandbox/"chrome/NativeMessagingHosts"; chrome.mkdir(parents=True,mode=0o700)
+    chrome=sandbox/"chrome/NativeMessagingHosts"; chrome.mkdir(parents=True,exist_ok=True,mode=0o700)
     conflict=chrome/"com.bke.worker.native_host.json"; conflict.write_text('{"unrelated":true}'); conflict.chmod(0o600)
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode!=0 and conflict.read_text()=='{"unrelated":true}'
