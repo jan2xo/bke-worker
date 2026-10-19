@@ -88,6 +88,8 @@ safe_dir(){
 }
 ensure_dir(){ local p="$1"; safe_dir "$p" || fail "unsafe directory or owner: $p"; if [[ ! -d "$p" ]]; then mkdir -p -- "$p" || fail "cannot create directory"; chmod 700 "$p"; fi; safe_dir "$p" || fail "directory validation failed"; }
 SAFE_RUNTIME_REASON="unknown"
+SAFE_RUNTIME_MODE="unknown"
+SAFE_RUNTIME_OWNER="unknown"
 safe_runtime(){
  local mode owner uid canonical
  if [[ "$NODE_BIN" != /* || ! -f "$NODE_BIN" || ! -x "$NODE_BIN" || -L "$NODE_BIN" ]]; then SAFE_RUNTIME_REASON="file-type-or-executable"; return 1; fi
@@ -95,6 +97,7 @@ safe_runtime(){
  if [[ "$canonical" != "$NODE_BIN" ]]; then SAFE_RUNTIME_REASON="noncanonical-path"; return 1; fi
  mode="$(stat -c '%a' "$NODE_BIN" 2>/dev/null || stat -f '%Lp' "$NODE_BIN" 2>/dev/null)" || { SAFE_RUNTIME_REASON="mode-stat"; return 1; }
  owner="$(stat -c '%u' "$NODE_BIN" 2>/dev/null || stat -f '%u' "$NODE_BIN" 2>/dev/null)" || { SAFE_RUNTIME_REASON="owner-stat"; return 1; }
+ SAFE_RUNTIME_MODE="$mode"; SAFE_RUNTIME_OWNER="$owner"
  uid="$(id -u)"
  if [[ "$owner" != "$uid" && "$owner" != "0" ]]; then SAFE_RUNTIME_REASON="unexpected-owner"; return 1; fi
  mode="$((8#$mode))"
@@ -130,7 +133,7 @@ const raw=readFileSync(policyPath,"utf8");if(Buffer.byteLength(raw)>4096)process
 const p=JSON.parse(raw);if(!validNativeHostPolicy(p)||p.allowed_origin!==origin)process.exit(1);
 NODE
 }
-safe_runtime || fail "Node executable validation failed ($SAFE_RUNTIME_REASON)."
+safe_runtime || fail "Node executable validation failed ($SAFE_RUNTIME_REASON; mode=$SAFE_RUNTIME_MODE; owner=$SAFE_RUNTIME_OWNER)."
 for source in "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
  secure_file "$source" 16384 || fail "native host source ownership, permissions or path invalid."
 done
