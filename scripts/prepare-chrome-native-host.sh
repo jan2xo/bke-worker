@@ -209,7 +209,7 @@ NODE
 )" || fail "transaction origin invalid; rollback refused."
  valid_origin "$origin" || fail "transaction origin invalid; rollback refused."
  "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record mismatch; preserving all files."
-import{readFileSync,createHash,lstatSync}from"node:fs";
+import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
 const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
 if(s.version!==1||s.host!=="com.bke.worker.native_host"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
 const checks=[[manifest,s.sha256?.manifest],[launcher,s.sha256?.launcher],[entry,s.sha256?.entry],[host,s.sha256?.host],[framing,s.sha256?.framing],[policy,s.sha256?.policy]];
