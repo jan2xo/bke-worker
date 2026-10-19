@@ -126,7 +126,7 @@ class PreclaimTests(unittest.TestCase):
         self.denied("PRECLAIM_SESSION_REBOUND",run)
 
     def test_assigned_worker_or_claimed_target_fails_without_side_effect(self):
-        run,_=policy(pages=[pr(15),pr(99,"worker-a",REPOS[1])],attested=[])
+        run,_=policy(pages=[pr(15),pr(99,"worker-b",REPOS[1])],attested=[session()])
         self.denied("PRECLAIM_GLOBAL_OWNERSHIP_AMBIGUOUS",run)
         run,_=policy(pages=[pr(15),pr(99,"worker-a",REPOS[1])],attested=[session()])
         self.denied("PRECLAIM_WORKER_ALREADY_ASSIGNED",run)
