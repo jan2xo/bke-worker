@@ -8,6 +8,8 @@ const VERSION = "2026-03-10";
 const PER_PAGE = 100;
 const MAX_REPOS = 100;
 const MAX_REPO_PAGES = 4;
+const GRAPHQL_BATCH_SIZE = 8;
+const MAX_GRAPHQL_CALLS = 40; // 3 initial REST calls + <=40 = Free-tier safe (50).
 const MAX_TOTAL_PRS = 2000;
 const MAX_ASSIGNMENTS = 500;
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -181,32 +183,80 @@ export async function listInstalledWorkerAssignments(
   const assignments = [];
   const workerClaims = new Set();
   let enumeratedOpen = 0;
-  // One complete pagination for every installation-approved repository.
-  // Never classify a worker FREE from partial upstream reads.
-  for (const repo of repos) {
-    const numbers = new Set();
-    let reachedEnd = false;
-    for (let page = 1; page <= MAX_REPO_PAGES; page++) {
-      const [owner, name] = repo.name.split("/");
-      const url = API + "/repos/" + owner + "/" + name + "/pulls?" +
-        new URLSearchParams({ state: "open", per_page: String(PER_PAGE), page: String(page) });
-      const response = await safeFetch(fetchImpl, url,
-        { method: "GET", headers }, "PULL_REQUESTS");
-      const items = await json(response, "ADMIN_ASSIGNMENT_PULL_REQUESTS_INVALID");
-      if (!Array.isArray(items) || items.length > PER_PAGE) {
+  let graphCalls = 0;
+  // Batch at most eight repositories per GraphQL request. Free-tier Workers
+  // allow 50 external subrequests; installation+mint+repo-list use three.
+  // Every repository is still fully enumerated, including paginated PRs.
+  // Unbounded requests are forbidden: fail before exceeding 40 GraphQL calls.
+  const pending = repos.map(repo => ({
+    repo, cursor: null, page: 0, total: null, numbers: new Set(),
+  }));
+  while (pending.length) {
+    if (graphCalls >= MAX_GRAPHQL_CALLS) {
+      reject("ADMIN_ASSIGNMENT_SUBREQUEST_BUDGET_EXCEEDED");
+    }
+    const batch = pending.splice(0, GRAPHQL_BATCH_SIZE);
+    const vars = {};
+    const decl = [];
+    const fields = [];
+    for (let i = 0; i < batch.length; i++) {
+      const [owner, name] = batch[i].repo.name.split("/");
+      vars["owner" + i] = owner;
+      vars["name" + i] = name;
+      vars["cursor" + i] = batch[i].cursor;
+      decl.push("$owner" + i + ":String!", "$name" + i + ":String!",
+        "$cursor" + i + ":String");
+      fields.push("r" + i + ":repository(owner:$owner" + i + ",name:$name" + i +
+        "){databaseId nameWithOwner pullRequests(first:100,states:OPEN,after:$cursor" +
+        i + "){totalCount pageInfo{hasNextPage endCursor} nodes{" +
+        "number state headRefOid labels(first:100){nodes{name} pageInfo{hasNextPage}}" +
+        "}}}");
+    }
+    const query = "query Inventory(" + decl.join(",") + "){" + fields.join(" ") + "}";
+    graphCalls++;
+    const response = await safeFetch(fetchImpl, API + "/graphql", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ query, variables: vars }),
+    }, "PULL_REQUESTS");
+    const payload = await json(response, "ADMIN_ASSIGNMENT_PULL_REQUESTS_INVALID");
+    if (payload.errors?.length || !payload.data || typeof payload.data !== "object") {
+      reject("ADMIN_ASSIGNMENT_PULL_REQUESTS_INVALID");
+    }
+    for (let i = 0; i < batch.length; i++) {
+      const job = batch[i];
+      const item = payload.data["r" + i];
+      if (!item || item.databaseId !== job.repo.id ||
+          typeof item.nameWithOwner !== "string" ||
+          item.nameWithOwner.toLowerCase() !== job.repo.name.toLowerCase()) {
+        reject("ADMIN_ASSIGNMENT_REPOSITORY_IDENTITY_CHANGED");
+      }
+      const prs = item.pullRequests;
+      if (!prs || !Number.isSafeInteger(prs.totalCount) ||
+          prs.totalCount < 0 || prs.totalCount > MAX_REPO_PAGES * PER_PAGE ||
+          !Array.isArray(prs.nodes) || prs.nodes.length > PER_PAGE ||
+          typeof prs.pageInfo?.hasNextPage !== "boolean") {
         reject("ADMIN_ASSIGNMENT_PULL_REQUESTS_INVALID");
       }
-      // A short page with an advertised next page is inconsistent.
-      const link = response.headers?.get?.("link") || "";
-      if (items.length < PER_PAGE && /rel="next"/u.test(link)) {
+      if (job.total !== null && job.total !== prs.totalCount) {
         reject("ADMIN_ASSIGNMENT_PAGINATION_AMBIGUOUS");
       }
-      enumeratedOpen += items.length;
+      job.total = prs.totalCount;
+      job.page++;
+      enumeratedOpen += prs.nodes.length;
       if (enumeratedOpen > MAX_TOTAL_PRS) reject("ADMIN_ASSIGNMENT_CAPACITY_EXCEEDED");
-      for (const pr of items) {
-        if (numbers.has(pr?.number)) reject("ADMIN_ASSIGNMENT_PR_DUPLICATE");
-        const projected = prProjection(pr, repo);
-        numbers.add(pr.number);
+      for (const node of prs.nodes) {
+        if (!node?.labels || !Array.isArray(node.labels.nodes) ||
+            node.labels.pageInfo?.hasNextPage !== false) {
+          reject("ADMIN_ASSIGNMENT_LABEL_PAGINATION_INCOMPLETE");
+        }
+        const item = {
+          number: node.number, state: String(node.state || "").toLowerCase(),
+          head: { sha: node.headRefOid }, labels: node.labels.nodes,
+        };
+        if (job.numbers.has(item.number)) reject("ADMIN_ASSIGNMENT_PR_DUPLICATE");
+        const projected = prProjection(item, job.repo);
+        job.numbers.add(item.number);
         if (projected) {
           const worker = projected.labels[0].slice("bke-worker:".length);
           if (workerClaims.has(worker)) reject("ADMIN_ASSIGNMENT_WORKER_CONFLICT");
@@ -217,9 +267,19 @@ export async function listInstalledWorkerAssignments(
           }
         }
       }
-      if (items.length < PER_PAGE) { reachedEnd = true; break; }
+      if (prs.pageInfo.hasNextPage) {
+        const cursor = prs.pageInfo.endCursor;
+        if (job.page >= MAX_REPO_PAGES ||
+            typeof cursor !== "string" || !cursor || cursor.length > 2048 ||
+            cursor === job.cursor || job.numbers.size >= job.total) {
+          reject("ADMIN_ASSIGNMENT_PAGINATION_INCOMPLETE");
+        }
+        job.cursor = cursor;
+        pending.push(job);
+      } else if (job.numbers.size !== job.total) {
+        reject("ADMIN_ASSIGNMENT_PAGINATION_INCOMPLETE");
+      }
     }
-    if (!reachedEnd) reject("ADMIN_ASSIGNMENT_PAGINATION_INCOMPLETE");
   }
   return {
     principal: "github_app_installation",
