@@ -15,6 +15,10 @@ for token in (
 manifest_src = (root / "browser-extension/manifest.json").read_text(encoding="utf-8")
 assert "nativeMessaging" not in manifest_src
 assert "wrangler deploy" not in text and "gh workflow run" not in text
+for token in ('remote get-url origin', 'git fetch --quiet --no-tags origin',
+              'refs/remotes/origin/main', 'worktree is dirty',
+              'source must run from main', 'trusted jan2xo/bke-worker repository'):
+    assert token in text, token
 with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     temp=Path(td); fake=temp/"repo"; home=temp/"home"; sandbox=temp/"sandbox"
     (fake/"scripts").mkdir(parents=True); (fake/"browser-extension/native-host").mkdir(parents=True)
@@ -22,13 +26,13 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for d in (fake, fake/"scripts", fake/"browser-extension", fake/"browser-extension/native-host"):
         d.chmod(0o700)
     shutil.copy2(script,fake/"scripts/prepare-chrome-native-host.sh")
+    for name in ("entry.mjs","host.mjs","framing.mjs"):
+        shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     subprocess.run(["git","init","-q",str(fake)],check=True)
     subprocess.run(["git","-C",str(fake),"config","user.email","test@example.invalid"],check=True)
     subprocess.run(["git","-C",str(fake),"config","user.name","Installer Test"],check=True)
     subprocess.run(["git","-C",str(fake),"add","."],check=True)
     subprocess.run(["git","-C",str(fake),"commit","-qm","test fixture"],check=True)
-    for name in ("entry.mjs","host.mjs","framing.mjs"):
-        shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     home.mkdir(mode=0o700); sandbox.mkdir(mode=0o700)
     for d in (temp, fake, home, sandbox, sandbox/"policy"):
         if d.exists(): d.chmod(0o700)
@@ -38,6 +42,24 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     registration_dir=sandbox/"xdg/google-chrome/NativeMessagingHosts"
     manifest_path=registration_dir/"bke.worker.desktop.json"
     cmd=["bash",str(fake/"scripts/prepare-chrome-native-host.sh")]
+    # Outside test mode, an untrusted remote is rejected before even read-only inspection.
+    provenance_env={**os.environ,"HOME":str(home),
+                    "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
+    subprocess.run(["git","-C",str(fake),"remote","add","origin","https://example.invalid/not-bke.git"],check=True)
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=provenance_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "trusted jan2xo/bke-worker repository" in r.stderr
+    # Correct URL but a non-main checkout fails before any remote fetch.
+    subprocess.run(["git","-C",str(fake),"remote","set-url","origin","https://github.com/jan2xo/bke-worker.git"],check=True)
+    subprocess.run(["git","-C",str(fake),"checkout","-qb","feature/not-main"],check=True)
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=provenance_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "source must run from main" in r.stderr
+    # A dirty main checkout also fails before fetch and without modifying browser paths.
+    subprocess.run(["git","-C",str(fake),"checkout","-q","main"],check=True)
+    (fake/"untracked-source-probe").write_text("dirty\\n")
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=provenance_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "worktree is dirty" in r.stderr
+    (fake/"untracked-source-probe").unlink()
+    subprocess.run(["git","-C",str(fake),"remote","remove","origin"],check=True)
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
     assert str(manifest_path) in r.stdout
