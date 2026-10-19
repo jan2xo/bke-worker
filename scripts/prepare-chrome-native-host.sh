@@ -142,17 +142,12 @@ install_host(){
  TX_CREATED_PATHS=()
  TX_CREATED_IDS=()
  TX_STAGE_MANIFEST="" TX_STAGE_LAUNCHER="" TX_STAGE_ENTRY="" TX_STAGE_HOST="" TX_STAGE_FRAMING="" TX_STAGE_POLICY="" TX_STAGE_STATE=""
- stage_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-host.XXXXXX")"; TX_STAGE_MANIFEST="$stage_manifest"
- stage_launcher="$(mktemp "$INSTALL_DIR/.bke-launcher.XXXXXX")"; TX_STAGE_LAUNCHER="$stage_launcher"
- stage_entry="$(mktemp "$INSTALL_DIR/.bke-entry.XXXXXX")"; TX_STAGE_ENTRY="$stage_entry"
- stage_host="$(mktemp "$INSTALL_DIR/.bke-host-module.XXXXXX")"; TX_STAGE_HOST="$stage_host"
- stage_framing="$(mktemp "$INSTALL_DIR/.bke-framing-module.XXXXXX")"; TX_STAGE_FRAMING="$stage_framing"
- stage_policy="$(mktemp "$INSTALL_DIR/.bke-policy.XXXXXX")"; TX_STAGE_POLICY="$stage_policy"
- stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"; TX_STAGE_STATE="$stage_state"
  cleanup_install(){
   local rc=$? idx path identity
   if ((rc!=0 && TX_COMMITTED==0));then
-   rm -f -- "$TX_STAGE_MANIFEST" "$TX_STAGE_LAUNCHER" "$TX_STAGE_ENTRY" "$TX_STAGE_HOST" "$TX_STAGE_FRAMING" "$TX_STAGE_POLICY" "$TX_STAGE_STATE"
+   for staged in "$TX_STAGE_MANIFEST" "$TX_STAGE_LAUNCHER" "$TX_STAGE_ENTRY" "$TX_STAGE_HOST" "$TX_STAGE_FRAMING" "$TX_STAGE_POLICY" "$TX_STAGE_STATE"; do
+    [[ -n "$staged" ]] && rm -f -- "$staged"
+   done
    # Delete only targets whose device/inode still matches the no-clobber link created by this transaction.
    for ((idx=0; idx<${#TX_CREATED_PATHS[@]}; idx++)); do
     path="${TX_CREATED_PATHS[$idx]}"
@@ -163,6 +158,13 @@ install_host(){
   fi
  }
  trap cleanup_install EXIT
+ stage_manifest="$(mktemp "$CHROME_HOST_DIR/.bke-host.XXXXXX")"; TX_STAGE_MANIFEST="$stage_manifest"
+ stage_launcher="$(mktemp "$INSTALL_DIR/.bke-launcher.XXXXXX")"; TX_STAGE_LAUNCHER="$stage_launcher"
+ stage_entry="$(mktemp "$INSTALL_DIR/.bke-entry.XXXXXX")"; TX_STAGE_ENTRY="$stage_entry"
+ stage_host="$(mktemp "$INSTALL_DIR/.bke-host-module.XXXXXX")"; TX_STAGE_HOST="$stage_host"
+ stage_framing="$(mktemp "$INSTALL_DIR/.bke-framing-module.XXXXXX")"; TX_STAGE_FRAMING="$stage_framing"
+ stage_policy="$(mktemp "$INSTALL_DIR/.bke-policy.XXXXXX")"; TX_STAGE_POLICY="$stage_policy"
+ stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"; TX_STAGE_STATE="$stage_state"
  "$NODE_BIN" - "$stage_launcher" "$NODE_BIN" <<'NODE'
 import {writeFileSync} from"node:fs";
 const[p,node]=process.argv.slice(2),q=JSON.stringify(node);
