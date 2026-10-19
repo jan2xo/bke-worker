@@ -94,7 +94,7 @@ def validated_manifest(raw: Any) -> dict[str, Any]:
         repo, num, _ = _identity(row["repository"], row["number"], row["head_sha"])
         if (
             type(row["claim_id"]) is not str or not _CLAIM.fullmatch(row["claim_id"])
-            or row["state"] not in _STATES
+            or type(row["state"]) is not str or row["state"] not in _STATES
             or type(row["lease_deadline_ms"]) is not int
             or row["lease_deadline_ms"] < 0
         ):
@@ -147,7 +147,7 @@ def _verified_shape_only(preflight: Any, current_pr: Any) -> tuple[str, str, int
 
 def prepare_reservation(
     *, manifest: dict[str, Any], preflight: dict[str, Any],
-    current_pr: dict[str, Any], now_ms: int,
+    current_pr: dict[str, Any], expected_labels: list[str], now_ms: int,
 ) -> tuple[dict[str, Any], str]:
     """Pure plan. Caller must prove all external freshness/trust independently.
 
@@ -156,6 +156,8 @@ def prepare_reservation(
     _clock(now_ms)
     old = validated_manifest(manifest)
     worker, repo, number, head = _verified_shape_only(preflight, current_pr)
+    if type(expected_labels) is not list or sorted(expected_labels) != sorted(current_pr["labels"]):
+        _deny("CLAIM_PR_LABELS_CHANGED")
     if len(old["claims"]) >= MAX_CLAIMS:
         _deny("CLAIM_CAPACITY_REQUIRES_OWNER_RECOVERY")
     for row in old["claims"]:
