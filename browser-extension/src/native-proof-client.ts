@@ -142,7 +142,7 @@ export async function proveLocalNativeHost({
       client_nonce:clientNonce});
     const incoming=await wire.receive();
     const now=freshTime(clock);
-    if(now===null||!validChallenge(incoming,clientNonce,profileBindingSha256,now,timeoutMs))
+    if(now===null||!validChallenge(incoming,clientNonce,profileBindingSha256,now,15_000))
       return blocked("NATIVE_CLIENT_CHALLENGE_DENIED");
     const challenge:NativeProofChallenge={
       origin,worker_id:workerId,public_key_sha256:pub.public_key_sha256,
