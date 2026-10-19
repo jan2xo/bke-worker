@@ -98,7 +98,6 @@ export async function witnessLinuxImmediateBrowserParent({
   ownerPinnedHostExecutablePath,
   expectedUid,
 }={}){
-  let stage="config";
   try{
     if(process.platform!=="linux"||typeof process.getuid!=="function"||
       !canonical(ownerPinnedBrowserExecutablePath)||
@@ -106,26 +105,20 @@ export async function witnessLinuxImmediateBrowserParent({
       typeof ownerPinnedBrowserExecutableSha256!=="string"||
       !SHA.test(ownerPinnedBrowserExecutableSha256)||
       !Number.isSafeInteger(expectedUid)||expectedUid!==process.getuid())reject();
-    stage="procfs";
     const started=Date.now();
     const fs=await statfs("/proc");
     if(Number(fs.type)!==PROC_MAGIC)reject();
-    stage="paths";
     if(ownerPinnedHostExecutablePath!==await realpath(process.execPath)||
       ownerPinnedBrowserExecutablePath!==await realpath(ownerPinnedBrowserExecutablePath))reject();
     await trustedPathDirectories(ownerPinnedBrowserExecutablePath,expectedUid);
-    stage="self";
     const self=await sourceProcess(process.pid);
     if(self.uid!==expectedUid||self.exe!==ownerPinnedHostExecutablePath||
        self.ppid<2||self.ppid===self.pid)reject();
-    stage="parent";
     const parent=await sourceProcess(self.ppid);
     if(parent.uid!==expectedUid||parent.exe!==ownerPinnedBrowserExecutablePath||
       parent.ppid===parent.pid)reject();
-    stage="digest";
     const digest=await runningExeDigest(parent.pid,expectedUid,started);
     if(digest!==ownerPinnedBrowserExecutableSha256)reject();
-    stage="recheck";
     const afterParent=await sourceProcess(parent.pid);
     const afterSelf=await sourceProcess(process.pid);
     if(!sameProcess(parent,afterParent)||!sameProcess(self,afterSelf)||
@@ -135,5 +128,5 @@ export async function witnessLinuxImmediateBrowserParent({
       browser_session_authority:"NONE",profile_authority:"NONE",
       device_admission_authority:"NONE",dispatch_authority:"NONE",
     });
-  }catch{if(process.env.BKE_PRIVATE_PROC_TEST_DIAGNOSTICS==="1")throw Error("BKE_PROC_STAGE_"+stage);reject();}
+  }catch{reject();}
 }
