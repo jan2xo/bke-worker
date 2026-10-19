@@ -20,6 +20,11 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     (fake/"scripts").mkdir(parents=True); (fake/"browser-extension/native-host").mkdir(parents=True)
     (fake/"browser-extension/manifest.json").write_text(manifest_src)
     shutil.copy2(script,fake/"scripts/prepare-chrome-native-host.sh")
+    subprocess.run(["git","init","-q",str(fake)],check=True)
+    subprocess.run(["git","-C",str(fake),"config","user.email","test@example.invalid"],check=True)
+    subprocess.run(["git","-C",str(fake),"config","user.name","Installer Test"],check=True)
+    subprocess.run(["git","-C",str(fake),"add","."],check=True)
+    subprocess.run(["git","-C",str(fake),"commit","-qm","test fixture"],check=True)
     for name in ("entry.mjs","host.mjs","framing.mjs"):
         shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     home.mkdir(mode=0o700); sandbox.mkdir(mode=0o700)
