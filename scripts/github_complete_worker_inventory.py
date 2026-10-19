@@ -15,6 +15,11 @@ import urllib.parse
 import urllib.request
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+def _valid_repo(name: Any) -> bool:
+    return (type(name) is str and REPO.fullmatch(name) is not None
+            and all(part not in (".", "..") for part in name.split("/")))
+
+
 SHA = re.compile(r"[a-f0-9]{40}\Z")
 MAX_REPOSITORIES = 20
 MAX_PAGES = 20
@@ -35,7 +40,7 @@ def _scope(repositories: Any) -> tuple[str, ...]:
         _deny("GITHUB_SCOPE_INVALID")
     normalized = []
     for value in repositories:
-        if type(value) is not str or not REPO.fullmatch(value):
+        if not _valid_repo(value):
             _deny("GITHUB_SCOPE_INVALID")
         normalized.append(value.lower())
     if len(set(normalized)) != len(normalized):
@@ -146,7 +151,7 @@ class GitHubAppReadOnlyPages:
         self._opener = urllib.request.build_opener(_NoRedirect())
 
     def fetch_page(self, repo: str, page: int) -> tuple[list[Any], bool]:
-        if type(repo) is not str or not REPO.fullmatch(repo) or type(page) is not int or page < 1 or page > MAX_PAGES:
+        if not _valid_repo(repo) or type(page) is not int or page < 1 or page > MAX_PAGES:
             _deny("GITHUB_PAGE_ARGUMENT_INVALID")
         path = "/repos/" + repo + "/pulls"
         query = urllib.parse.urlencode({"state":"open","per_page":PAGE_SIZE,"page":page})
