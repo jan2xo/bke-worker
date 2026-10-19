@@ -6,7 +6,7 @@ root = Path(__file__).resolve().parents[1]
 script = root / "scripts/prepare-chrome-native-host.sh"
 text = script.read_text(encoding="utf-8")
 for token in (
-    'HOST_NAME="com.bke.worker.native_host"', 'Darwin|Linux)', 'unsupported OS:',
+    'HOST_NAME="bke.worker.desktop"', 'Darwin|Linux)', 'unsupported OS:',
     'entry.mjs', 'host.mjs', 'validNativeHostPolicy', 'allowed_origins',
     'refusing to overwrite conflicting registration', 'FAIL-CLOSED', 'rollback)',
     'BKE_NATIVE_HOST_TEST_ROOT', 'INSTALL USER-LEVEL CHROME HOST',
@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
          "BKE_NATIVE_HOST_TEST_OS":"Linux",
          "BKE_NATIVE_HOST_EXTENSION_ORIGIN":"chrome-extension://"+"a"*32+"/"}
     registration_dir=sandbox/"xdg/google-chrome/NativeMessagingHosts"
-    manifest_path=registration_dir/"com.bke.worker.native_host.json"
+    manifest_path=registration_dir/"bke.worker.desktop.json"
     cmd=["bash",str(fake/"scripts/prepare-chrome-native-host.sh")]
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     # macOS and Linux must select distinct canonical user-profile paths; unsupported systems fail closed.
     mac_env={**env,"BKE_NATIVE_HOST_TEST_OS":"Darwin"}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=mac_env,capture_output=True,text=True)
-    expected_mac=sandbox/"home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.bke.worker.native_host.json"
+    expected_mac=sandbox/"home/Library/Application Support/Google/Chrome/NativeMessagingHosts/bke.worker.desktop.json"
     assert r.returncode==0 and str(expected_mac) in r.stdout,(r.stdout,r.stderr)
     unsupported_env={**env,"BKE_NATIVE_HOST_TEST_OS":"FreeBSD"}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=unsupported_env,capture_output=True,text=True)
@@ -182,7 +182,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert not (sandbox/"state/transaction.json").exists()
     # Conflicts are not overwritten.
     chrome=registration_dir; chrome.mkdir(parents=True,exist_ok=True,mode=0o700)
-    conflict=chrome/"com.bke.worker.native_host.json"; conflict.write_text('{"unrelated":true}'); conflict.chmod(0o600)
+    conflict=chrome/"bke.worker.desktop.json"; conflict.write_text('{"unrelated":true}'); conflict.chmod(0o600)
     r=subprocess.run(cmd+["inspect"],cwd="/",env=env,capture_output=True,text=True)
     assert r.returncode!=0 and conflict.read_text()=='{"unrelated":true}'
 print("BKE Chrome native host installer contract: PASS")
