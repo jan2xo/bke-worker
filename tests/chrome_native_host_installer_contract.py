@@ -199,7 +199,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode!=0 and "artifact hashes mismatch" in r.stderr,(r.stdout,r.stderr)
     r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
-    assert r.returncode!=0 and "refusing to overwrite conflicting" in r.stderr,(r.stdout,r.stderr)
+    assert r.returncode!=0 and "artifact hashes mismatch" in r.stderr,(r.stdout,r.stderr)
     assert manifest.exists()
     launcher.write_bytes(original_launcher); launcher.chmod(0o700)
     r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
