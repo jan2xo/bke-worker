@@ -27,7 +27,7 @@ if [[ "$OS" = "Linux" && -n "${XDG_CONFIG_HOME:-}" ]]; then
  [[ "$XDG_CONFIG_HOME" = /* ]] || fail "XDG_CONFIG_HOME must be absolute on Linux."
  XDG_CONFIG_HOME="${XDG_CONFIG_HOME%/}"
  [[ -n "$XDG_CONFIG_HOME" && "$XDG_CONFIG_HOME" != "/" ]] || fail "XDG_CONFIG_HOME cannot be filesystem root."
- case "$XDG_CONFIG_HOME" in *"/../"*|*"/./"*|*"//"*) fail "XDG_CONFIG_HOME contains noncanonical path components.";; esac
+ case "$XDG_CONFIG_HOME" in *"/.."|*"/../"*|*"/."|*"/./"*|*"//"*) fail "XDG_CONFIG_HOME contains noncanonical path components.";; esac
 fi
 command -v node >/dev/null 2>&1 || fail "Node.js required."
 NODE_BIN="$(node -p 'require("node:fs").realpathSync(process.execPath)' 2>/dev/null)" || fail "could not resolve Node executable."
