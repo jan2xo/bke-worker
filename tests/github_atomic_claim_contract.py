@@ -54,7 +54,7 @@ class FakeGitRef:
     """One shared Git ref; a fast-forward rejects a sibling commit."""
     def __init__(self):
         self.head = START
-        self.commits = {}
+        self.commits = {START: {"parents": [], "manifest": manifest()}}
         self.serial = 1
         self.fail = False
         self.lost_reply_after_write = False
@@ -210,7 +210,7 @@ class AtomicClaimTests(unittest.TestCase):
         pending, _ = reserve()
         self.assertEqual(git.head, START)
         self.assertEqual(len(pending["claims"]), 1)
-        self.assertEqual(git.commits, {})
+        self.assertEqual(git.commits, {START: {"parents": [], "manifest": manifest()}})
 
     def test_after_commit_uncertain_reply_requires_reconciliation(self):
         git = FakeGitRef()
@@ -254,6 +254,75 @@ class AtomicClaimTests(unittest.TestCase):
         m, _ = reserve()
         m["claims"][0]["head_sha"] = "BAD"
         self.denied("CLAIM_TARGET_INVALID", lambda: validated_manifest(m))
+
+    def test_valid_reservation_then_durable_uncertainty_fence(self):
+        git = FakeGitRef()
+        initial, claim_id = reserve()
+        first = git.publish(START, initial)
+        self.assertEqual(first["state"], "RESERVATION_RECORDED_ONLY")
+        fenced = fence_uncertain_delivery(
+            manifest=initial, claim_id=claim_id, now_ms=NOW + 1)
+        second = git.publish(git.head, fenced)
+        self.assertEqual(second["state"], "RESERVATION_RECORDED_ONLY")
+        self.assertEqual(
+            git.inspect(git.head)["manifest"]["claims"][0]["state"],
+            "DELIVERY_UNCERTAIN")
+
+    def test_fast_forward_does_not_allow_noop_or_arbitrary_sequence(self):
+        git = FakeGitRef()
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(START, manifest()))
+        candidate = manifest()
+        candidate["sequence"] = 1
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(START, candidate))
+        self.assertEqual(git.head, START)
+
+    def test_fast_forward_cannot_drop_or_modify_live_reservations(self):
+        git = FakeGitRef()
+        first, _ = reserve()
+        git.publish(START, first)
+        parent = git.head
+
+        wiped = manifest()
+        wiped["sequence"] = 2
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(parent, wiped))
+
+        other, _ = reserve(first, preflight("worker-b", number=116))
+        other["claims"][0]["head_sha"] = "c" * 40
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(parent, other))
+        self.assertEqual(git.head, parent)
+
+    def test_uncertainty_fence_cannot_be_reversed_or_repeated(self):
+        git = FakeGitRef()
+        first, key = reserve()
+        git.publish(START, first)
+        fenced = fence_uncertain_delivery(
+            manifest=first, claim_id=key, now_ms=NOW + 1)
+        git.publish(git.head, fenced)
+        parent = git.head
+
+        replay = deepcopy(fenced)
+        replay["sequence"] += 1
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(parent, replay))
+        reopened = deepcopy(replay)
+        reopened["claims"][0]["state"] = "RESERVED"
+        self.denied("CLAIM_TRANSITION_INVALID",
+                    lambda: git.publish(parent, reopened))
+        self.assertEqual(git.head, parent)
+
+    def test_missing_or_malformed_parent_manifest_is_rejected(self):
+        git = FakeGitRef()
+        planned, _ = reserve()
+        git.commits[START]["manifest"] = {"bad": "shape"}
+        self.denied("CLAIM_MANIFEST_INVALID",
+                    lambda: git.publish(START, planned))
+        git.commits[START] = {"bad": "commit"}
+        self.denied("CLAIM_PARENT_INVALID",
+                    lambda: git.publish(START, planned))
 
     def test_replays_do_not_create_second_claim_or_prompt(self):
         git = FakeGitRef()
