@@ -59,14 +59,9 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
         "resources":{"bridge_identity_sha256":"3"*64,"browser_profile_sha256":"4"*64,"chatgpt_target_sha256":"5"*64},
         "expires_at_ms":int(__import__("time").time()*1000)+60*60*1000,
     }
-    writer = """
-import {writeFileSync} from "node:fs";
-const p=process.argv[2], x=JSON.parse(process.argv[3]);
-writeFileSync(p,JSON.stringify(x)+"\\n",{mode:0o600,flag:"w"});
-"""
-    r=subprocess.run(["node","--input-type=module","-e",writer,str(policy_file),__import__("json").dumps(policy_obj)],
-                     cwd="/",env=env,capture_output=True,text=True)
-    assert r.returncode==0,(r.stdout,r.stderr)
+    import json
+    policy_file.write_text(json.dumps(policy_obj) + chr(10))
+    policy_file.chmod(0o600)
     good_env={**env,"BKE_NATIVE_HOST_POLICY_PATH":str(policy_file)}
     # Source-only install against sandbox, then exact manifest verification and idempotent verify.
     r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\\n",capture_output=True,text=True)
