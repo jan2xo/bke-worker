@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import urllib.error
+import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from github_arbiter_readonly_snapshot import (
     API_ORIGIN, _BASE_PATH, _REF_PATH, ARBITER_REF, ArbiterReadDenied,
@@ -32,11 +34,12 @@ def fixture():
 
 
 class Response:
-    def __init__(self, raw, status=200):
-        self.raw,self.status=raw,status
+    def __init__(self, raw, url, status=200):
+        self.raw,self.url,self.status=raw,url,status
     def __enter__(self): return self
     def __exit__(self,*_): return False
     def getcode(self): return self.status
+    def geturl(self): return self.url
     def read(self,n): return self.raw[:n]
 
 
@@ -45,6 +48,7 @@ class Opener:
         self.documents=documents
         self.calls=[]
         self.status=200
+        self.redirected_url=None
     def open(self, req, timeout):
         self.calls.append((req,timeout))
         path=req.full_url[len(API_ORIGIN):]
@@ -53,10 +57,22 @@ class Opener:
         val=self.documents[path]
         if type(val) is not bytes:
             val=json.dumps(val).encode()
-        return Response(val,self.status)
+        return Response(val,self.redirected_url or req.full_url,self.status)
 
 
 class ArbiterTests(unittest.TestCase):
+    def fixture_reader(self, fake):
+        # Test-owned fake tokens only. Production cannot inject a transport.
+        with patch("github_arbiter_readonly_snapshot.urllib.request.build_opener",
+                   return_value=fake) as make:
+            reader=GitHubAppArbiterReader("disposable-fixture-token")
+        args=make.call_args.args
+        self.assertEqual(len(args),2)
+        self.assertIsInstance(args[0],urllib.request.ProxyHandler)
+        self.assertEqual(args[0].proxies,{})
+        self.assertIsInstance(args[1],_NoRedirect)
+        return reader
+
     def denied(self, code, callback):
         with self.assertRaisesRegex(ArbiterReadDenied,"^"+code+"$"):
             callback()
@@ -71,7 +87,7 @@ class ArbiterTests(unittest.TestCase):
             self.assertEqual(result[k],"NONE")
     def test_coherent_fake_provider_does_not_grant_authority(self):
         fake=Opener(fixture())
-        result=GitHubAppArbiterReader("disposable-fixture-token",opener=fake).inspect()
+        result=self.fixture_reader(fake).inspect()
         self.assertEqual(result["evidence_authority"],"NONE")
         self.assertEqual(result["assignment_authority"],"NONE")
         self.assertEqual(len(fake.calls),5)
@@ -83,7 +99,7 @@ class ArbiterTests(unittest.TestCase):
         del f[_REF_PATH]
         fake=Opener(f)
         self.denied("ARBITER_REF_NOT_INITIALIZED",
-          lambda: GitHubAppArbiterReader("disposable-fixture-token",opener=fake).inspect())
+          lambda: self.fixture_reader(fake).inspect())
         self.assertEqual(len(fake.calls),1)
     def test_bad_ref_and_type(self):
         for field,value,code in (("ref","refs/heads/main","ARBITER_REF_INVALID"),
@@ -147,7 +163,7 @@ class ArbiterTests(unittest.TestCase):
         self.denied("ARBITER_READER_INVALID",lambda:inspect_arbiter(None))
     def test_no_arbitrary_url_or_ref_selection(self):
         fake=Opener(fixture())
-        client=GitHubAppArbiterReader("disposable-fixture-token",opener=fake)
+        client=self.fixture_reader(fake)
         for path in ("https://evil.test/",_BASE_PATH+"ref/heads/main",
                      _BASE_PATH+"commits/../main",_BASE_PATH+"blobs/"+"F"*40):
             self.denied("ARBITER_PATH_DENIED",lambda:client._fetch(path))
@@ -156,11 +172,37 @@ class ArbiterTests(unittest.TestCase):
         f=fixture()
         f[_REF_PATH]=b"x"*(MAX_JSON_BYTES+1)
         self.denied("ARBITER_RESPONSE_INVALID",
-          lambda:GitHubAppArbiterReader("disposable-fixture-token",opener=Opener(f)).inspect())
+          lambda:self.fixture_reader(Opener(f)).inspect())
         fake=Opener(fixture())
         fake.status=403
         self.denied("ARBITER_PROVIDER_UNAVAILABLE",
-          lambda:GitHubAppArbiterReader("disposable-fixture-token",opener=fake).inspect())
+          lambda:self.fixture_reader(fake).inspect())
+    def test_hostile_public_opener_is_rejected_before_receiving_token(self):
+        # Old constructor allowed arbitrary redirect-following openers with bearer.
+        class HostileRedirectOpener:
+            def __init__(self): self.forwarded=[]
+            def open(self, req, timeout):
+                self.forwarded.append((req.full_url, req.get_header("Authorization")))
+                raise RuntimeError("would forward bearer to another host")
+        hostile=HostileRedirectOpener()
+        with self.assertRaises(TypeError):
+            GitHubAppArbiterReader("realistic-fixture-token", opener=hostile)
+        self.assertEqual(hostile.forwarded, [])
+
+    def test_forged_cross_origin_final_url_fails_closed(self):
+        fake=Opener(fixture())
+        fake.redirected_url="https://attacker.invalid/collect"
+        reader=self.fixture_reader(fake)
+        self.denied("ARBITER_REDIRECT_DENIED", reader.inspect)
+        self.assertEqual(len(fake.calls),1)
+        self.assertTrue(fake.calls[0][0].full_url.startswith(API_ORIGIN+_BASE_PATH))
+
+    def test_direct_transport_has_no_proxy_or_redirect_handler_override(self):
+        fake=Opener(fixture())
+        result=self.fixture_reader(fake).inspect()
+        self.assertEqual(result["state"],"UNVERIFIED_GITHUB_REF_SNAPSHOT_ONLY")
+        self.assertTrue(all(req.get_method()=="GET" for req, _ in fake.calls))
+
     def test_token_required_and_redirect_denied(self):
         for token in (None,"","short","bad\nnewline"):
             self.denied("ARBITER_APP_TOKEN_REQUIRED",lambda:GitHubAppArbiterReader(token))
