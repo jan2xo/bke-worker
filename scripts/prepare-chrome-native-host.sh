@@ -46,6 +46,12 @@ TESTING=0
 if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
  [[ "$BKE_NATIVE_HOST_TEST_ROOT" = /* && -d "$BKE_NATIVE_HOST_TEST_ROOT" && ! -L "$BKE_NATIVE_HOST_TEST_ROOT" ]] || fail "test root must be existing absolute non-symlink directory."
  TEST_ROOT="$(cd -- "$BKE_NATIVE_HOST_TEST_ROOT" && pwd -P)"
+ [[ "$TEST_ROOT" != "/" ]] || fail "test root must be a private disposable directory, not filesystem root."
+ TEST_ROOT_OWNER="$(stat -c '%u' "$TEST_ROOT" 2>/dev/null || stat -f '%u' "$TEST_ROOT" 2>/dev/null)" || fail "cannot validate test-root ownership."
+ TEST_ROOT_MODE="$(stat -c '%a' "$TEST_ROOT" 2>/dev/null || stat -f '%Lp' "$TEST_ROOT" 2>/dev/null)" || fail "cannot validate test-root mode."
+ [[ "$TEST_ROOT_OWNER" = "$(id -u)" ]] || fail "test root must be owned by current user."
+ TEST_ROOT_MODE="$((8#$TEST_ROOT_MODE))"
+ (( (TEST_ROOT_MODE & 0077) == 0 )) || fail "test root must have private owner-only permissions."
  case "$OS" in
   Darwin) CHROME_HOST_DIR="$TEST_ROOT/home/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
   Linux) CHROME_HOST_DIR="$TEST_ROOT/xdg/google-chrome/NativeMessagingHosts";;
