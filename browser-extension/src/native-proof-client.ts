@@ -110,7 +110,7 @@ export async function proveLocalNativeHost({
   runtime,identity,workerId,resources,profileBindingSha256,
   clock=()=>Date.now(),cryptoImpl=crypto,timeoutMs=15_000,
 }:ClientOpts):Promise<Outcome>{
-  if(typeof workerId!=="string"||!^[a-z0-9][a-z0-9-]{0,62}$/.test(workerId) ||
+  if(typeof workerId!=="string"||!/^[a-z0-9][a-z0-9-]{0,62}$/.test(workerId) ||
     !resourceShape(resources)||typeof profileBindingSha256!=="string"||
     !HASH.test(profileBindingSha256)||!Number.isSafeInteger(timeoutMs)||
     timeoutMs<100||timeoutMs>15_000||
