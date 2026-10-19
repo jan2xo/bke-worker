@@ -31,8 +31,15 @@ A trusted future actor would:
    inventory. Reuse the existing preclaim only as a consistency check.
 2. Read the arbiter ref + manifest at its exact commit; validate all
    reservations and reject collisions including expired or uncertain claims.
-3. Build exactly **one child commit** with the observed arbiter head as
-   sole parent and an updated bounded manifest. No rebases, multi-parent
+3. Read and validate the observed parent commit's manifest and
+   **verify the proposed successor transition**. Exactly one append-only
+   `RESERVED` claim OR exactly one irreversible
+   `RESERVED` -> `DELIVERY_UNCERTAIN` fence is permitted per increment
+   of `sequence`. Reject deletion, reordering, mutation, rollback, noop,
+   and any malformed parent manifest; an ordinary fast-forward alone is
+   not sufficient to protect existing reservations.
+   Build exactly **one child commit** with the observed arbiter head as
+   sole parent and that verified manifest. No rebases, multi-parent
    commits, branch rewrites, or force updates.
 4. Advance the shared ref through GitHub REST **PATCH git/refs with
    `force:false`**. A contender whose proposed commit is a sibling,
@@ -107,5 +114,6 @@ or browser dispatch is activated by this PR.** The protected
 
 Adversarial fixture coverage includes same-PR races, same-worker/different
 PR races, valid independent workers, stale PR heads/labels, crash points,
-timeout/retry/replay, expiration, uncertain prompt delivery, caller-trust
+timeout/retry/replay, expiration, uncertain prompt delivery, append-only
+successor validation, mutation/deletion/rollback rejection, caller-trust
 limits and non-fast-forward/API failure.
