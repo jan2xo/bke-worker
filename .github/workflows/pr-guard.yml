@@ -218,3 +218,49 @@ jobs:
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           run-id: ${{ github.run_id }}
+
+  webextension-device-identity:
+    name: Exact-head WebExtension identity contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Identify actual browser-extension changes
+        id: paths
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner,repo}=context.repo;
+            const files=await github.paginate(github.rest.pulls.listFiles,{
+              owner,repo,pull_number:context.issue.number,per_page:100
+            });
+            const changed=files.some(file=>file.filename.startsWith("browser-extension/"));
+            core.setOutput("run",changed?"true":"false");
+
+      - name: Checkout exact untrusted PR head for isolated testing
+        if: steps.paths.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up Node 22
+        if: steps.paths.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned browser-extension compiler
+        if: steps.paths.outputs.run == 'true'
+        working-directory: browser-extension
+        run: npm install --ignore-scripts --no-audit --no-fund --package-lock=false
+
+      - name: Build, manifest audit and adversarial P-256 tests
+        if: steps.paths.outputs.run == 'true'
+        working-directory: browser-extension
+        run: npm run check
+
+      - name: Diff hygiene
+        if: steps.paths.outputs.run == 'true'
+        run: git diff --check
