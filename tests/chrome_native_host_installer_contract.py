@@ -51,6 +51,10 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     unsupported_env={**env,"BKE_NATIVE_HOST_TEST_OS":"FreeBSD"}
     r=subprocess.run(cmd+["inspect"],cwd="/",env=unsupported_env,capture_output=True,text=True)
     assert r.returncode!=0 and "unsupported OS: FreeBSD" in r.stderr
+    root_link=temp/"sandbox-link"; root_link.symlink_to(sandbox,target_is_directory=True)
+    symlink_root_env={**env,"BKE_NATIVE_HOST_TEST_ROOT":str(root_link)}
+    r=subprocess.run(cmd+["inspect"],cwd="/",env=symlink_root_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "test root" in r.stderr.lower()
     for args,patch in [(["unknown"],{}),(["inspect"],{"BKE_NATIVE_HOST_EXTENSION_ORIGIN":"https://invalid.example/"})]:
         r=subprocess.run(cmd+args,cwd="/",env={**env,**patch},capture_output=True,text=True)
         assert r.returncode!=0,r.stdout
@@ -94,6 +98,15 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     r=subprocess.run(cmd+["install"],cwd="/",env=relative_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode!=0 and not manifest_path.exists()
 
+    # Inject a failure after two no-clobber links; cleanup must remove only this transaction's files.
+    fault_env={**good_env,"BKE_NATIVE_HOST_TEST_FAIL_AFTER_LINK":"2"}
+    r=subprocess.run(cmd+["install"],cwd="/",env=fault_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "injected" in r.stderr.lower(),(r.stdout,r.stderr)
+    assert not manifest_path.exists()
+    assert list((sandbox/"install").iterdir())==[]
+    assert list((sandbox/"state").iterdir())==[]
+    assert list(registration_dir.iterdir())==[]
+
     r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
     manifest=manifest_path
@@ -106,9 +119,24 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for name in ("entry.mjs","host.mjs","framing.mjs","owner-policy.json"):
         assert (sandbox/"install"/name).is_file(),name
     assert (sandbox/"install/launch-native-host.sh").stat().st_mode & 0o111
+    launcher=sandbox/"install/launch-native-host.sh"
+    assert 'exec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"' in launcher.read_text()
+    assert 'NODE_BIN=' in launcher.read_text()
+    subprocess.run(["bash","-n",str(launcher)],check=True)
+    r=subprocess.run([str(launcher),"https://invalid.example/"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode==2 and not r.stdout
     r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
-    # Hash-locked rollback removes only transaction-owned artifacts.
+    # Matching second install is an idempotent no-op.
+    r=subprocess.run(cmd+["install"],cwd="/",env=good_env,input="INSTALL USER-LEVEL CHROME HOST\n",capture_output=True,text=True)
+    assert r.returncode==0 and "idempotent no-op" in r.stdout,(r.stdout,r.stderr)
+    # Changed module content makes rollback fail closed and preserves all artifacts.
+    host_file=sandbox/"install/host.mjs"; original_host=host_file.read_bytes()
+    host_file.write_bytes(original_host+b"\\n// tamper probe")
+    r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode!=0 and manifest.exists(),(r.stdout,r.stderr)
+    host_file.write_bytes(original_host); host_file.chmod(0o600)
+    # Hash-locked rollback removes only byte-identical transaction-owned artifacts.
     r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
     assert not manifest.exists()
