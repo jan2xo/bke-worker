@@ -14,6 +14,10 @@ fail(){ printf 'FAIL-CLOSED: %s\n' "$1" >&2; exit 2; }
 pass(){ printf 'PASS: %s\n' "$1"; }
 note(){ printf 'INFO: %s\n' "$1"; }
 OS="$(uname -s)"
+if [[ -n "${BKE_NATIVE_HOST_TEST_OS:-}" ]]; then
+ [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]] || fail "OS override requires an isolated test root."
+ OS="$BKE_NATIVE_HOST_TEST_OS"
+fi
 case "$OS" in Darwin|Linux) ;; *) fail "unsupported OS: $OS";; esac
 command -v node >/dev/null 2>&1 || fail "Node.js required."
 NODE_BIN="$(node -p 'process.execPath' 2>/dev/null)" || fail "could not resolve Node executable."
@@ -41,7 +45,11 @@ TESTING=0
 if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
  [[ "$BKE_NATIVE_HOST_TEST_ROOT" = /* && -d "$BKE_NATIVE_HOST_TEST_ROOT" && ! -L "$BKE_NATIVE_HOST_TEST_ROOT" ]] || fail "test root must be existing absolute non-symlink directory."
  TEST_ROOT="$(cd -- "$BKE_NATIVE_HOST_TEST_ROOT" && pwd -P)"
- CHROME_HOST_DIR="$TEST_ROOT/chrome/NativeMessagingHosts"; MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
+ case "$OS" in
+  Darwin) CHROME_HOST_DIR="$TEST_ROOT/home/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
+  Linux) CHROME_HOST_DIR="$TEST_ROOT/xdg/google-chrome/NativeMessagingHosts";;
+ esac
+ MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
  INSTALL_DIR="$TEST_ROOT/install"; LAUNCHER="$INSTALL_DIR/launch-native-host.sh"; INSTALLED_ENTRY="$INSTALL_DIR/entry.mjs"; INSTALLED_HOST="$INSTALL_DIR/host.mjs"; INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"; INSTALLED_POLICY="$INSTALL_DIR/owner-policy.json"
  POLICY="${BKE_NATIVE_HOST_POLICY_PATH:-$TEST_ROOT/policy/owner-policy.json}"
  STATE_DIR="$TEST_ROOT/state"; STATE="$STATE_DIR/transaction.json"; TESTING=1
