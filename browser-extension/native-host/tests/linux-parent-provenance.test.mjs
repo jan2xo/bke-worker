@@ -8,18 +8,20 @@ import {parseLinuxProcStat} from "../linux-parent-provenance.mjs";
 
 const linux=process.platform==="linux"&&typeof process.getuid==="function";
 const fixture=fileURLToPath(new URL("./fixtures/linux-parent-child.mjs",import.meta.url));
-const binary=realpathSync(process.execPath);
+const binary=realpathSync("/usr/bin/bash");
+const host=realpathSync(process.execPath);
 const sha=createHash("sha256").update(readFileSync(binary)).digest("hex");
 const config=()=>({
   ownerPinnedBrowserExecutablePath:binary,
   ownerPinnedBrowserExecutableSha256:sha,
-  ownerPinnedHostExecutablePath:binary,
+  ownerPinnedHostExecutablePath:host,
   expectedUid:process.getuid?.(),
 });
-async function invoke(c,debug=false){
+async function invoke(c){
  return await new Promise((resolve,reject)=>{
-   const cp=spawn(process.execPath,[fixture],{stdio:["pipe","pipe","pipe"],
-      env:{...process.env,BKE_PRIVATE_PROC_TEST_DIAGNOSTICS:debug?"1":"0"}});
+   // Keep root-installed Bash alive as the immediate OS parent.
+   const cp=spawn("/usr/bin/bash",["-c",'"$1" "$2"; exit $?',"bke-test",process.execPath,fixture],
+      {stdio:["pipe","pipe","pipe"]});
    let stdout="",stderr="";
    cp.stdout.setEncoding("utf8");
    cp.stderr.setEncoding("utf8");
@@ -30,8 +32,8 @@ async function invoke(c,debug=false){
    cp.stdin.end(JSON.stringify(c));
  });
 }
-test("real /proc kernel: host's immediate Node parent matches independently pinned SHA256", {skip:!linux},async()=>{
- const r=await invoke(config(),true);
+test("real /proc kernel: host's immediate hardened Bash parent matches independently pinned SHA256", {skip:!linux},async()=>{
+ const r=await invoke(config());
  assert.equal(r.status,0,JSON.stringify(r));
  assert.equal(r.stderr,"");
  assert.deepEqual(JSON.parse(r.stdout),{
