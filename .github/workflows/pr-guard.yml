@@ -195,6 +195,9 @@ jobs:
       - name: Execute operator entrypoint contract
         run: |
           python3 tests/operator_entrypoint_contract.py
+          python3 tests/chrome_native_host_installer_contract.py
+          bash tests/chrome_native_host_installer_contract.sh
+          bash -n scripts/prepare-chrome-native-host.sh
           python3 tests/android_continuation_operator_contract.py
           python3 tests/admin_preproduction_operator_contract.py
           node --test tests/admin_preproduction_activation.test.mjs
