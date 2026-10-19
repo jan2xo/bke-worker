@@ -17,6 +17,7 @@ const controllerUrlInput =
   document.querySelector<HTMLInputElement>("#controller-url")!;
 const saveButton = document.querySelector<HTMLButtonElement>("#save")!;
 const probeButton = document.querySelector<HTMLButtonElement>("#probe")!;
+const initializeIdentityButton = document.querySelector<HTMLButtonElement>("#initialize-identity")!;
 const feedback = document.querySelector<HTMLElement>("#feedback")!;
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 
@@ -53,6 +54,13 @@ async function refresh(): Promise<void> {
 
   statusEl.replaceChildren();
   appendStatusLine("Protocol", String(current.protocolVersion));
+  const identity = await chrome.runtime.sendMessage({type:"bke.device.identity.status"});
+  appendStatusLine("Device identity", identity.state === "PROVISIONED"
+    ? "LOCAL KEY READY (UNPAIRED)" : identity.state === "NOT_PROVISIONED"
+      ? "NOT CREATED" : "BLOCKED");
+  if (identity.state === "PROVISIONED") {
+    appendStatusLine("Key SHA-256", identity.public_key_sha256);
+  }
   appendStatusLine("Bridge", current.connectionState);
   appendStatusLine("ChatGPT", chatState);
   appendStatusLine("Visible", chat ? String(chat.visible) : "—");
@@ -80,6 +88,19 @@ probeButton.addEventListener("click", async () => {
   await new Promise((resolve) => setTimeout(resolve, 250));
   await refresh();
   feedback.textContent = "Probe complete.";
+});
+
+initializeIdentityButton.addEventListener("click", async () => {
+  initializeIdentityButton.disabled = true;
+  feedback.textContent = "Creating device identity in this browser profile…";
+  try {
+    const result = await chrome.runtime.sendMessage({type:"bke.device.identity.initialize"});
+    feedback.textContent = result.state === "PROVISIONED"
+      ? "Private identity created locally. Not paired or connected."
+      : (result.code ?? "Device identity unavailable.");
+    await refresh();
+  } catch { feedback.textContent = "Device identity unavailable."; }
+  finally { initializeIdentityButton.disabled = false; }
 });
 
 void refresh();
