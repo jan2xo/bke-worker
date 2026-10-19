@@ -126,8 +126,6 @@ install_host(){
    local walk="$p"
    while [[ "$walk" != "/" ]]; do
      [[ ! -L "$walk" ]] || fail "symlinked installation parent refused."
-     if [[ -d "$walk" ]]; then safe_dir "$walk" || fail "unsafe existing parent directory."
-     fi
      walk="$(dirname -- "$walk")"
    done
  done
@@ -159,7 +157,7 @@ install_host(){
  "$NODE_BIN" - "$stage_launcher" "$NODE_BIN" <<'NODE'
 import {writeFileSync} from"node:fs";
 const[p,node]=process.argv.slice(2),q=JSON.stringify(node);
-writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE_BIN=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]||exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]]||exit 2\nexec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
+writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE_BIN=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]||exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]]||exit 2\nexec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
 NODE
  cp -- "$HOST_ENTRY" "$stage_entry"; cp -- "$HOST_DIR/host.mjs" "$stage_host"; cp -- "$HOST_DIR/framing.mjs" "$stage_framing"; cp -- "$POLICY" "$stage_policy"; chmod 700 "$stage_launcher"; chmod 600 "$stage_entry" "$stage_host" "$stage_framing" "$stage_policy"
  "$NODE_BIN" - "$stage_manifest" "$LAUNCHER" "$origin" <<'NODE'
@@ -170,7 +168,7 @@ NODE
  STAGE_MANIFEST="$stage_manifest" STAGE_LAUNCHER="$stage_launcher" STAGE_ENTRY="$stage_entry" STAGE_HOST="$stage_host" STAGE_FRAMING="$stage_framing" STAGE_POLICY="$stage_policy" "$NODE_BIN" - "$stage_state" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$origin" <<'NODE'
 import{writeFileSync,readFileSync}from"node:fs";import{createHash}from"node:crypto";
 const[p,manifest,launcher,entry,host,framing,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
-const s={version:1,host:"com.bke.worker.native_host",manifest,launcher,entry,host,framing,policy,origin,created_by:"prepare-chrome-native-host.sh",
+const s={version:1,host:"com.bke.worker.native_host",manifest,launcher,entry,host_module:host,framing_module:framing,policy,origin,created_by:"prepare-chrome-native-host.sh",
 sha256:{manifest:hash(process.env.STAGE_MANIFEST),launcher:hash(process.env.STAGE_LAUNCHER),entry:hash(process.env.STAGE_ENTRY),host:hash(process.env.STAGE_HOST),framing:hash(process.env.STAGE_FRAMING),policy:hash(process.env.STAGE_POLICY)}};
 writeFileSync(p,JSON.stringify(s)+"\n",{mode:0o600,flag:"w"});
 NODE
@@ -179,17 +177,25 @@ NODE
   src="${spec%%:*}";dst="${spec#*:}";ln -- "$src" "$dst"||fail "destination appeared during install; refusing overwrite.";rm -- "$src";created+=("$dst")
  done
  ln -- "$stage_manifest" "$MANIFEST"||fail "manifest destination appeared during install; refusing overwrite.";rm -- "$stage_manifest";created+=("$MANIFEST")
- committed=1;trap - EXIT
  verify
+ committed=1;trap - EXIT
  pass "registration prepared; no browser launched and no extension permission granted."
 }
 rollback(){
  [[ -f "$STATE"&&! -L "$STATE" ]]||fail "transaction record absent; refusing speculative rollback."
  secure_file "$STATE" 8192||fail "transaction record owner/mode invalid."
+ origin="$("$NODE_BIN" - "$STATE" <<'NODE'
+import {readFileSync} from "node:fs";
+let s;try{s=JSON.parse(readFileSync(process.argv[2],"utf8"))}catch{process.exit(1)}
+if(typeof s.origin!=="string"||!/^chrome-extension:\/\/[a-p]{32}\/$/.test(s.origin))process.exit(1);
+process.stdout.write(s.origin);
+NODE
+)" || fail "transaction origin invalid; rollback refused."
+ valid_origin "$origin" || fail "transaction origin invalid; rollback refused."
  "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record mismatch; preserving all files."
 import{readFileSync,createHash,lstatSync}from"node:fs";
-const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2),s=JSON.parse(readFileSync(sfile,"utf8"));
-if(s.version!==1||s.host!=="com.bke.worker.native_host"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host!==host||s.framing!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
+const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
+if(s.version!==1||s.host!=="com.bke.worker.native_host"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
 const checks=[[manifest,s.sha256?.manifest],[launcher,s.sha256?.launcher],[entry,s.sha256?.entry],[host,s.sha256?.host],[framing,s.sha256?.framing],[policy,s.sha256?.policy]];
 for(const[p,h]of checks){const st=lstatSync(p);if(!st.isFile()||st.isSymbolicLink()||createHash("sha256").update(readFileSync(p)).digest("hex")!==h)process.exit(1)}
 NODE
