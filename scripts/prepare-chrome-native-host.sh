@@ -120,9 +120,16 @@ install_host(){
   [[ "$answer" == "INSTALL USER-LEVEL CHROME HOST" ]]||fail "installation not acknowledged."
  fi
  local p
- # Validate existing ancestors before mkdir: do not traverse pre-existing symlink parents.
- p="$(dirname -- "$CHROME_HOST_DIR")"
- while [[ "$p" != "/" ]];do [[ ! -L "$p" ]]||fail "symlinked registration parent refused.";p="$(dirname -- "$p")";done
+ # Reject a symlinked or unsafe ancestor anywhere under the chosen user-state roots.
+ for p in "$(dirname -- "$CHROME_HOST_DIR")" "$INSTALL_DIR" "$STATE_DIR"; do
+   local walk="$p"
+   while [[ "$walk" != "/" ]]; do
+     [[ ! -L "$walk" ]] || fail "symlinked installation parent refused."
+     if [[ -d "$walk" ]]; then safe_dir "$walk" || fail "unsafe existing parent directory."
+     fi
+     walk="$(dirname -- "$walk")"
+   done
+ done
  for p in "$CHROME_HOST_DIR" "$INSTALL_DIR" "$STATE_DIR";do ensure_dir "$p";done
  [[ -f "$POLICY" && ! -L "$POLICY" ]]||fail "owner-pinned policy must exist at $POLICY; no pins are invented."
  check_policy
