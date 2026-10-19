@@ -88,6 +88,7 @@ function validRecord(value: unknown): value is IdentityRecord {
   for (const entry of value.used) {
     if (!exact(entry, ["nonce", "expires_at_ms"]) ||
       typeof entry.nonce !== "string" || !SHA.test(entry.nonce) ||
+      typeof entry.expires_at_ms !== "number" ||
       !Number.isSafeInteger(entry.expires_at_ms) ||
       entry.expires_at_ms <= 0 || seen.has(entry.nonce)) return false;
     seen.add(entry.nonce);
