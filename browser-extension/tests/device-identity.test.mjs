@@ -182,3 +182,13 @@ test("probe-only extension never exposes signing through popup/content script or
   assert.match(sw,/isTrustedPopup\(sender\)/);
   assert.match(sw,/IDENTITY_SENDER_REJECTED/);
 });
+
+test("ChatGPT content-script sender cannot overwrite popup-owned worker configuration",()=>{
+  const sw=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
+  for(const marker of ["GET_CONFIG_MESSAGE","SET_CONFIG_MESSAGE"]){
+    assert.match(sw,new RegExp(
+      "if \\(type === "+marker+"\\) \\{\\s*if \\(!isTrustedPopup\\(sender\\)\\)",
+    ));
+  }
+  assert.match(sw,/CONFIG_SENDER_REJECTED/);
+});
