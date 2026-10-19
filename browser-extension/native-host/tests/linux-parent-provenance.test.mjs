@@ -16,9 +16,9 @@ const config=()=>({
   ownerPinnedHostExecutablePath:binary,
   expectedUid:process.getuid?.(),
 });
-async function invoke(c){
+async function invoke(c,debug=false){
  return await new Promise((resolve,reject)=>{
-   const cp=spawn(process.execPath,[fixture],{stdio:["pipe","pipe","pipe"]});
+   const cp=spawn(process.execPath,[fixture],{stdio:["pipe","pipe","pipe"],\n      env:{...process.env,BKE_PRIVATE_PROC_TEST_DIAGNOSTICS:debug?"1":"0"}});
    let stdout="",stderr="";
    cp.stdout.setEncoding("utf8");
    cp.stderr.setEncoding("utf8");
@@ -30,7 +30,7 @@ async function invoke(c){
  });
 }
 test("real /proc kernel: host's immediate Node parent matches independently pinned SHA256", {skip:!linux},async()=>{
- const r=await invoke(config());
+ const r=await invoke(config(),true);
  assert.equal(r.status,0,JSON.stringify(r));
  assert.equal(r.stderr,"");
  assert.deepEqual(JSON.parse(r.stdout),{
