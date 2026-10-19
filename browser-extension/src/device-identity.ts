@@ -15,6 +15,37 @@ const INSTALL = /^[1-9][0-9]{0,19}$/;
 const B64 = /^[A-Za-z0-9_-]{43}$/;
 const LIMIT = 100;
 const utf8 = new TextEncoder();
+
+const NATIVE_AUD = "bke-worker/desktop/native-key-proof/v1";
+const CHROME_ORIGIN = /^chrome-extension:\/\/[a-p]{32}\/$/;
+const NATIVE_RESOURCES = ["chatgpt_target_sha256","browser_profile_sha256","bridge_identity_sha256"] as const;
+const NATIVE_FIELDS = ["origin","worker_id","public_key_sha256","profile_binding_sha256",
+  "resources","client_nonce","server_nonce","expires_at_ms"] as const;
+export type NativeProofChallenge = {
+  origin:string;worker_id:string;public_key_sha256:string;profile_binding_sha256:string;
+  resources:{chatgpt_target_sha256:string;browser_profile_sha256:string;bridge_identity_sha256:string};
+  client_nonce:string;server_nonce:string;expires_at_ms:number;
+};
+function validNativeProof(v:unknown,worker:string,now:number):v is NativeProofChallenge {
+  if(!exact(v,NATIVE_FIELDS)||v.worker_id!==worker||
+    typeof v.origin!=="string"||!CHROME_ORIGIN.test(v.origin)||
+    typeof v.public_key_sha256!=="string"||!SHA.test(v.public_key_sha256)||
+    typeof v.profile_binding_sha256!=="string"||!SHA.test(v.profile_binding_sha256)||
+    typeof v.client_nonce!=="string"||!SHA.test(v.client_nonce)||
+    typeof v.server_nonce!=="string"||!SHA.test(v.server_nonce)||
+    v.client_nonce===v.server_nonce||
+    typeof v.expires_at_ms!=="number"||!Number.isSafeInteger(v.expires_at_ms)||
+    v.expires_at_ms<=now||v.expires_at_ms>now+15_000||
+    !exact(v.resources,NATIVE_RESOURCES))return false;
+  return NATIVE_RESOURCES.every(k=>typeof v.resources[k]==="string"&&SHA.test(v.resources[k]));
+}
+export function canonicalNativeProofMessage(v:NativeProofChallenge):string {
+  return JSON.stringify([NATIVE_AUD,"prove",v.origin,v.worker_id,v.public_key_sha256,
+    v.profile_binding_sha256,v.resources.chatgpt_target_sha256,
+    v.resources.browser_profile_sha256,v.resources.bridge_identity_sha256,
+    v.client_nonce,v.server_nonce,v.expires_at_ms]);
+}
+
 export const DEVICE_IDENTITY_STATES = Object.freeze({
   NOT_PROVISIONED: "NOT_PROVISIONED",
   PROVISIONED: "PROVISIONED",
@@ -287,7 +318,50 @@ export function createDeviceIdentityBridge({
         : block("IDENTITY_KEYPAIR_MISMATCH");
     } catch { return block("IDENTITY_SIGNING_FAILED"); }
   }
-  return Object.freeze({ read, initialize, sign });
+  // Internal source-only native-host proof. No runtime.onMessage or popup
+  // exposes this method: a separately certified native host adapter must own
+  // the caller and per-profile resource pins. This receipt is NOT enrollment.
+  async function signNativeProof(worker_id:string,challenge:unknown):Promise<Signed|Block> {
+    if(!validDeps)return block("IDENTITY_ADAPTER_INVALID");
+    if(!validWorker(worker_id))return block("IDENTITY_WORKER_INVALID");
+    const current=clockNow(now);
+    if(current===null||!validNativeProof(challenge,worker_id,current))
+      return block("IDENTITY_NATIVE_CHALLENGE_REJECTED");
+    const typed=challenge as NativeProofChallenge;
+    let record:IdentityRecord|Block;
+    try {
+      record=await store.atomic(async tx=>{
+        const existing=assertProfile(await tx.get(),worker_id);
+        if("state" in existing)return existing;
+        const used=existing.used.filter(x=>x.expires_at_ms>current);
+        if(used.some(x=>x.nonce===typed.server_nonce))
+          return block("IDENTITY_CHALLENGE_REPLAY");
+        if(used.length>=LIMIT)return block("IDENTITY_REPLAY_REGISTRY_FULL");
+        await tx.put({...existing,used:[...used,{
+          nonce:typed.server_nonce,expires_at_ms:typed.expires_at_ms,
+        }]});
+        return existing;
+      });
+    }catch{return block("IDENTITY_STORAGE_UNAVAILABLE");}
+    if("state" in record)return record;
+    try{
+      const ownHash=await sha256(utf8.encode(JSON.stringify(record.public_key)),cryptoImpl);
+      if(ownHash!==typed.public_key_sha256)return block("IDENTITY_NATIVE_KEY_MISMATCH");
+      const fresh=clockNow(now);
+      if(fresh===null||fresh>=typed.expires_at_ms)return block("IDENTITY_CHALLENGE_EXPIRED");
+      const encoded=utf8.encode(canonicalNativeProofMessage(typed));
+      const signature=new Uint8Array(await cryptoImpl.subtle.sign(
+        {name:"ECDSA",hash:"SHA-256"},record.private_key,encoded));
+      if(signature.length!==64)return block("IDENTITY_SIGNATURE_INVALID");
+      const publicKey=await cryptoImpl.subtle.importKey("jwk",record.public_key,
+        {name:"ECDSA",namedCurve:"P-256"},false,["verify"]);
+      const valid=await cryptoImpl.subtle.verify({name:"ECDSA",hash:"SHA-256"},
+        publicKey,signature,encoded);
+      return valid?{state:"SIGNED",device_signature:toB64(signature)}:
+        block("IDENTITY_KEYPAIR_MISMATCH");
+    }catch{return block("IDENTITY_SIGNING_FAILED");}
+  }
+  return Object.freeze({ read, initialize, sign, signNativeProof });
 }
 
 // Read-only local status for the popup. A message may never trigger signing.
