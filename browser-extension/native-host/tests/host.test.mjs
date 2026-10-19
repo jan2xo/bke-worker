@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { generateKeyPairSync,createHash,sign } from "node:crypto";
-import { mkdtemp,writeFile,rm,chmod } from "node:fs/promises";
+import { mkdtemp,writeFile,rm,chmod,symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -237,4 +237,21 @@ test("frame encoding enforces maximum size and remains little endian",()=>{
   assert.throws(()=>encodeFrame({a:"X".repeat(MAX_FRAME_BYTES)}),/OVERSIZE/);
   const output=encodeFrame({ok:true});
   assert.equal(output.readUInt32LE(0),Buffer.byteLength(JSON.stringify({ok:true})));
+});
+
+test("symlinked policy is rejected even when target file is owner-readable",async()=>{
+  const f=fixture(),root=await mkdtemp(join(tmpdir(),"bke-native-symlink-test-"));
+  f.policy.expires_at_ms=Date.now()+30000;
+  try {
+    const target=join(root,"real-policy.json"),link=join(root,"policy-link.json");
+    await writeFile(target,JSON.stringify(f.policy),{mode:0o600});
+    await symlink(target,link);
+    const entry=fileURLToPath(new URL("../entry.mjs",import.meta.url));
+    const child=spawn(process.execPath,[entry,link,ORIGIN],{stdio:["pipe","pipe","pipe"]});
+    const stdout=[];child.stdout.on("data",b=>stdout.push(b));
+    child.stdin.end();
+    const [exit]=await once(child,"exit");
+    assert.equal(exit,1);
+    assert.equal(Buffer.concat(stdout).length,0);
+  }finally{await rm(root,{recursive:true,force:true});}
 });
