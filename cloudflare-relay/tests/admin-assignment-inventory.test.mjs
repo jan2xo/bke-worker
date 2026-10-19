@@ -16,7 +16,7 @@ const pr = (number, labels = [], sha = "a".repeat(40)) => ({
   number, state: "open", head: { sha },
   labels: labels.map(name => ({ name })),
 });
-const baseRepos = [repo(1, "bke-worker"), repo(2, "render-dock")];
+const baseRepos = [repo(1354026486, "bke-worker"), repo(2, "render-dock")];
 function fixture({
   repositories = baseRepos, grants = { metadata: "read", pull_requests: "read" },
   prPages, repoPages, installation = {
@@ -96,7 +96,7 @@ test("exact read-only GitHub installation permissions; no token crosses RPC", as
     enumerated_open_pull_requests: 3,
     consistency: "NON_ATOMIC_ENUMERATION",
     worker_assignments: [
-      { repository: "jan2xo/bke-worker", repository_id: 1, number: 10,
+      { repository: "jan2xo/bke-worker", repository_id: 1354026486, number: 10,
         state: "open", head_sha: "b".repeat(40), labels: ["bke-worker:worker-a"] },
       { repository: "jan2xo/render-dock", repository_id: 2, number: 3,
         state: "open", head_sha: "c".repeat(40), labels: ["bke-worker:worker-b"] },
@@ -156,7 +156,8 @@ test("rejects redirect and transport failures before returning partial claims", 
 });
 
 test("all 100 installation-approved repositories must be fully checked", async () => {
-  const hundred = Array.from({ length: 100 }, (_, i) => repo(i + 1, "r" + i));
+  const hundred = [repo(1354026486, "bke-worker"),
+    ...Array.from({ length: 99 }, (_, i) => repo(i + 1, "r" + (i + 1)))];
   const f = fixture({ repositories: hundred, prPages: (name) =>
     name === "jan2xo/r99" ? [pr(8, ["bke-worker:worker-a"])] : [] });
   const result = await collect(f);
@@ -169,7 +170,7 @@ test("all 100 installation-approved repositories must be fully checked", async (
 });
 
 test("repository pagination cannot omit an approved repository", async () => {
-  const one = { total_count: 2, repositories: [repo(1, "bke-worker")] };
+  const one = { total_count: 2, repositories: [repo(1354026486, "bke-worker")] };
   const f = fixture({ repoPages: page => page === 1 ? one :
     { total_count: 2, repositories: [] } });
   await denied(() => collect(f), "ADMIN_ASSIGNMENT_REPOSITORIES_INCOMPLETE");
@@ -180,7 +181,7 @@ test("repository pagination cannot omit an approved repository", async () => {
 });
 
 test("all PR pages are checked, including exact-full first page", async () => {
-  const f = fixture({ repositories: [repo(1, "bke-worker")],
+  const f = fixture({ repositories: [repo(1354026486, "bke-worker")],
     prPages: (_, page) => page === 1 ?
       Array.from({ length: 100 }, (_, i) => pr(i + 1)) :
       page === 2 ? [pr(101, ["bke-worker:worker-c"])] : [] });
@@ -191,10 +192,10 @@ test("all PR pages are checked, including exact-full first page", async () => {
 });
 
 test("PR page limit or duplicate PRs cannot be treated as complete", async () => {
-  const f = fixture({ repositories: [repo(1, "bke-worker")],
+  const f = fixture({ repositories: [repo(1354026486, "bke-worker")],
     prPages: (_, page) => Array.from({ length: 100 }, (_, i) => pr((page - 1) * 100 + i + 1)) });
   await denied(() => collect(f), "ADMIN_ASSIGNMENT_PAGINATION_INCOMPLETE");
-  const f2 = fixture({ repositories: [repo(1, "bke-worker")],
+  const f2 = fixture({ repositories: [repo(1354026486, "bke-worker")],
     prPages: (_, page) => page === 1 ? [pr(1), pr(1)] : [] });
   await denied(() => collect(f2), "ADMIN_ASSIGNMENT_PR_DUPLICATE");
 });
