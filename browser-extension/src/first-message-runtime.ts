@@ -37,10 +37,14 @@ import {
 export type FirstMessageSimulationFault =
   | "NONE"
   | "FENCE_CAS_CONFLICT"
+  | "FENCE_CAS_UNCERTAIN"
   | "FENCE_READBACK_MISMATCH"
   | "SEND_CLAIM_CAS_CONFLICT"
+  | "SEND_CLAIM_CAS_UNCERTAIN"
   | "SEND_CLAIM_READBACK_MISMATCH"
+  | "REOBSERVE_AFTER_CLAIM_THROW"
   | "SUBMIT_UNCERTAIN"
+  | "SUBMIT_THROW_AFTER_INVOKE"
   | "POST_SEND_ID_REUSED"
   | "RECONCILE_CAS_CONFLICT"
   | "RECONCILE_READBACK_MISMATCH";
@@ -53,6 +57,7 @@ export type FirstMessageRuntimeCode =
   | "PREPARE_BLOCKED"
   | "FENCE_COMMIT_FAILED"
   | "FENCE_READBACK_BLOCKED"
+  | "ADAPTER_ERROR"
   | "SEND_CLAIM_COMMIT_FAILED"
   | "SEND_CLAIM_READBACK_BLOCKED"
   | "FIRST_SUBMISSION_BLOCKED"
@@ -103,15 +108,20 @@ export interface RuntimeBrowserSnapshot {
 
 /** Port contract intended for the later certified adapters. No live adapter is
  * installed by this PR yet. The in-memory implementation below is private. */
+export type LedgerCasWriteResult =
+  | { status: "COMMITTED"; commitSha: string }
+  | { status: "CONFLICT"; commitSha: null }
+  | { status: "UNCERTAIN"; commitSha: string | null };
+
 export interface FirstMessageLedgerPort {
   loadSnapshot(
     event: BootstrapEvent,
     browser: RuntimeBrowserSnapshot,
     nowIso: string,
   ): Promise<{ freshAttempt: FreshAttemptInput; bootstrap: BootstrapFenceInput }>;
-  commitPreSendFence(fence: DurablePreSendFence): Promise<{ ok: boolean; commitSha: string | null }>;
+  commitPreSendFence(fence: DurablePreSendFence): Promise<LedgerCasWriteResult>;
   readBackPreSendFence(commitSha: string): Promise<boolean>;
-  consumeFirstSendClaim(claim: DurableFirstSendClaim): Promise<{ ok: boolean; commitSha: string | null }>;
+  consumeFirstSendClaim(claim: DurableFirstSendClaim): Promise<LedgerCasWriteResult>;
   readBackFirstSendClaim(commitSha: string): Promise<boolean>;
   reconcileConversation(receipt: FirstMessageConversationReceipt): Promise<{ ok: boolean; commitSha: string | null }>;
   readBackConversation(conversationId: string): Promise<boolean>;
@@ -120,6 +130,7 @@ export interface FirstMessageLedgerPort {
 
 export interface FirstMessageBrowserPort {
   observe(nowIso: string): Promise<RuntimeBrowserSnapshot>;
+  readonly submissionCount: number;
   submitOnce(
     prompt: string,
     binding: { attemptId: string; fenceId: string; claimId: string; targetId: string; profileId: string; targetTabId: number },
@@ -153,10 +164,14 @@ function validSimulationFault(value: unknown): value is FirstMessageSimulationFa
   return typeof value === "string" && [
     "NONE",
     "FENCE_CAS_CONFLICT",
+    "FENCE_CAS_UNCERTAIN",
     "FENCE_READBACK_MISMATCH",
     "SEND_CLAIM_CAS_CONFLICT",
+    "SEND_CLAIM_CAS_UNCERTAIN",
     "SEND_CLAIM_READBACK_MISMATCH",
+    "REOBSERVE_AFTER_CLAIM_THROW",
     "SUBMIT_UNCERTAIN",
+    "SUBMIT_THROW_AFTER_INVOKE",
     "POST_SEND_ID_REUSED",
     "RECONCILE_CAS_CONFLICT",
     "RECONCILE_READBACK_MISMATCH",
@@ -296,14 +311,17 @@ class MemoryLedger implements FirstMessageLedgerPort {
     return { freshAttempt, bootstrap };
   }
 
-  async commitPreSendFence(fence: DurablePreSendFence): Promise<{ ok: boolean; commitSha: string | null }> {
+  async commitPreSendFence(fence: DurablePreSendFence): Promise<LedgerCasWriteResult> {
     if (this.fault === "FENCE_CAS_CONFLICT" || this.fence || fence.headSha !== HEAD) {
-      return { ok: false, commitSha: null };
+      return { status: "CONFLICT", commitSha: null };
     }
     this.fence = { ...fence };
     this.state = "FENCED_READY_TO_SEND";
     this.delivery = "NOT_SENT";
-    return { ok: true, commitSha: fence.commitSha };
+    if (this.fault === "FENCE_CAS_UNCERTAIN") {
+      return { status: "UNCERTAIN", commitSha: null };
+    }
+    return { status: "COMMITTED", commitSha: fence.commitSha };
   }
 
   async readBackPreSendFence(commitSha: string): Promise<boolean> {
@@ -325,16 +343,19 @@ class MemoryLedger implements FirstMessageLedgerPort {
     return true;
   }
 
-  async consumeFirstSendClaim(claim: DurableFirstSendClaim): Promise<{ ok: boolean; commitSha: string | null }> {
+  async consumeFirstSendClaim(claim: DurableFirstSendClaim): Promise<LedgerCasWriteResult> {
     if (this.fault === "SEND_CLAIM_CAS_CONFLICT" || !this.fence ||
         this.state !== "FENCED_READY_TO_SEND" || this.claim ||
         claim.fenceCommitSha !== this.fence.commitSha) {
-      return { ok: false, commitSha: null };
+      return { status: "CONFLICT", commitSha: null };
     }
     this.claim = { ...claim };
     this.state = "FENCED_MAY_HAVE_SENT";
     this.delivery = "MAY_HAVE_SENT";
-    return { ok: true, commitSha: claim.commitSha };
+    if (this.fault === "SEND_CLAIM_CAS_UNCERTAIN") {
+      return { status: "UNCERTAIN", commitSha: null };
+    }
+    return { status: "COMMITTED", commitSha: claim.commitSha };
   }
 
   async readBackFirstSendClaim(commitSha: string): Promise<boolean> {
@@ -387,7 +408,6 @@ class MemoryLedger implements FirstMessageLedgerPort {
     this.delivery = "UNCERTAIN";
   }
 
-  get quarantined(): boolean { return this.uncertain; }
 }
 
 class MemoryBrowser implements FirstMessageBrowserPort {
@@ -400,6 +420,9 @@ class MemoryBrowser implements FirstMessageBrowserPort {
   constructor(private readonly fault: FirstMessageSimulationFault) {}
 
   async observe(nowIso: string): Promise<RuntimeBrowserSnapshot> {
+    if (this.fault === "REOBSERVE_AFTER_CLAIM_THROW" && Date.parse(nowIso) === BASE_TIME + 4750) {
+      throw new Error("synthetic controller observation failure after claim read-back");
+    }
     const postSend = this.submitted && !this.uncertain;
     if (postSend) this.observedAfterSend = true;
     const observedAt = postSend ? isoPlus(6750) : (Date.parse(nowIso) > BASE_TIME + 4500 ? isoPlus(4750) : nowIso);
@@ -456,6 +479,10 @@ class MemoryBrowser implements FirstMessageBrowserPort {
     }
     this.submitCount++;
     this.submitted = true;
+    if (this.fault === "SUBMIT_THROW_AFTER_INVOKE") {
+      this.uncertain = true;
+      throw new Error("synthetic submit adapter threw after invocation");
+    }
     if (this.fault === "SUBMIT_UNCERTAIN") {
       this.uncertain = true;
       return { status: "UNCERTAIN", receipt: null };
@@ -483,19 +510,6 @@ class MemoryBrowser implements FirstMessageBrowserPort {
   }
 
   get submissionCount(): number { return this.submitCount; }
-  get observedAfterSubmit(): boolean { return this.observedAfterSend; }
-}
-
-function createInitialFreshRequest(): FreshAttemptRequest {
-  return {
-    protocolVersion: ATTEMPT_PROTOCOL_VERSION,
-    repository: REPOSITORY,
-    workerId: WORKER,
-    prNumber: PR_NUMBER,
-    headSha: HEAD,
-    attemptId: ATTEMPT_ID,
-    kind: "IMPLEMENT",
-  };
 }
 
 function makeFence(): DurablePreSendFence {
