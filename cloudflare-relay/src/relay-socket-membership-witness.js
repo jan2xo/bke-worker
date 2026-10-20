@@ -5,10 +5,18 @@
 import {readRelayRetirementWitness} from './relay-retirement-witness.js';
 
 const MAX_SOCKETS = 128;
-const blocked = code => Object.freeze({
-  state: 'BLOCKED', code, authority: 'NONE', can_retire: false,
-  delivery_fenced: false, delivery_ack_proven: false,
+// G0-02 owns this output contract, including inherited G0-01 failure paths.
+// Explicit false on EVERY result is required; undefined is not a negative gate.
+const NEGATIVE_GATES = Object.freeze({
+  authority: 'NONE',
+  can_retire: false,
+  delivery_fenced: false,
+  delivery_ack_proven: false,
+  socket_liveness_proven: false,
+  snapshot_atomic: false,
+  socket_sample_atomic: false,
 });
+const blocked = code => Object.freeze({state: 'BLOCKED', code, ...NEGATIVE_GATES});
 const record = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => record(v) && Object.keys(v).length === keys.length &&
   keys.every(k => Object.prototype.hasOwnProperty.call(v, k));
@@ -27,7 +35,10 @@ export async function readRelaySocketMembershipWitness(deps, expected) {
       typeof deps.getWebSockets !== 'function') return blocked('DO_CONTEXT_REQUIRED');
 
   const baseline = await readRelayRetirementWitness(deps.storage, expected);
-  if (baseline.state !== 'OBSERVED_ONLY') return baseline;
+  // Never leak G0-01's narrower BLOCKED shape into the G0-02 return contract.
+  if (baseline.state !== 'OBSERVED_ONLY') {
+    return blocked(baseline.state === 'BLOCKED' ? baseline.code : 'BASELINE_UNAVAILABLE');
+  }
 
   let storedBefore, storedAfter, sockets;
   try {
@@ -85,11 +96,8 @@ export async function readRelaySocketMembershipWitness(deps, expected) {
     // Only confirms sampled attachment equality. NOT open/now/live authority.
     registered_socket_id_match_observed: matched === 1,
     socket_collection_sample_size: sockets.length,
-    socket_liveness_proven: false,
-    socket_sample_atomic: false,
-    can_retire: false,
-    authority: 'NONE',
-    delivery_ack_proven: false,
-    delivery_fenced: false,
+    // Explicitly normalize all negative evidence gates on the success path,
+    // independently of upstream schema changes.
+    ...NEGATIVE_GATES,
   });
 }
