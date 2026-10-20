@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Adversarial F1-02 v2 send-once ledger; local only, no GitHub mutation."""
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+import sys
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from github_atomic_claim import prepare_reservation
+from github_f1_first_send_ledger import (
+    FirstSendLedgerDenied, append_first_send_fence, consume_first_send_claim,
+    validate_ledger_successor, validated_ledger,
+)
+from github_f1_private_arbiter_writer import GitHubAppArbiterWriter, GitHubWriterDenied
+from github_f1_private_arbiter_writer_contract import FakeProvider, TOKEN
+from unittest.mock import patch
+
+PR_HEAD = "a" * 40
+FENCE_HEAD = "f" * 40
+TIME = "2026-10-20T06:00:00.000Z"
+FENCE_ID = "fence-123456"
+SEND_CLAIM_ID = "send-1234567"
+
+
+def base():
+    preflight = {
+        "state": "PRECLAIM_CONSISTENT_ONLY", "worker_id": "f1",
+        "repository": "jan2xo/bke-worker", "number": 122,
+        "head_sha": PR_HEAD, "assignment_authority": "NONE",
+        "dispatch_authority": "NONE", "wake_authority": "NONE",
+        "atomicity": "NONE",
+    }
+    observed = {
+        "repository": preflight["repository"], "number": preflight["number"],
+        "head_sha": preflight["head_sha"], "labels": [],
+    }
+    claim, claim_id = prepare_reservation(
+        manifest={"version": 1, "sequence": 0, "claims": []},
+        preflight=preflight, current_pr=observed,
+        expected_labels=[], now_ms=100_000,
+    )
+    ledger = {"version": 2, "sequence": claim["sequence"],
+              "claims": claim["claims"], "attempts": []}
+    return ledger, claim_id
+
+
+def prepared():
+    ledger, worker_claim_id = base()
+    return ledger, append_first_send_fence(
+        ledger, attempt_id="attempt-f1-01",
+        worker_claim_id=worker_claim_id,
+        target_sha256="a" * 64, profile_sha256="b" * 64,
+        tab_id=17, execution_id="execution-12345678",
+        fence_id=FENCE_ID,
+    )
+
+
+def consumed():
+    base_ledger, fence = prepared()
+    sent = consume_first_send_claim(
+        fence, attempt_id="attempt-f1-01",
+        expected_parent_sha=FENCE_HEAD,
+        send_claim_id=SEND_CLAIM_ID, claimed_at=TIME,
+    )
+    return base_ledger, fence, sent
+
+
+class FirstSendLedgerTests(unittest.TestCase):
+    def denied(self, code, op):
+        with self.assertRaisesRegex(FirstSendLedgerDenied, "^" + code + "$"):
+            op()
+
+    def test_v1_existing_claim_reader_works_but_no_implicit_v2_migration(self):
+        ledger, _ = base()
+        legacy = {"version": 1, "sequence": ledger["sequence"],
+                  "claims": deepcopy(ledger["claims"])}
+        self.assertEqual(validated_ledger(legacy), legacy)
+        self.denied("F1_LEDGER_MIGRATION_NOT_AUTHORIZED", lambda:
+                    validate_ledger_successor(legacy, ledger,
+                                             expected_parent_sha=FENCE_HEAD))
+
+    def test_fence_requires_existing_reserved_worker_claim(self):
+        ledger, claim = base()
+        self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda:
+                    append_first_send_fence(
+                        ledger, attempt_id="attempt-f1-01",
+                        worker_claim_id="0" * 32,
+                        target_sha256="a" * 64, profile_sha256="b" * 64,
+                        tab_id=1, execution_id="execution-12345", fence_id=FENCE_ID))
+        self.assertEqual(len(ledger["attempts"]), 0)
+        fence = append_first_send_fence(
+            ledger, attempt_id="attempt-f1-01", worker_claim_id=claim,
+            target_sha256="a" * 64, profile_sha256="b" * 64, tab_id=17,
+            execution_id="execution-12345678", fence_id=FENCE_ID)
+        self.assertEqual(fence["attempts"][0]["state"], "FENCED_READY_TO_SEND")
+
+    def test_fence_append_requires_one_sequence_increment_and_no_claim_mutation(self):
+        ledger, fence = prepared()
+        self.assertEqual(validate_ledger_successor(
+            ledger, fence, expected_parent_sha=PR_HEAD), fence)
+        malicious = deepcopy(fence)
+        malicious["claims"][0]["head_sha"] = "f" * 40
+        self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda:
+                    validate_ledger_successor(ledger, malicious,
+                                              expected_parent_sha=PR_HEAD))
+        malicious = deepcopy(fence)
+        malicious["sequence"] += 1
+        self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
+                    validate_ledger_successor(ledger, malicious,
+                                              expected_parent_sha=PR_HEAD))
+
+    def test_consume_is_irreversible_and_exact_snapshot_bound(self):
+        _, fence, used = consumed()
+        self.assertEqual(validate_ledger_successor(
+            fence, used, expected_parent_sha=FENCE_HEAD), used)
+        self.assertEqual(used["attempts"][0]["state"], "FENCED_MAY_HAVE_SENT")
+        self.assertEqual(used["attempts"][0]["fence_snapshot_sha"], FENCE_HEAD)
+        self.denied("F1_SEND_ALREADY_CONSUMED", lambda:
+                    consume_first_send_claim(
+                        used, attempt_id="attempt-f1-01",
+                        expected_parent_sha=FENCE_HEAD, send_claim_id=SEND_CLAIM_ID,
+                        claimed_at=TIME))
+        self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
+                    validate_ledger_successor(
+                        used, fence, expected_parent_sha=FENCE_HEAD))
+
+    def test_stale_head_blocks_consumed_claim_prepublication(self):
+        _, fence, used = consumed()
+        self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
+                    validate_ledger_successor(
+                        fence, used, expected_parent_sha="e" * 40))
+
+    def test_claim_insertion_without_prior_fence_is_denied(self):
+        old, fence, used = consumed()
+        self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
+                    validate_ledger_successor(
+                        old, used, expected_parent_sha=FENCE_HEAD))
+
+    def test_cross_attempt_and_same_claim_replay_denied(self):
+        ledger, fence = prepared()
+        row = deepcopy(fence["attempts"][0])
+        replay = deepcopy(fence)
+        replay["attempts"].append(row)
+        replay["sequence"] += 1
+        self.denied("F1_ATTEMPT_REPLAY", lambda: validated_ledger(replay))
+        replay = deepcopy(fence)
+        replay["attempts"][0]["worker_id"] = "f2"
+        self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda: validated_ledger(replay))
+        replay = deepcopy(fence)
+        replay["attempts"][0]["number"] = 124
+        self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda: validated_ledger(replay))
+
+    def test_invalid_raw_profile_target_identifier_and_claim_shape(self):
+        _, fence = prepared()
+        for key, invalid in [("target_sha256", "raw target"), ("profile_sha256", []),
+                             ("tab_id", True), ("execution_id", 15), ("fence_id", None)]:
+            mutated = deepcopy(fence)
+            mutated["attempts"][0][key] = invalid
+            self.denied("F1_ATTEMPT_ROW_INVALID",
+                        lambda mutated=mutated: validated_ledger(mutated))
+
+    def test_missing_or_malformed_consumed_marker_blocks(self):
+        _, _, used = consumed()
+        for key, invalid in [("send_claim_id", None), ("claimed_at", "bad-time"),
+                             ("fence_snapshot_sha", [FENCE_HEAD])]:
+            mutated = deepcopy(used)
+            mutated["attempts"][0][key] = invalid
+            self.denied("F1_ATTEMPT_PHASE_INVALID",
+                        lambda mutated=mutated: validated_ledger(mutated))
+
+    def test_consume_cannot_modify_owner_pr_head_or_profile(self):
+        _, fence, used = consumed()
+        for key, replacement in [("worker_id", "f2"), ("head_sha", "e" * 40),
+                                 ("profile_sha256", "e" * 64),
+                                 ("execution_id", "execution-hijacked")]:
+            changed = deepcopy(used)
+            changed["attempts"][0][key] = replacement
+            expected = "F1_ATTEMPT_WORKER_CLAIM_INVALID" if key in (
+                "worker_id", "head_sha") else "F1_LEDGER_TRANSITION_INVALID"
+            self.denied(expected, lambda changed=changed:
+                        validate_ledger_successor(
+                            fence, changed, expected_parent_sha=FENCE_HEAD))
+
+    def test_real_wire_adapter_models_one_fence_then_one_consumption(self):
+        provider = FakeProvider()
+        root, fence = prepared()
+        # The synthetic provider starts with legacy v1; replacing its
+        # preinstalled fixture with a hypothetical manually approved v2
+        # initialization is *test-only*. No live migration is implemented.
+        from github_f1_private_arbiter_writer import blob_sha, canonical
+        raw = canonical(root)
+        bsha = blob_sha(raw)
+        provider.blobs[bsha] = raw
+        old_tree = provider.commits[provider.head]["tree"]
+        provider.trees[old_tree] = bsha
+        with patch("urllib.request.build_opener", return_value=provider):
+            writer = GitHubAppArbiterWriter(TOKEN, live_writes_enabled=True)
+        first = writer.publish(expected_head=provider.head, proposed_manifest=fence)
+        fence_head = first["arbiter_head"]
+        next_ledger = consume_first_send_claim(
+            fence, attempt_id="attempt-f1-01", expected_parent_sha=fence_head,
+            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME)
+        second = writer.publish(expected_head=fence_head,
+                                proposed_manifest=next_ledger)
+        self.assertNotEqual(first["arbiter_head"], second["arbiter_head"])
+        self.assertEqual(provider.head, second["arbiter_head"])
+        self.assertEqual(sum(1 for method, path in provider.requests if method == "PATCH"), 2)
+        self.assertEqual(second["send_authority"], "NONE")
+        with self.assertRaises(GitHubWriterDenied):
+            writer.publish(expected_head=provider.head, proposed_manifest=next_ledger)
+
+
+if __name__ == "__main__":
+    unittest.main()
