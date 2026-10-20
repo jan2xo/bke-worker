@@ -39,6 +39,12 @@ export interface GitHubAssignmentObservation {
   previousAttemptResolved: boolean;
   currentAttemptId: string;
   currentAttemptDelivery: AttemptDelivery;
+  /** Authoritative GitHub attempt ledger supplies prior target identity. */
+  previousConversationId: string | null;
+  /** Complete, non-truncated identities for this PR/worker, from GitHub. */
+  priorConversationIds: string[];
+  /** Trusted provider record timestamp, not a browser-page assertion. */
+  attemptAuthorizedAt: string;
 }
 
 /** Status supplied by a browser page is observational and NOT identity proof. */
@@ -51,11 +57,34 @@ export interface ChatPageObservation {
   tabId: number;
 }
 
+/**
+ * A new-chat creation receipt from a future independently authenticated
+ * isolated browser controller. No page/content-script claims can establish
+ * this provenance. The pure model validates coherence ONLY; it cannot itself
+ * authenticate this object or grant a send/navigation right.
+ */
+export interface NewConversationConfirmation {
+  event: "NEW_CHAT_CREATED";
+  attemptId: string;
+  workerId: string;
+  headSha: string;
+  targetTabId: number;
+  /** The URL observed by the controller immediately BEFORE New Chat. */
+  beforeUrl: string;
+  /** The URL observed by the controller AFTER New Chat. */
+  afterUrl: string;
+  newConversationId: string;
+  creationStartedAt: string;
+  confirmedAt: string;
+}
+
 export interface BrowserTargetObservation {
   current: ChatPageObservation;
   ownedTargetTabId: number;
   matchingWritableTargetCount: number;
   sharedWritableProfile: boolean;
+  /** May be absent; absence MUST block candidate acceptance. */
+  newConversation?: NewConversationConfirmation;
 }
 
 export interface FreshAttemptInput {
@@ -77,6 +106,9 @@ export type GateCode =
   | "CHATGPT_UI_UNAVAILABLE"
   | "CHATGPT_BUSY"
   | "CHATGPT_OBSERVATION_STALE"
+  | "FRESH_CONVERSATION_UNCONFIRMED"
+  | "FRESH_CONVERSATION_REUSED"
+  | "FRESH_CONVERSATION_STALE"
   | "FRESH_CONVERSATION_CANDIDATE";
 
 export interface FreshAttemptResult {
@@ -88,6 +120,23 @@ export interface FreshAttemptResult {
 
 function blocked(code: GateCode): FreshAttemptResult {
   return { decision: "BLOCKED", code, authority: "NONE" };
+}
+
+const CONVERSATION_ID = /^[A-Za-z0-9_-]{8,128}$/;
+
+function conversationIdFromUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (url.origin !== "https://chatgpt.com" || url.username || url.password ||
+        url.search || url.hash) return null;
+    const m = /^\\/c\\/([A-Za-z0-9_-]{8,128})$/.exec(url.pathname);
+    return m ? (m[1] ?? null) : null;
+  } catch { return null; }
+}
+function validIso(raw: string): number | null {
+  if (!/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$/.test(raw)) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === raw ? ms : null;
 }
 
 /** No side effects, no HTTP, no browser APIs, no automatic retry or navigation. */
@@ -135,6 +184,18 @@ export function evaluateFreshAttempt(input: unknown): FreshAttemptResult {
   if (gh.currentAttemptId !== req.attemptId) return blocked("ATTEMPT_NOT_AUTHORIZED");
   if (!gh.previousAttemptResolved) return blocked("PREVIOUS_ATTEMPT_UNRESOLVED");
   if (gh.currentAttemptDelivery !== "NOT_SENT") return blocked("DISPATCH_NOT_NEW");
+  if ((gh.previousConversationId !== null &&
+       (typeof gh.previousConversationId !== "string" ||
+        !CONVERSATION_ID.test(gh.previousConversationId))) ||
+      !Array.isArray(gh.priorConversationIds) ||
+      gh.priorConversationIds.length > 1024 ||
+      !gh.priorConversationIds.every(id => typeof id === "string" && CONVERSATION_ID.test(id)) ||
+      new Set(gh.priorConversationIds).size !== gh.priorConversationIds.length ||
+      (gh.previousConversationId !== null &&
+       !gh.priorConversationIds.includes(gh.previousConversationId)) ||
+      typeof gh.attemptAuthorizedAt !== "string") {
+    return blocked("FRESH_CONVERSATION_UNCONFIRMED");
+  }
   if (target.sharedWritableProfile || target.matchingWritableTargetCount !== 1 ||
       page.tabId !== target.ownedTargetTabId) return blocked("BROWSER_TARGET_AMBIGUOUS");
   let url: URL;
@@ -152,5 +213,46 @@ export function evaluateFreshAttempt(input: unknown): FreshAttemptResult {
       observed > now + CLOCK_SKEW_MS || now - observed > OBSERVATION_MAX_AGE_MS) {
     return blocked("CHATGPT_OBSERVATION_STALE");
   }
+  // Old-chat UI idle is NEVER fresh-chat proof. The authenticated future
+  // controller must have made and observed a new chat for THIS attempt.
+  const confirmed = target.newConversation;
+  if (!confirmed || confirmed.event !== "NEW_CHAT_CREATED" ||
+      confirmed.attemptId !== req.attemptId ||
+      confirmed.workerId !== req.workerId ||
+      confirmed.headSha !== req.headSha ||
+      confirmed.targetTabId !== target.ownedTargetTabId ||
+      typeof confirmed.beforeUrl !== "string" ||
+      typeof confirmed.afterUrl !== "string" ||
+      typeof confirmed.newConversationId !== "string" ||
+      typeof confirmed.creationStartedAt !== "string" ||
+      typeof confirmed.confirmedAt !== "string") {
+    return blocked("FRESH_CONVERSATION_UNCONFIRMED");
+  }
+  const currentId = conversationIdFromUrl(page.url);
+  const afterId = conversationIdFromUrl(confirmed.afterUrl);
+  const beforeId = conversationIdFromUrl(confirmed.beforeUrl);
+  if (!currentId || !afterId || !CONVERSATION_ID.test(confirmed.newConversationId) ||
+      currentId !== afterId || currentId !== confirmed.newConversationId ||
+      (gh.previousConversationId !== null && beforeId !== gh.previousConversationId) ||
+      (gh.previousConversationId === null &&
+       confirmed.beforeUrl !== "https://chatgpt.com/")) {
+    return blocked("FRESH_CONVERSATION_UNCONFIRMED");
+  }
+  if (currentId === beforeId || currentId === gh.previousConversationId ||
+      gh.priorConversationIds.includes(currentId)) {
+    return blocked("FRESH_CONVERSATION_REUSED");
+  }
+  const authorizedAt = validIso(gh.attemptAuthorizedAt);
+  const start = validIso(confirmed.creationStartedAt);
+  const confirmedAt = validIso(confirmed.confirmedAt);
+  if (authorizedAt === null || start === null || confirmedAt === null ||
+      start < authorizedAt - CLOCK_SKEW_MS ||
+      confirmedAt < start || confirmedAt > observed + CLOCK_SKEW_MS ||
+      confirmedAt > now + CLOCK_SKEW_MS) {
+    return blocked("FRESH_CONVERSATION_STALE");
+  }
+  // A structurally consistent receipt (even if forged) is ONLY a candidate.
+  // The eventual actor MUST independently establish authenticated provider +
+  // controller provenance and atomically fence delivery before ANY prompt.
   return { decision: "CANDIDATE_ONLY", code: "FRESH_CONVERSATION_CANDIDATE", authority: "NONE" };
 }
