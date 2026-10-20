@@ -15,6 +15,7 @@ test("live entrypoint remains inert and performs zero external IO while live sen
   assert.equal(result.status, "BLOCKED");
   assert.equal(result.code, "LIVE_SEND_DISABLED");
   assert.equal(result.authority, "NONE");
+  assert.equal(result.syntheticEvidence, false);
   assert.equal(result.externalIoPerformed, false);
   assert.equal(result.realBrowserSubmissions, 0);
   assert.equal(result.simulatedSubmitInvocations, 0);
