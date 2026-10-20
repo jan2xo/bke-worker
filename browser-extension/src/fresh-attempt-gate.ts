@@ -124,6 +124,20 @@ function blocked(code: GateCode): FreshAttemptResult {
 
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{8,128}$/;
 
+/** Validate EVERY index, including holes ignored by Array.prototype.every().
+ * An inherited element or an undefined slot must never count as GitHub history.
+ */
+function isDenseValidConversationHistory(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > 1024) return false;
+  for (let i = 0; i < value.length; i++) {
+    if (!Object.hasOwn(value, i)) return false;
+    const conversationId: unknown = value[i];
+    if (typeof conversationId !== "string" ||
+        !CONVERSATION_ID.test(conversationId)) return false;
+  }
+  return new Set(value).size === value.length;
+}
+
 function conversationIdFromUrl(raw: string): string | null {
   try {
     const url = new URL(raw);
@@ -187,10 +201,7 @@ export function evaluateFreshAttempt(input: unknown): FreshAttemptResult {
   if ((gh.previousConversationId !== null &&
        (typeof gh.previousConversationId !== "string" ||
         !CONVERSATION_ID.test(gh.previousConversationId))) ||
-      !Array.isArray(gh.priorConversationIds) ||
-      gh.priorConversationIds.length > 1024 ||
-      !gh.priorConversationIds.every(id => typeof id === "string" && CONVERSATION_ID.test(id)) ||
-      new Set(gh.priorConversationIds).size !== gh.priorConversationIds.length ||
+      !isDenseValidConversationHistory(gh.priorConversationIds) ||
       (gh.previousConversationId !== null &&
        !gh.priorConversationIds.includes(gh.previousConversationId)) ||
       typeof gh.attemptAuthorizedAt !== "string") {
