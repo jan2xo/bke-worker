@@ -83,6 +83,9 @@ export interface NewConversationConfirmation {
 export interface BrowserTargetObservation {
   current: ChatPageObservation;
   ownedTargetTabId: number;
+  /** F1-04 adds explicit origin identity so snapshots cannot cross profiles/targets. */
+  ownedTargetId?: string;
+  ownedProfileId?: string;
   matchingWritableTargetCount: number;
   sharedWritableProfile: boolean;
   /** May be absent; absence MUST block candidate acceptance. */
@@ -192,6 +195,8 @@ export function evaluateFreshChatLanding(input: unknown): FreshAttemptResult {
     !["NOT_SENT", "IN_FLIGHT", "UNCERTAIN", "COMPLETED"].includes(gh.currentAttemptDelivery) ||
     typeof gh.attemptAuthorizedAt !== "string" ||
     typeof target.sharedWritableProfile !== "boolean" ||
+    typeof target.ownedTargetId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(target.ownedTargetId) ||
+    typeof target.ownedProfileId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(target.ownedProfileId) ||
     !Number.isSafeInteger(target.ownedTargetTabId) || target.ownedTargetTabId < 0 ||
     !Number.isSafeInteger(target.matchingWritableTargetCount) ||
     typeof page.url !== "string" || typeof page.observedAt !== "string" ||
