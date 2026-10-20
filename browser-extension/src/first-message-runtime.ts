@@ -548,126 +548,180 @@ function makeClaim(): DurableFirstSendClaim {
   };
 }
 
-async function executeInMemoryProtocol(fault: FirstMessageSimulationFault): Promise<FirstMessageRuntimeResult> {
+async function executeProtocol(
+  ledger: FirstMessageLedgerPort,
+  browser: FirstMessageBrowserPort,
+): Promise<FirstMessageRuntimeResult> {
   const phases: ProtocolPhase[] = [];
-  const ledger = new MemoryLedger(fault);
-  const browser = new MemoryBrowser(fault);
-  let snapshot: { freshAttempt: FreshAttemptInput; bootstrap: BootstrapFenceInput };
+  let claimConsumed = false;
+  let reconciliationCommitted = false;
+  try {
+    phases.push("OBSERVE_INITIAL");
+    const initialObservation = await browser.observe(isoPlus(1000));
+    const initialSnapshot = await ledger.loadSnapshot("PREPARE", initialObservation, isoPlus(1000));
+    phases.push("VALIDATE_FRESH_LANDING");
+    const freshResult = evaluateFreshChatLanding(initialSnapshot.freshAttempt);
+    if (freshResult.decision !== "CANDIDATE_ONLY" || freshResult.code !== "FRESH_CHAT_LANDING_CANDIDATE") {
+      return result("BLOCKED", "FRESH_LANDING_BLOCKED", phases);
+    }
+    const prepare = evaluateBootstrapFence(initialSnapshot.bootstrap);
+    if (prepare.decision !== "CANDIDATE_ONLY" || prepare.code !== "PREPARE_CANDIDATE") {
+      return result("BLOCKED", "PREPARE_BLOCKED", phases);
+    }
+    phases.push("PREPARE_CANDIDATE");
+    const prompt = buildApprovedBootstrapPrompt(initialSnapshot.bootstrap.request);
+    if (!prompt) return result("BLOCKED", "PREPARE_BLOCKED", phases);
 
-  phases.push("OBSERVE_INITIAL");
-  const initialObservation = await browser.observe(isoPlus(1000));
-  snapshot = await ledger.loadSnapshot("PREPARE", initialObservation, isoPlus(1000));
-  phases.push("VALIDATE_FRESH_LANDING");
-  const freshResult = evaluateFreshChatLanding(snapshot.freshAttempt);
-  if (freshResult.decision !== "CANDIDATE_ONLY" || freshResult.code !== "FRESH_CHAT_LANDING_CANDIDATE") {
-    return result("BLOCKED", "FRESH_LANDING_BLOCKED", phases);
-  }
-  const prepare = evaluateBootstrapFence(snapshot.bootstrap);
-  if (prepare.decision !== "CANDIDATE_ONLY" || prepare.code !== "PREPARE_CANDIDATE") {
-    return result("BLOCKED", "PREPARE_BLOCKED", phases);
-  }
-  phases.push("PREPARE_CANDIDATE");
-  const prompt = buildApprovedBootstrapPrompt(snapshot.bootstrap.request);
-  if (!prompt) return result("BLOCKED", "PREPARE_BLOCKED", phases);
+    phases.push("COMMIT_FENCE");
+    const fenceWrite = await ledger.commitPreSendFence(makeFence());
+    if (fenceWrite.status !== "COMMITTED" || !fenceWrite.commitSha) {
+      return result("BLOCKED", "FENCE_COMMIT_FAILED", phases);
+    }
+    phases.push("READ_BACK_FENCE");
+    const fenceReadOk = await ledger.readBackPreSendFence(fenceWrite.commitSha);
+    if (!fenceReadOk) return result("BLOCKED", "FENCE_READBACK_BLOCKED", phases);
 
-  phases.push("COMMIT_FENCE");
-  const fenceWrite = await ledger.commitPreSendFence(makeFence());
-  if (!fenceWrite.ok || !fenceWrite.commitSha) return result("BLOCKED", "FENCE_COMMIT_FAILED", phases);
-  phases.push("READ_BACK_FENCE");
-  const fenceReadOk = await ledger.readBackPreSendFence(fenceWrite.commitSha);
-  if (!fenceReadOk) return result("BLOCKED", "FENCE_READBACK_BLOCKED", phases);
+    const fenceObservation = await browser.observe(isoPlus(3000));
+    const fenceSnapshot = await ledger.loadSnapshot("VERIFY_FENCE_COMMIT", fenceObservation, isoPlus(3000));
+    phases.push("VERIFY_FENCE");
+    const fenceGate = evaluateBootstrapFence(fenceSnapshot.bootstrap);
+    if (fenceGate.decision !== "CANDIDATE_ONLY" || fenceGate.code !== "FIRST_SEND_CAS_CANDIDATE") {
+      return result("BLOCKED", "FENCE_READBACK_BLOCKED", phases);
+    }
 
-  const fenceObservation = await browser.observe(isoPlus(3000));
-  snapshot = await ledger.loadSnapshot("VERIFY_FENCE_COMMIT", fenceObservation, isoPlus(3000));
-  phases.push("VERIFY_FENCE");
-  const fenceGate = evaluateBootstrapFence(snapshot.bootstrap);
-  if (fenceGate.decision !== "CANDIDATE_ONLY" || fenceGate.code !== "FIRST_SEND_CAS_CANDIDATE") {
-    return result("BLOCKED", "FENCE_READBACK_BLOCKED", phases);
-  }
+    phases.push("COMMIT_SEND_CLAIM");
+    const claimWrite = await ledger.consumeFirstSendClaim(makeClaim());
+    if (claimWrite.status === "CONFLICT") {
+      return result("BLOCKED", "SEND_CLAIM_COMMIT_FAILED", phases);
+    }
+    if (claimWrite.status === "UNCERTAIN" || !claimWrite.commitSha) {
+      claimConsumed = true;
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result("BLOCKED", "DELIVERY_UNCERTAIN", phases);
+    }
+    claimConsumed = true;
 
-  phases.push("COMMIT_SEND_CLAIM");
-  const claimWrite = await ledger.consumeFirstSendClaim(makeClaim());
-  if (!claimWrite.ok || !claimWrite.commitSha) return result("BLOCKED", "SEND_CLAIM_COMMIT_FAILED", phases);
-  phases.push("READ_BACK_SEND_CLAIM");
-  const claimReadOk = await ledger.readBackFirstSendClaim(claimWrite.commitSha);
-  if (!claimReadOk) return result("BLOCKED", "SEND_CLAIM_READBACK_BLOCKED", phases);
+    phases.push("READ_BACK_SEND_CLAIM");
+    const claimReadOk = await ledger.readBackFirstSendClaim(claimWrite.commitSha);
+    if (!claimReadOk) {
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result("BLOCKED", "SEND_CLAIM_READBACK_BLOCKED", phases);
+    }
 
-  phases.push("REOBSERVE_AFTER_CLAIM");
-  const afterClaimObservation = await browser.observe(isoPlus(4750));
-  snapshot = await ledger.loadSnapshot("AUTHORIZE_FIRST_SUBMISSION", afterClaimObservation, isoPlus(5000));
-  phases.push("AUTHORIZE_FIRST_SUBMISSION");
-  const authorization = evaluateFirstMessageActuator({
-    freshAttempt: initialObservationFreshSnapshot(await ledger.loadSnapshot("PREPARE", initialObservation, isoPlus(1000))),
-    bootstrap: snapshot.bootstrap,
-    liveProofs: {
-      githubCasOwnerCertified: true,
-      nativePairingOwnerCertified: true,
-      realBrowserOwnerAccepted: true,
-    },
-  });
-  if (authorization.status !== "CANDIDATE_ONLY" || authorization.code !== "LIVE_SEND_DISABLED") {
-    return result("BLOCKED", "FIRST_SUBMISSION_BLOCKED", phases);
-  }
+    phases.push("REOBSERVE_AFTER_CLAIM");
+    const afterClaimObservation = await browser.observe(isoPlus(4750));
+    const submissionSnapshot = await ledger.loadSnapshot(
+      "AUTHORIZE_FIRST_SUBMISSION",
+      afterClaimObservation,
+      isoPlus(5000),
+    );
+    phases.push("AUTHORIZE_FIRST_SUBMISSION");
+    const authorization = evaluateFirstMessageActuator({
+      freshAttempt: initialSnapshot.freshAttempt,
+      bootstrap: submissionSnapshot.bootstrap,
+      liveProofs: {
+        githubCasOwnerCertified: true,
+        nativePairingOwnerCertified: true,
+        realBrowserOwnerAccepted: true,
+      },
+    });
+    if (authorization.status !== "CANDIDATE_ONLY" || authorization.code !== "LIVE_SEND_DISABLED") {
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result("BLOCKED", "DELIVERY_UNCERTAIN", phases);
+    }
 
-  phases.push("SIMULATED_SINGLE_SUBMIT");
-  const binding = {
-    attemptId: ATTEMPT_ID,
-    fenceId: FENCE_ID,
-    claimId: CLAIM_ID,
-    targetId: TARGET_ID,
-    profileId: PROFILE_ID,
-    targetTabId: TAB_ID,
-  };
-  const submitted = await browser.submitOnce(prompt, binding);
-  if (submitted.status === "UNCERTAIN" || !submitted.receipt) {
-    await ledger.markDeliveryUncertain();
-    phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
-    return result("BLOCKED", "DELIVERY_UNCERTAIN", phases, browser.submissionCount);
-  }
+    // This call is reachable only from the private simulation with in-memory
+    // ports. The exported live entrypoint below never calls this protocol while
+    // FIRST_MESSAGE_LIVE_SEND_ENABLED is false.
+    phases.push("SIMULATED_SINGLE_SUBMIT");
+    const binding = {
+      attemptId: ATTEMPT_ID,
+      fenceId: FENCE_ID,
+      claimId: CLAIM_ID,
+      targetId: TARGET_ID,
+      profileId: PROFILE_ID,
+      targetTabId: TAB_ID,
+    };
+    const submitted = await browser.submitOnce(prompt, binding);
+    if (submitted.status === "UNCERTAIN" || !submitted.receipt) {
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result("BLOCKED", "DELIVERY_UNCERTAIN", phases, browser.submissionCount);
+    }
 
-  phases.push("OBSERVE_POST_SEND");
-  const postSendObservation = await browser.observe(isoPlus(7000));
-  const confirmationSnapshot = await ledger.loadSnapshot("CONFIRM_NEW_CONVERSATION", postSendObservation, isoPlus(7000));
-  phases.push("VALIDATE_CONVERSATION_RECEIPT");
-  const confirmation = evaluateFirstMessageConfirmation({
-    freshAttempt: initialObservationFreshSnapshot(await ledger.loadSnapshot("PREPARE", initialObservation, isoPlus(1000))),
-    bootstrap: confirmationSnapshot.bootstrap,
-    liveProofs: {
-      githubCasOwnerCertified: true,
-      nativePairingOwnerCertified: true,
-      realBrowserOwnerAccepted: true,
-    },
-  });
-  if (confirmation.status !== "CANDIDATE_ONLY" ||
-      confirmation.code !== "FIRST_MESSAGE_DELIVERY_CANDIDATE" ||
-      confirmation.conversationIdCandidate !== submitted.receipt.conversationId) {
+    phases.push("OBSERVE_POST_SEND");
+    const postSendObservation = await browser.observe(isoPlus(7000));
+    const confirmationSnapshot = await ledger.loadSnapshot(
+      "CONFIRM_NEW_CONVERSATION",
+      postSendObservation,
+      isoPlus(7000),
+    );
+    phases.push("VALIDATE_CONVERSATION_RECEIPT");
+    const confirmation = evaluateFirstMessageConfirmation({
+      freshAttempt: initialSnapshot.freshAttempt,
+      bootstrap: confirmationSnapshot.bootstrap,
+      liveProofs: {
+        githubCasOwnerCertified: true,
+        nativePairingOwnerCertified: true,
+        realBrowserOwnerAccepted: true,
+      },
+    });
+    if (confirmation.status !== "CANDIDATE_ONLY" ||
+        confirmation.code !== "FIRST_MESSAGE_DELIVERY_CANDIDATE" ||
+        confirmation.conversationIdCandidate !== submitted.receipt.conversationId) {
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result(
+        "BLOCKED",
+        confirmation.code,
+        phases,
+        browser.submissionCount,
+        confirmation.conversationIdCandidate,
+      );
+    }
+
+    phases.push("RECONCILE_CONVERSATION");
+    const reconciled = await ledger.reconcileConversation(submitted.receipt);
+    if (!reconciled.ok || !reconciled.commitSha) {
+      await ledger.markDeliveryUncertain();
+      phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      return result("BLOCKED", "LEDGER_RECONCILIATION_FAILED", phases, browser.submissionCount, submitted.receipt.conversationId);
+    }
+    reconciliationCommitted = true;
+
+    phases.push("READ_BACK_RECONCILIATION");
+    const reconciledReadBack = await ledger.readBackConversation(submitted.receipt.conversationId);
+    if (!reconciledReadBack) {
+      return result("BLOCKED", "LEDGER_RECONCILIATION_FAILED", phases, browser.submissionCount, submitted.receipt.conversationId);
+    }
     return result(
-      "BLOCKED",
-      confirmation.code,
+      "SIMULATION_PASS",
+      "SIMULATION_PASS",
       phases,
       browser.submissionCount,
-      confirmation.conversationIdCandidate,
+      submitted.receipt.conversationId,
+      submitted.receipt.conversationId,
     );
+  } catch {
+    if (reconciliationCommitted) {
+      return result("BLOCKED", "LEDGER_RECONCILIATION_FAILED", phases, browser.submissionCount);
+    }
+    if (claimConsumed) {
+      await ledger.markDeliveryUncertain().catch(() => undefined);
+      if (!phases.includes("QUARANTINE_UNCERTAIN_DELIVERY")) {
+        phases.push("QUARANTINE_UNCERTAIN_DELIVERY");
+      }
+      return result("BLOCKED", "DELIVERY_UNCERTAIN", phases, browser.submissionCount);
+    }
+    return result("BLOCKED", "ADAPTER_ERROR", phases, browser.submissionCount);
   }
+}
 
-  phases.push("RECONCILE_CONVERSATION");
-  const reconciled = await ledger.reconcileConversation(submitted.receipt);
-  if (!reconciled.ok || !reconciled.commitSha) {
-    return result("BLOCKED", "LEDGER_RECONCILIATION_FAILED", phases, browser.submissionCount, submitted.receipt.conversationId);
-  }
-  phases.push("READ_BACK_RECONCILIATION");
-  const reconciledReadBack = await ledger.readBackConversation(submitted.receipt.conversationId);
-  if (!reconciledReadBack) {
-    return result("BLOCKED", "LEDGER_RECONCILIATION_FAILED", phases, browser.submissionCount, submitted.receipt.conversationId);
-  }
-  return result(
-    "SIMULATION_PASS",
-    "SIMULATION_PASS",
-    phases,
-    browser.submissionCount,
-    submitted.receipt.conversationId,
-    submitted.receipt.conversationId,
-  );
+async function executeInMemoryProtocol(fault: FirstMessageSimulationFault): Promise<FirstMessageRuntimeResult> {
+  return executeProtocol(new MemoryLedger(fault), new MemoryBrowser(fault));
 }
 
 /** Snapshot used to preserve the first, pre-send GitHub history while validating
