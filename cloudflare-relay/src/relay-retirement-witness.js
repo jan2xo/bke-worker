@@ -83,7 +83,9 @@ export async function readRelayRetirementWitness(storage, expected) {
     expected_head_sha: expected.expected_head_sha,
     active: activeSummary,
     queued: queuedSummary,
-    registered_connection_present: registered !== undefined,
+    // Stored metadata only. An authoritative live WebSocket requires a separate
+    // ctx.getWebSockets() membership/identity check, which this helper cannot perform.
+    active_connection_id_present: registered !== undefined,
     recent_delivery_count: recent?.length ?? 0,
     snapshot_atomic: false,
     delivery_ack_proven: false,
