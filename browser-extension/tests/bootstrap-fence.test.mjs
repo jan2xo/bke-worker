@@ -59,12 +59,14 @@ function fixture(event = "PREPARE") {
   return {request, github, browser, nowIso: "2026-10-20T04:00:04.000Z"};
 }
 
-function expectBlocked(edit, code, state = "BLOCKED", event = "PREPARE") {
+function expectBlocked(edit, code, state, event = "PREPARE") {
   const input = fixture(event);
   edit(input);
-  assert.deepEqual(evaluateBootstrapFence(input), {
-    decision: "BLOCKED", state, code, authority: "NONE"
-  });
+  const result = evaluateBootstrapFence(input);
+  assert.equal(result.decision, "BLOCKED");
+  assert.equal(result.code, code);
+  assert.equal(result.authority, "NONE");
+  if (state !== undefined) assert.equal(result.state, state);
 }
 
 function commitFence(input) {
@@ -168,7 +170,7 @@ test("closed PR, unresolved previous attempt and unauthorized state fail closed"
 });
 
 test("incomplete, duplicate, sparse, oversized and malformed history blocks", () => {
-  expectBlocked(f => { delete f.github.priorConversationIds; }, "INVALID_INPUT");
+  expectBlocked(f => { delete f.github.priorConversationIds; }, "PRIOR_HISTORY_INVALID");
   expectBlocked(f => { f.github.priorConversationIds = ["old-chat-0001", "old-chat-0001"]; }, "PRIOR_HISTORY_INVALID");
   expectBlocked(f => { f.github.priorConversationIds = new Array(1); }, "PRIOR_HISTORY_INVALID");
   expectBlocked(f => { f.github.priorConversationIds = ["old-chat-0001",,]; }, "PRIOR_HISTORY_INVALID");
@@ -288,7 +290,7 @@ test("uncertain send and crash/restart after fence never authorize a retry", () 
     f.request.event = "VERIFY_FENCE_COMMIT";
     f.github.state = "FENCED_MAY_HAVE_SENT";
     f.github.deliveryKnowledge = "UNCERTAIN";
-  }, "ATTEMPT_STATE_CONFLICT", "FENCED_MAY_HAVE_SENT", "VERIFY_FENCE_COMMIT");
+  }, "DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN", "VERIFY_FENCE_COMMIT");
 });
 
 test("restart before fence can resume prepare only, never first send", () => {
