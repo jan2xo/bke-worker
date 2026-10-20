@@ -9,10 +9,16 @@ function fixture() {
       headSha:HEAD,attemptId:"worker-a-120-2",kind:"REMEDIATE"},
     github:{repository:"jan2xo/bke-worker",prNumber:120,currentHeadSha:HEAD,
       assignedWorkerId:"worker-a",workerOpenPrAssignments:1,prAssignedWorkerCount:1,
-      prOpen:true,previousAttemptResolved:true,currentAttemptId:"worker-a-120-2",currentAttemptDelivery:"NOT_SENT"},
+      prOpen:true,previousAttemptResolved:true,currentAttemptId:"worker-a-120-2",currentAttemptDelivery:"NOT_SENT",
+      previousConversationId:"older-chat",priorConversationIds:["older-chat"],
+      attemptAuthorizedAt:"2026-10-20T02:59:55.000Z"},
     browser:{ownedTargetTabId:23,matchingWritableTargetCount:1,sharedWritableProfile:false,
-      current:{observedAt:"2026-10-20T03:00:00.000Z",url:"https://chatgpt.com/c/older-chat",
-        visible:true,composerAvailable:true,turnBusy:false,tabId:23}},
+      current:{observedAt:"2026-10-20T03:00:00.000Z",url:"https://chatgpt.com/c/new-chat-120-2",
+        visible:true,composerAvailable:true,turnBusy:false,tabId:23},
+      newConversation:{event:"NEW_CHAT_CREATED",attemptId:"worker-a-120-2",workerId:"worker-a",
+        headSha:HEAD,targetTabId:23,beforeUrl:"https://chatgpt.com/c/older-chat",
+        afterUrl:"https://chatgpt.com/c/new-chat-120-2",newConversationId:"new-chat-120-2",
+        creationStartedAt:"2026-10-20T02:59:58.000Z",confirmedAt:"2026-10-20T02:59:59.000Z"}},
     nowIso:"2026-10-20T03:00:02.000Z"
   };
 }
@@ -83,4 +89,83 @@ test("fresh-attempt model does not invent GitHub trust or state",()=>{
   assert.equal("prompt" in result,false);
   assert.equal("url" in result,false);
   assert.equal("workerId" in result,false);
+});
+
+test("P1 regression: old conversation can NEVER qualify as fresh",()=>{
+  blocked(f=>{f.browser.current.url="https://chatgpt.com/c/older-chat";},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.current.url="https://chatgpt.com/c/older-chat";
+    f.browser.newConversation.afterUrl="https://chatgpt.com/c/older-chat";
+    f.browser.newConversation.newConversationId="older-chat";},
+    "FRESH_CONVERSATION_REUSED");
+  blocked(f=>{f.browser.current.url="https://chatgpt.com/c/older-chat";
+    delete f.browser.newConversation;},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("no trusted new-conversation confirmation means no candidate",()=>{
+  blocked(f=>{delete f.browser.newConversation;},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation=null;},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.event="PAGE_IDLE";},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.attemptId="worker-a-120-1";},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.workerId="worker-b";},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.headSha="b".repeat(40);},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.targetTabId=44;},"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("new target URL identity must match the confirmation and exact chat route",()=>{
+  blocked(f=>{f.browser.newConversation.newConversationId="other-conversation";},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.afterUrl="https://chatgpt.com/c/another-chat";},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.current.url="https://chatgpt.com/";},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.current.url="https://chatgpt.com/c/new-chat-120-2?x=1";},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.browser.newConversation.beforeUrl="https://chatgpt.com/c/wrong-chat";},
+    "FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("reusing ANY GitHub recorded prior conversation blocks even with coherent receipt",()=>{
+  blocked(f=>{
+    f.github.priorConversationIds.push("new-chat-120-2");
+  },"FRESH_CONVERSATION_REUSED");
+  blocked(f=>{
+    f.github.priorConversationIds=["older-chat","older-chat"];
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{delete f.github.priorConversationIds;},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{delete f.github.previousConversationId;},"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{f.github.previousConversationId="another-chat";},"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("confirmation must follow authorized attempt and precede observation",()=>{
+  blocked(f=>{f.github.attemptAuthorizedAt="2026-10-20T03:00:01.000Z";},
+    "FRESH_CONVERSATION_STALE");
+  blocked(f=>{f.browser.newConversation.creationStartedAt="2026-10-20T02:59:30.000Z";},
+    "FRESH_CONVERSATION_STALE");
+  blocked(f=>{f.browser.newConversation.confirmedAt="2026-10-20T03:00:04.000Z";},
+    "FRESH_CONVERSATION_STALE");
+  blocked(f=>{f.browser.newConversation.confirmedAt="2026-10-20T02:59:40.000Z";},
+    "FRESH_CONVERSATION_STALE");
+  blocked(f=>{f.browser.newConversation.confirmedAt="invalid";},
+    "FRESH_CONVERSATION_STALE");
+});
+
+test("first attempt from new-chat landing page requires own newly-created conversation",()=>{
+  const f=fixture();
+  f.github.previousConversationId=null;
+  f.github.priorConversationIds=[];
+  f.browser.newConversation.beforeUrl="https://chatgpt.com/";
+  assert.equal(evaluateFreshAttempt(f).decision,"CANDIDATE_ONLY");
+  f.browser.newConversation.beforeUrl="https://chatgpt.com/c/older-chat";
+  assert.equal(evaluateFreshAttempt(f).code,"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("even a self-consistent entirely forged confirmation grants no authority",()=>{
+  const f=fixture();
+  // Every input here is a caller-owned fixture, not verified browser provenance.
+  const result=evaluateFreshAttempt(f);
+  assert.equal(result.authority,"NONE");
+  assert.equal(result.decision,"CANDIDATE_ONLY");
+  assert.equal("send" in result,false);
+  assert.equal("navigate" in result,false);
 });
