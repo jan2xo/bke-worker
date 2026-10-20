@@ -48,10 +48,13 @@ export interface FirstMessageActuatorResult {
   status: "BLOCKED" | "CANDIDATE_ONLY";
   code: BootstrapCode | GateCode | "INVALID_INPUT" | "PRE_SUBMIT_GATE_REQUIRED" |
     "UPSTREAM_REAL_PROOF_REQUIRED" | "LIVE_SEND_DISABLED" |
-    "TRUSTED_SUBMIT_ADAPTER_ABSENT";
+    "TRUSTED_SUBMIT_ADAPTER_ABSENT" | "FIRST_MESSAGE_CONFIRMATION_REQUIRED" |
+    "FIRST_MESSAGE_DELIVERY_CANDIDATE";
   authority: "NONE";
   submissionPermitted: false;
   promptPreview: string | null;
+  /** Post-send ID remains a candidate until authenticated GitHub reconciliation. */
+  conversationIdCandidate: string | null;
 }
 
 /** Strictly allowlist task identifiers; never incorporate controller text or PR body. */
@@ -97,31 +100,38 @@ export function buildApprovedBootstrapPrompt(request: unknown): string | null {
   ].join("\n");
 }
 
-function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boolean {
+function freshAttemptIdentityMatchesBootstrap(fresh: unknown, bootstrap: unknown): boolean {
   if (fresh === null || typeof fresh !== "object" || Array.isArray(fresh) ||
       bootstrap === null || typeof bootstrap !== "object" || Array.isArray(bootstrap)) return false;
   const freshRoot = fresh as {
     request?: Partial<FreshAttemptRequest>;
-    nowIso?: string;
-    browser?: {
-      ownedTargetTabId?: number;
-      ownedTargetId?: string;
-      ownedProfileId?: string;
-      current?: { observedAt?: string };
+    github?: {
+      repository?: string; prNumber?: number; currentHeadSha?: string; assignedWorkerId?: string;
+      workerOpenPrAssignments?: number; prAssignedWorkerCount?: number; prOpen?: boolean;
+      previousAttemptResolved?: boolean; currentAttemptId?: string;
+      previousConversationId?: string | null; priorConversationIds?: string[]; attemptAuthorizedAt?: string;
     };
+    browser?: { ownedTargetTabId?: number; ownedTargetId?: string; ownedProfileId?: string; current?: { observedAt?: string } };
+    nowIso?: string;
   };
   const bootstrapRoot = bootstrap as {
     request?: Partial<BootstrapRequest>;
-    nowIso?: string;
+    github?: {
+      repository?: string; prNumber?: number; currentHeadSha?: string; assignedWorkerId?: string;
+      workerOpenPrAssignments?: number; prAssignedWorkerCount?: number; prOpen?: boolean;
+      previousAttemptResolved?: boolean; currentAttemptId?: string;
+      previousConversationId?: string | null; priorConversationIds?: string[]; attemptAuthorizedAt?: string;
+    };
     browser?: { current?: { observedAt?: string } };
+    nowIso?: string;
   };
   const freshRequest = freshRoot.request;
   const bootstrapRequest = bootstrapRoot.request;
-  const freshNow = Date.parse(freshRoot.nowIso ?? "");
-  const bootstrapNow = Date.parse(bootstrapRoot.nowIso ?? "");
-  const freshObserved = Date.parse(freshRoot.browser?.current?.observedAt ?? "");
-  const bootstrapObserved = Date.parse(bootstrapRoot.browser?.current?.observedAt ?? "");
-  return !!freshRequest && !!bootstrapRequest &&
+  const freshGitHub = freshRoot.github;
+  const bootstrapGitHub = bootstrapRoot.github;
+  const freshHistory = freshGitHub?.priorConversationIds;
+  const bootstrapHistory = bootstrapGitHub?.priorConversationIds;
+  return !!freshRequest && !!bootstrapRequest && !!freshGitHub && !!bootstrapGitHub &&
     freshRequest.repository === bootstrapRequest.repository &&
     freshRequest.workerId === bootstrapRequest.workerId &&
     freshRequest.prNumber === bootstrapRequest.prNumber &&
@@ -130,7 +140,33 @@ function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boole
     freshRoot.browser?.ownedTargetTabId === bootstrapRequest.targetTabId &&
     freshRoot.browser?.ownedTargetId === bootstrapRequest.targetId &&
     freshRoot.browser?.ownedProfileId === bootstrapRequest.profileId &&
-    Number.isFinite(freshNow) && Number.isFinite(bootstrapNow) &&
+    freshGitHub.repository === bootstrapGitHub.repository &&
+    freshGitHub.prNumber === bootstrapGitHub.prNumber &&
+    freshGitHub.currentHeadSha === bootstrapGitHub.currentHeadSha &&
+    freshGitHub.assignedWorkerId === bootstrapGitHub.assignedWorkerId &&
+    freshGitHub.workerOpenPrAssignments === bootstrapGitHub.workerOpenPrAssignments &&
+    freshGitHub.prAssignedWorkerCount === bootstrapGitHub.prAssignedWorkerCount &&
+    freshGitHub.prOpen === bootstrapGitHub.prOpen &&
+    freshGitHub.previousAttemptResolved === bootstrapGitHub.previousAttemptResolved &&
+    freshGitHub.currentAttemptId === bootstrapGitHub.currentAttemptId &&
+    freshGitHub.previousConversationId === bootstrapGitHub.previousConversationId &&
+    freshGitHub.attemptAuthorizedAt === bootstrapGitHub.attemptAuthorizedAt &&
+    Array.isArray(freshHistory) && Array.isArray(bootstrapHistory) &&
+    freshHistory.length === bootstrapHistory.length &&
+    freshHistory.every((id, index) => id === bootstrapHistory[index]);
+}
+
+function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boolean {
+  if (!freshAttemptIdentityMatchesBootstrap(fresh, bootstrap) ||
+      fresh === null || typeof fresh !== "object" || bootstrap === null ||
+      typeof bootstrap !== "object") return false;
+  const freshRoot = fresh as { nowIso?: string; browser?: { current?: { observedAt?: string } } };
+  const bootstrapRoot = bootstrap as { nowIso?: string; browser?: { current?: { observedAt?: string } } };
+  const freshNow = Date.parse(freshRoot.nowIso ?? "");
+  const bootstrapNow = Date.parse(bootstrapRoot.nowIso ?? "");
+  const freshObserved = Date.parse(freshRoot.browser?.current?.observedAt ?? "");
+  const bootstrapObserved = Date.parse(bootstrapRoot.browser?.current?.observedAt ?? "");
+  return Number.isFinite(freshNow) && Number.isFinite(bootstrapNow) &&
     Number.isFinite(freshObserved) && Number.isFinite(bootstrapObserved) &&
     freshNow <= bootstrapNow + 2_000 && bootstrapNow - freshNow <= 10_000 &&
     freshObserved <= bootstrapObserved + 2_000 && bootstrapObserved - freshObserved <= 10_000;
@@ -140,8 +176,9 @@ function result(
   status: FirstMessageActuatorResult["status"],
   code: FirstMessageActuatorResult["code"],
   promptPreview: string | null = null,
+  conversationIdCandidate: string | null = null,
 ): FirstMessageActuatorResult {
-  return { status, code, authority: "NONE", submissionPermitted: false, promptPreview };
+  return { status, code, authority: "NONE", submissionPermitted: false, promptPreview, conversationIdCandidate };
 }
 
 /**
@@ -188,4 +225,43 @@ export function evaluateFirstMessageActuator(input: unknown): FirstMessageActuat
     return result("CANDIDATE_ONLY", "LIVE_SEND_DISABLED", promptPreview);
   }
   return result("BLOCKED", "TRUSTED_SUBMIT_ADAPTER_ABSENT");
+}
+
+/**
+ * Validate the post-send conversation receipt. The stable /c/<id> is only
+ * expected AFTER the single first-message attempt. This still returns a
+ * candidate only: the authenticated ledger adapter must persist/re-read it.
+ */
+export function evaluateFirstMessageConfirmation(input: unknown): FirstMessageActuatorResult {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return result("BLOCKED", "INVALID_INPUT");
+  }
+  const root = input as Partial<FirstMessageActuatorInput>;
+  const liveProofs = root.liveProofs;
+  if (!liveProofs || typeof liveProofs !== "object" ||
+      typeof liveProofs.githubCasOwnerCertified !== "boolean" ||
+      typeof liveProofs.nativePairingOwnerCertified !== "boolean" ||
+      typeof liveProofs.realBrowserOwnerAccepted !== "boolean") {
+    return result("BLOCKED", "INVALID_INPUT");
+  }
+  if (!freshAttemptIdentityMatchesBootstrap(root.freshAttempt, root.bootstrap)) {
+    return result("BLOCKED", "PRE_SUBMIT_GATE_REQUIRED");
+  }
+  const gate = evaluateBootstrapFence(root.bootstrap);
+  if (gate.decision === "BLOCKED") return result("BLOCKED", gate.code);
+  if (gate.code !== "NEW_CONVERSATION_CANDIDATE" ||
+      gate.state !== "CONFIRMED_NEW_CONVERSATION") {
+    return result("BLOCKED", "FIRST_MESSAGE_CONFIRMATION_REQUIRED");
+  }
+  if (!liveProofs.githubCasOwnerCertified ||
+      !liveProofs.nativePairingOwnerCertified ||
+      !liveProofs.realBrowserOwnerAccepted) {
+    return result("BLOCKED", "UPSTREAM_REAL_PROOF_REQUIRED");
+  }
+  const bootstrap = root.bootstrap as {
+    browser?: { firstMessageReceipt?: { conversationId?: unknown } };
+  };
+  const id = bootstrap.browser?.firstMessageReceipt?.conversationId;
+  if (typeof id !== "string") return result("BLOCKED", "INVALID_INPUT");
+  return result("CANDIDATE_ONLY", "FIRST_MESSAGE_DELIVERY_CANDIDATE", null, id);
 }
