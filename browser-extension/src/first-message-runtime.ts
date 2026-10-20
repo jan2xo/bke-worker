@@ -96,14 +96,14 @@ export interface FirstMessageSimulationOptions {
   fault?: FirstMessageSimulationFault;
 }
 
-interface RuntimeBrowserSnapshot {
+export interface RuntimeBrowserSnapshot {
   fresh: BrowserTargetObservation;
   bootstrap: BootstrapBrowserObservation;
 }
 
 /** Port contract intended for the later certified adapters. No live adapter is
  * installed by this PR yet. The in-memory implementation below is private. */
-interface FirstMessageLedgerPort {
+export interface FirstMessageLedgerPort {
   loadSnapshot(
     event: BootstrapEvent,
     browser: RuntimeBrowserSnapshot,
@@ -118,7 +118,7 @@ interface FirstMessageLedgerPort {
   markDeliveryUncertain(): Promise<void>;
 }
 
-interface FirstMessageBrowserPort {
+export interface FirstMessageBrowserPort {
   observe(nowIso: string): Promise<RuntimeBrowserSnapshot>;
   submitOnce(
     prompt: string,
@@ -628,7 +628,7 @@ async function executeInMemoryProtocol(fault: FirstMessageSimulationFault): Prom
       confirmation.conversationIdCandidate !== submitted.receipt.conversationId) {
     return result(
       "BLOCKED",
-      "POST_SEND_CONFIRMATION_BLOCKED",
+      confirmation.code,
       phases,
       browser.submissionCount,
       confirmation.conversationIdCandidate,
