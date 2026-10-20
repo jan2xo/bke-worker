@@ -108,7 +108,6 @@ function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boole
     freshRequest.prNumber === bootstrapRequest.prNumber &&
     freshRequest.headSha === bootstrapRequest.headSha &&
     freshRequest.attemptId === bootstrapRequest.attemptId &&
-    freshRequest.attemptId === bootstrapRequest.attemptId &&
     (fresh as { browser?: { ownedTargetTabId?: number } }).browser?.ownedTargetTabId ===
       bootstrapRequest.targetTabId;
 }
