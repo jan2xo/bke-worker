@@ -9,10 +9,18 @@ manifest_path = root / "browser-extension/manifest.json"
 script = script_path.read_text(encoding="utf-8")
 policy = policy_path.read_text(encoding="utf-8")
 manifest = manifest_path.read_text(encoding="utf-8")
+helper = (root / "scripts/forge_f1_chrome_readiness.py").read_text(encoding="utf-8")
+workflow = (root / ".github/workflows/pr-guard.yml").read_text(encoding="utf-8")
 
 for token in (
     "scripts/smoke-desktop-native-integration.sh",
     "scripts/prepare-chrome-native-host.sh",
+    "scripts/forge_f1_chrome_readiness.py",
+    "--check-profile-chain",
+    "--check-process",
+    "--validate-extension-count",
+    "PROFILE_CHAIN_UNSAFE",
+    "EXTENSION_COUNT_INPUT",
     "refs/heads/main:refs/remotes/origin/main",
     "STALE_CHECKOUT",
     "PROFILE_PATH_UNSAFE",
@@ -50,6 +58,11 @@ assert "PROFILE_PATH_UNSAFE" in policy
 assert "MESSAGE_SEND_NOT_PROVEN_ABSENT" in policy
 assert "SOURCE_SMOKE_PASS" in policy and "REAL_CHROME_READY" in policy
 assert "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN" in policy
+assert "linux_chrome_binary_for_launcher" in helper
+assert "ps_line_matches_profile" in helper
+assert "PROFILE_CHAIN_UNSAFE" in helper
+assert "EXTENSION_MISSING_OR_DUPLICATE" in helper
+assert "python3 tests/forge_f1_chrome_readiness_test.py" in workflow
 
 for command in (
     ["bash", "-n", str(script_path)],

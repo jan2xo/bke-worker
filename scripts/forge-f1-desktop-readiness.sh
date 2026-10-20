@@ -208,32 +208,28 @@ PROFILE_MODE="$(stat -c '%a' "$PROFILE_DIR" 2>/dev/null || stat -f '%Lp' "$PROFI
 PROFILE_OWNER_MATCHES=true
 PROFILE_MODE_BITS=$((8#$PROFILE_MODE)); (( (PROFILE_MODE_BITS & 0077) == 0 )) || block_real "PROFILE_DIRECTORY_NOT_PRIVATE"
 PROFILE_PRIVATE=true
+# Validate every dedicated directory, even when it already existed before this run.
+python3 "$ROOT_DIR/scripts/forge_f1_chrome_readiness.py" --check-profile-chain "$HOME" "$PROFILE_DIR" >/dev/null 2>&1 \
+  || block_real "PROFILE_CHAIN_UNSAFE"
+
 profile_is_active(){
-  python3 - "$OS" "$CHROME_BIN_REAL" "$PROFILE_DIR" <<'PY'
-import subprocess,sys
-platform,chrome,profile=sys.argv[1:]
-args=["ps","-axo","command="] if platform=="Darwin" else ["ps","-eo","args="]
-try: output=subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL)
-except Exception: raise SystemExit(1)
-for line in output.splitlines():
-    if not line.startswith(chrome): continue
-    if len(line)>len(chrome) and not line[len(chrome)].isspace(): continue
-    marker="--user-data-dir="; at=line.find(marker)
-    if at<0: continue
-    candidate=line[at+len(marker):].strip().strip('"')
-    if candidate==profile: raise SystemExit(0)
-raise SystemExit(1)
-PY
+  local digest
+  digest="$(python3 "$ROOT_DIR/scripts/forge_f1_chrome_readiness.py" --check-process "$OS" "$CHROME_BIN_REAL" "$PROFILE_DIR" "$CHROME_VERSION" 2>/dev/null)" || return 1
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  CHROME_SHA256="$digest"
+  return 0
 }
-if ! profile_is_active; then
+if profile_is_active; then
+  PROFILE_ACTIVE=true
+else
   prompt_exact "LAUNCH_ISOLATED_CHROME_PROFILE" \
-    "The dedicated profile is not attached to Chrome. Open this profile at chatgpt.com?" || block_real "CHROME_NOT_ATTACHED_TO_SELECTED_PROFILE"
+    "The dedicated profile is not attached to the verified Google Chrome executable. Open this profile at chatgpt.com?" || block_real "CHROME_NOT_ATTACHED_TO_SELECTED_PROFILE"
   "$CHROME_BIN_REAL" --user-data-dir="$PROFILE_DIR" --profile-directory=Default --new-window https://chatgpt.com/ >/dev/null 2>&1 &
   wait_for_owner "F1_PROFILE_OPENED_AND_READY" \
     "Authenticate manually, load the unpacked extension, then leave one idle chatgpt.com tab open." || block_real "PROFILE_READY_NOT_CONFIRMED"
+  profile_is_active || block_real "CHROME_NOT_ATTACHED_TO_SELECTED_PROFILE"
+  PROFILE_ACTIVE=true
 fi
-profile_is_active || block_real "CHROME_NOT_ATTACHED_TO_SELECTED_PROFILE"
-PROFILE_ACTIVE=true
 prompt_exact "F1_PROFILE_ISOLATED_AND_NOT_SHARED" \
   "Visually confirm this is a dedicated profile, not shared with ordinary browsing or another worker." || block_real "PROFILE_EXCLUSIVITY_NOT_ATTESTED"
 PROFILE_EXCLUSIVE_ATTESTED=true
@@ -257,9 +253,13 @@ EXTENSION_HOST_PERMISSIONS="$(python3 -c 'import json,sys; print(json.dumps(json
 printf 'Read the extension ID from the loaded BKE Worker Browser Bridge entry in chrome://extensions.\nExtension ID (32 characters a-p): ' >/dev/tty
 IFS= read -r EXTENSION_ID </dev/tty || block_real "EXTENSION_ID_NOT_PROVIDED"
 [[ "$EXTENSION_ID" =~ ^[a-p]{32}$ ]] || block_real "EXTENSION_ID_INVALID"
+printf 'Count matching BKE Worker Browser Bridge entries for this canonical source/version in chrome://extensions (include disabled/duplicate entries; must be exactly 1): ' >/dev/tty
+IFS= read -r EXTENSION_COUNT_INPUT </dev/tty || block_real "EXTENSION_MATCH_COUNT_NOT_PROVIDED"
+python3 "$ROOT_DIR/scripts/forge_f1_chrome_readiness.py" --validate-extension-count "$EXTENSION_COUNT_INPUT" >/dev/null 2>&1 \
+  || block_real "EXTENSION_MISSING_OR_DUPLICATE"
 EXTENSION_MATCH_COUNT=1
 prompt_exact "CANONICAL_EXTENSION_PATH_VERSION_AND_ENABLED_CONFIRMED" \
-  "Visually confirm the loaded extension uses exactly $EXTENSION_PATH, is enabled, and reports manifest version $EXTENSION_VERSION. Only this visual attestation is used; Chrome profile metadata is not read." || block_real "EXTENSION_IDENTITY_NOT_ATTESTED"
+  "Visually confirm the single counted extension has ID $EXTENSION_ID, uses exactly $EXTENSION_PATH, is enabled, and reports manifest version $EXTENSION_VERSION. Only this visual attestation is used; Chrome profile metadata is not read." || block_real "EXTENSION_IDENTITY_NOT_ATTESTED"
 EXTENSION_ENABLED=true; EXTENSION_PATH_MATCHES=true; EXTENSION_VERSION_MATCHES=true
 HOST_ORIGIN="chrome-extension://$EXTENSION_ID/"
 HOST_STATUS="MISSING"

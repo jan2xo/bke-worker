@@ -11,9 +11,10 @@ Run it from a clean checkout of the canonical jan2xo/bke-worker main. It verifie
 ## What it checks
 
 - Canonical repository origin, clean main, current origin/main SHA, source-smoke SHA, Node runtime SHA-256, and official Google Chrome version/runtime SHA-256.
-- One private user-controlled profile at ~/.bke-worker/f1/chrome-profile and a Chrome process attached to that exact profile. It will not attach to or read the default browser profile.
+- One private user-controlled profile at ~/.bke-worker/f1/chrome-profile and a Chrome process attached to that exact profile. The owner, symlink state, and group/world permission bits of every dedicated path component (.bke-worker, f1, chrome-profile) are checked on both creation and reuse. It will not attach to or read the default browser profile.
 - Exactly one enabled extension loaded from the canonical browser-extension folder, at the manifest version and with the intentionally narrow storage and chatgpt.com host permissions. Extension ID/path/version are explicitly owner-verified through chrome://extensions; the script never reads Chrome Preferences or other profile metadata.
 - Exact native-host registration name bke.worker.desktop, extension-origin binding and the existing owner-pinned policy verification.
+- The extension ID and an explicit count of matching canonical-source/version extension entries from chrome://extensions; a count other than one fails closed. The operator then attests the source path/version/enabled state. The script does not read Chrome Preferences or other profile metadata.
 - Human visual attestations for profile exclusivity, exactly one open chatgpt.com tab, and a manually authenticated idle ChatGPT UI. It does not read cookies, local storage, page text or login secrets.
 
 When no isolated profile exists, creating and launching one requires the exact in-script owner acknowledgement CREATE_AND_LAUNCH_ISOLATED_CHROME_PROFILE. The operator authenticates manually and loads the unpacked extension from chrome://extensions. If a matching native-host registration is absent, the existing transactional installer is offered only after PREPARE_USER_LEVEL_CHROME_NATIVE_HOST; its own install acknowledgement and a pre-existing valid owner policy are required. It never invents identity pins or overwrites conflicting files.
