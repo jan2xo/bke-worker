@@ -201,6 +201,8 @@ jobs:
         run: |
           python3 tests/operator_entrypoint_contract.py
           python3 tests/chrome_native_host_installer_contract.py
+          python3 tests/forge_f1_desktop_readiness_contract.py
+          python3 tests/forge_f1_chrome_readiness_test.py
           bash tests/chrome_native_host_installer_contract.sh
           bash -n scripts/prepare-chrome-native-host.sh
           python3 tests/android_continuation_operator_contract.py
