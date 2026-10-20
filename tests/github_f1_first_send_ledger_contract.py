@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from github_atomic_claim import prepare_reservation
 from github_f1_first_send_ledger import (
     FirstSendLedgerDenied, append_first_send_fence, consume_first_send_claim,
-    validate_ledger_successor, validated_ledger,
+    confirm_new_conversation, validate_ledger_successor, validated_ledger,
 )
 from github_f1_private_arbiter_writer import GitHubAppArbiterWriter, GitHubWriterDenied
 from github_f1_private_arbiter_writer_contract import FakeProvider, TOKEN
@@ -210,6 +210,123 @@ class FirstSendLedgerTests(unittest.TestCase):
         self.assertEqual(second["send_authority"], "NONE")
         with self.assertRaises(GitHubWriterDenied):
             writer.publish(expected_head=provider.head, proposed_manifest=next_ledger)
+
+    def test_confirmed_conversation_is_durable_unique_and_preserves_send_claim(self):
+        _, fence, used = consumed()
+        confirmed = confirm_new_conversation(
+            used, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        self.assertEqual(validate_ledger_successor(
+            used, confirmed, expected_parent_sha="d" * 40), confirmed)
+        self.assertEqual(confirmed["attempts"][0]["state"], "CONFIRMED_NEW_CONVERSATION")
+        self.assertEqual(confirmed["attempts"][0]["send_claim_id"], SEND_CLAIM_ID)
+        self.denied("F1_CONFIRMATION_NOT_ALLOWED", lambda:
+                    confirm_new_conversation(
+                        confirmed, attempt_id="attempt-f1-01",
+                        conversation_id="conversation-second-123", confirmed_at=TIME))
+        self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
+                    validate_ledger_successor(
+                        confirmed, used, expected_parent_sha="d" * 40))
+
+    def test_followup_attempt_requires_confirmed_prior_and_same_owner_pins(self):
+        ledger, worker_claim = base()
+        _, fence, used = consumed()
+        params = dict(
+            attempt_id="attempt-f1-02", worker_claim_id=worker_claim,
+            target_sha256="a" * 64, profile_sha256="b" * 64,
+            tab_id=18, execution_id="execution-87654321",
+            fence_id="fence-second-123")
+        self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
+                    lambda: append_first_send_fence(fence, **params))
+        self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
+                    lambda: append_first_send_fence(used, **params))
+        confirmed = confirm_new_conversation(
+            used, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        again = append_first_send_fence(confirmed, **params)
+        self.assertEqual(validate_ledger_successor(
+            confirmed, again, expected_parent_sha="d" * 40), again)
+        self.assertEqual(len(again["attempts"]), 2)
+        self.assertEqual(again["attempts"][0]["conversation_id"], "conversation-first-123")
+        for key in ("profile_sha256", "target_sha256"):
+            corrupted = dict(params)
+            corrupted[key] = "e" * 64
+            self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
+                        lambda corrupted=corrupted:
+                        append_first_send_fence(confirmed, **corrupted))
+
+    def test_confirmation_wrong_order_duplicate_conversation_and_malformed_rejected(self):
+        _, fence, used = consumed()
+        self.denied("F1_CONFIRMATION_NOT_ALLOWED", lambda:
+                    confirm_new_conversation(
+                        fence, attempt_id="attempt-f1-01",
+                        conversation_id="conversation-first-123", confirmed_at=TIME))
+        for id_value, timestamp in [(None, TIME), ("bad", TIME),
+                                    ("conversation-first-123", "bad-clock"),
+                                    ("conversation-first-123", "2020-10-20T06:00:00.000Z")]:
+            self.denied("F1_CONVERSATION_RECEIPT_INVALID" if id_value is None or id_value == "bad" or timestamp == "bad-clock" else "F1_ATTEMPT_PHASE_INVALID", lambda id_value=id_value, timestamp=timestamp:
+                        confirm_new_conversation(
+                            used, attempt_id="attempt-f1-01",
+                            conversation_id=id_value, confirmed_at=timestamp))
+        confirmed = confirm_new_conversation(
+            used, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        row = deepcopy(confirmed["attempts"][0])
+        dupe = deepcopy(confirmed)
+        dupe["attempts"].append({**row, "attempt_id": "attempt-f1-02",
+                                 "execution_id": "execution-other-123",
+                                 "fence_id": "fence-other-123",
+                                 "send_claim_id": "send-other-123"})
+        dupe["sequence"] += 1
+        self.denied("F1_CONVERSATION_ID_REUSED", lambda: validated_ledger(dupe))
+
+    def test_stale_or_wrong_head_confirmation_cannot_rewrite_consumed_row(self):
+        _, fence, used = consumed()
+        confirmed = confirm_new_conversation(
+            used, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        for key, new_val in [
+            ("worker_id", "f2"), ("head_sha", "e" * 40),
+            ("send_claim_id", "send-other-123"),
+            ("profile_sha256", "e" * 64), ("fence_snapshot_sha", "e" * 40)]:
+            changed = deepcopy(confirmed)
+            changed["attempts"][0][key] = new_val
+            self.assertRaises(FirstSendLedgerDenied, validate_ledger_successor,
+                              used, changed, expected_parent_sha="d" * 40)
+
+    def test_confirmed_second_attempt_full_mock_provider_successor_sequence(self):
+        provider = FakeProvider()
+        root, fence = prepared()
+        from github_f1_private_arbiter_writer import blob_sha, canonical
+        raw = canonical(root)
+        h = blob_sha(raw)
+        provider.blobs[h] = raw
+        provider.trees[provider.commits[provider.head]["tree"]] = h
+        with patch("urllib.request.build_opener", return_value=provider):
+            writer = GitHubAppArbiterWriter(TOKEN, live_writes_enabled=True)
+        first = writer.publish(expected_head=provider.head, proposed_manifest=fence)
+        used = consume_first_send_claim(
+            fence, attempt_id="attempt-f1-01",
+            expected_parent_sha=first["arbiter_head"],
+            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME)
+        second = writer.publish(expected_head=first["arbiter_head"],
+                                proposed_manifest=used)
+        confirmed = confirm_new_conversation(
+            used, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        third = writer.publish(expected_head=second["arbiter_head"],
+                               proposed_manifest=confirmed)
+        newer = append_first_send_fence(
+            confirmed, attempt_id="attempt-f1-02",
+            worker_claim_id=confirmed["claims"][0]["claim_id"],
+            target_sha256="a" * 64, profile_sha256="b" * 64,
+            tab_id=18, execution_id="execution-87654321", fence_id="fence-second-123")
+        fourth = writer.publish(expected_head=third["arbiter_head"],
+                                proposed_manifest=newer)
+        self.assertNotEqual(fourth["arbiter_head"], third["arbiter_head"])
+        self.assertEqual(sum(1 for method, path in provider.requests if method == "PATCH"), 4)
+        self.assertEqual(provider.head, fourth["arbiter_head"])
+        self.assertEqual(fourth["send_authority"], "NONE")
 
 
 if __name__ == "__main__":
