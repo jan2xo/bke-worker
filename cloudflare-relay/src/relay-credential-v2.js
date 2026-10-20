@@ -50,7 +50,8 @@ function validPublicKey(jwk) {
 }
 function validLease(lease) {
   return exact(lease,'device_key_sha256,epoch,expires_at_ms,installation_id,issued_at_ms,session_binding_sha256,token_id,v,worker_id') &&
-    lease.v === 2 && WORKER.test(lease.worker_id) && INSTALL.test(lease.installation_id) &&
+    lease.v === 2 && typeof lease.worker_id === 'string' && WORKER.test(lease.worker_id) &&
+    typeof lease.installation_id === 'string' && INSTALL.test(lease.installation_id) &&
     validHash(lease.device_key_sha256) && validHash(lease.session_binding_sha256) &&
     validEpoch(lease.epoch) && decodeBase64Url(lease.token_id, ID, 16) !== null &&
     boundedTime(lease.issued_at_ms) && boundedTime(lease.expires_at_ms) &&
@@ -65,7 +66,8 @@ function validProof(proof, worker) {
 }
 function validExpected(expected) {
   return exact(expected,'epoch,installation_id,session_binding_sha256,worker_id') &&
-    validEpoch(expected.epoch) && INSTALL.test(expected.installation_id) &&
+    validEpoch(expected.epoch) && typeof expected.installation_id === 'string' &&
+    INSTALL.test(expected.installation_id) &&
     validHash(expected.session_binding_sha256) && WORKER.test(expected.worker_id);
 }
 
