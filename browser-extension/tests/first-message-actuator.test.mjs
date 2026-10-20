@@ -105,6 +105,8 @@ function freshAttemptFixture(request) {
         uiState: "NEW_CHAT_LANDING",
       },
       ownedTargetTabId: request.targetTabId,
+      ownedTargetId: request.targetId,
+      ownedProfileId: request.profileId,
       matchingWritableTargetCount: 1,
       sharedWritableProfile: false,
     },
@@ -160,6 +162,12 @@ test("fresh landing rejects a conversation route, login challenge and target amb
   const duplicate = fixture();
   duplicate.freshAttempt.browser.matchingWritableTargetCount = 2;
   assert.equal(evaluateFreshChatLanding(duplicate.freshAttempt).code, "BROWSER_TARGET_AMBIGUOUS");
+  const wrongProfile = fixture();
+  wrongProfile.freshAttempt.browser.ownedProfileId = "profile-other";
+  assert.equal(evaluateFirstMessageActuator(wrongProfile).code, "PRE_SUBMIT_GATE_REQUIRED");
+  const wrongTarget = fixture();
+  wrongTarget.freshAttempt.browser.ownedTargetId = "target-other";
+  assert.equal(evaluateFirstMessageActuator(wrongTarget).code, "PRE_SUBMIT_GATE_REQUIRED");
 });
 
 test("new pre-submit stage requires the durable fence and exact consumed-claim read-back", () => {
