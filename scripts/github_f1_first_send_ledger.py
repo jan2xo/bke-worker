@@ -22,10 +22,10 @@ _ROW_KEYS = frozenset({
     "attempt_id", "worker_id", "repository", "number", "head_sha",
     "worker_claim_id", "target_sha256", "profile_sha256", "tab_id",
     "execution_id", "fence_id", "state", "fence_snapshot_sha",
-    "send_claim_id", "claimed_at",
+    "send_claim_id", "claimed_at", "conversation_id", "confirmed_at",
 })
 _LEDGER_KEYS = frozenset({"version", "sequence", "claims", "attempts"})
-_STATES = frozenset({"FENCED_READY_TO_SEND", "FENCED_MAY_HAVE_SENT"})
+_STATES = frozenset({"FENCED_READY_TO_SEND", "FENCED_MAY_HAVE_SENT", "CONFIRMED_NEW_CONVERSATION"})
 MAX_ATTEMPTS = 64
 
 
@@ -76,7 +76,7 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
         _deny("F1_LEDGER_CLAIMS_INVALID")
     if len(attempts) > seq:
         _deny("F1_LEDGER_INVALID")
-    seen_ids, seen_claims, seen_send_ids = set(), set(), set()
+    seen_ids, latest_by_claim, seen_send_ids, prior_conversation_ids = set(), {}, set(), set()
     by_claim = {c["claim_id"]: c for c in claims}
     for item in attempts:
         if type(item) is not dict or item.keys() != _ROW_KEYS:
@@ -94,14 +94,21 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
                 not _string(_ID, item["fence_id"]) or
                 type(item["state"]) is not str or item["state"] not in _STATES):
             _deny("F1_ATTEMPT_ROW_INVALID")
-        if (item["attempt_id"] in seen_ids or
-                item["worker_claim_id"] in seen_claims):
+        if item["attempt_id"] in seen_ids:
             _deny("F1_ATTEMPT_REPLAY")
+        previous = latest_by_claim.get(item["worker_claim_id"])
+        if previous is not None and (
+                previous["state"] != "CONFIRMED_NEW_CONVERSATION"
+                or previous["target_sha256"] != item["target_sha256"]
+                or previous["profile_sha256"] != item["profile_sha256"]
+                or previous["head_sha"] != item["head_sha"]):
+            _deny("F1_PREVIOUS_ATTEMPT_UNRESOLVED")
         seen_ids.add(item["attempt_id"])
-        seen_claims.add(item["worker_claim_id"])
+        latest_by_claim[item["worker_claim_id"]] = item
         if item["state"] == "FENCED_READY_TO_SEND":
             if any(item[k] is not None for k in
-                   ("fence_snapshot_sha", "send_claim_id", "claimed_at")):
+                   ("fence_snapshot_sha", "send_claim_id", "claimed_at",
+                    "conversation_id", "confirmed_at")):
                 _deny("F1_ATTEMPT_PHASE_INVALID")
         else:
             if (not _string(_SHA, item["fence_snapshot_sha"]) or
@@ -111,6 +118,17 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
             if item["send_claim_id"] in seen_send_ids:
                 _deny("F1_SEND_CLAIM_REPLAY")
             seen_send_ids.add(item["send_claim_id"])
+            if item["state"] == "FENCED_MAY_HAVE_SENT":
+                if item["conversation_id"] is not None or item["confirmed_at"] is not None:
+                    _deny("F1_ATTEMPT_PHASE_INVALID")
+            else:
+                if (not _string(_ID, item["conversation_id"]) or
+                        not _clock(item["confirmed_at"]) or
+                        item["confirmed_at"] < item["claimed_at"]):
+                    _deny("F1_ATTEMPT_PHASE_INVALID")
+                if item["conversation_id"] in prior_conversation_ids:
+                    _deny("F1_CONVERSATION_ID_REUSED")
+                prior_conversation_ids.add(item["conversation_id"])
     return deepcopy(raw)
 
 
@@ -135,6 +153,7 @@ def append_first_send_fence(ledger: dict, *, attempt_id: str,
         "tab_id": tab_id, "execution_id": execution_id, "fence_id": fence_id,
         "state": "FENCED_READY_TO_SEND", "fence_snapshot_sha": None,
         "send_claim_id": None, "claimed_at": None,
+        "conversation_id": None, "confirmed_at": None,
     })
     return validated_ledger(out)
 
@@ -161,6 +180,31 @@ def consume_first_send_claim(ledger: dict, *, attempt_id: str,
         "send_claim_id": send_claim_id,
         "claimed_at": claimed_at,
     })
+    return validated_ledger(out)
+
+
+def confirm_new_conversation(ledger: dict, *, attempt_id: str,
+                             conversation_id: str, confirmed_at: str) -> dict:
+    """Propose durable confirmation AFTER browser identity evidence was vetted.
+
+    Pure contract: only a separately authenticated controller/GitHub provider
+    may establish real provenance. Confirmation never reopens a used send claim.
+    """
+    old = validated_ledger(ledger)
+    if old["version"] != 2:
+        _deny("F1_LEDGER_V2_REQUIRED")
+    match = next((row for row in old["attempts"]
+                  if row["attempt_id"] == attempt_id), None)
+    if match is None or match["state"] != "FENCED_MAY_HAVE_SENT":
+        _deny("F1_CONFIRMATION_NOT_ALLOWED")
+    if not _string(_ID, conversation_id) or not _clock(confirmed_at):
+        _deny("F1_CONVERSATION_RECEIPT_INVALID")
+    out = deepcopy(old)
+    out["sequence"] += 1
+    row = next(r for r in out["attempts"] if r["attempt_id"] == attempt_id)
+    row.update({"state": "CONFIRMED_NEW_CONVERSATION",
+                "conversation_id": conversation_id,
+                "confirmed_at": confirmed_at})
     return validated_ledger(out)
 
 
@@ -203,12 +247,17 @@ def validate_ledger_successor(parent: Any, proposed: Any, *, expected_parent_sha
             if old == new:
                 continue
             allowed = dict(old)
-            if old["state"] != "FENCED_READY_TO_SEND":
+            if old["state"] == "FENCED_READY_TO_SEND":
+                allowed["state"] = "FENCED_MAY_HAVE_SENT"
+                allowed["fence_snapshot_sha"] = expected_parent_sha
+                allowed["send_claim_id"] = new["send_claim_id"]
+                allowed["claimed_at"] = new["claimed_at"]
+            elif old["state"] == "FENCED_MAY_HAVE_SENT":
+                allowed["state"] = "CONFIRMED_NEW_CONVERSATION"
+                allowed["conversation_id"] = new["conversation_id"]
+                allowed["confirmed_at"] = new["confirmed_at"]
+            else:
                 _deny("F1_LEDGER_TRANSITION_INVALID")
-            allowed["state"] = "FENCED_MAY_HAVE_SENT"
-            allowed["fence_snapshot_sha"] = expected_parent_sha
-            allowed["send_claim_id"] = new["send_claim_id"]
-            allowed["claimed_at"] = new["claimed_at"]
             if new != allowed:
                 _deny("F1_LEDGER_TRANSITION_INVALID")
             changes += 1
