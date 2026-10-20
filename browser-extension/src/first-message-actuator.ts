@@ -108,8 +108,12 @@ function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boole
     freshRequest.prNumber === bootstrapRequest.prNumber &&
     freshRequest.headSha === bootstrapRequest.headSha &&
     freshRequest.attemptId === bootstrapRequest.attemptId &&
-    (fresh as { browser?: { ownedTargetTabId?: number } }).browser?.ownedTargetTabId ===
-      bootstrapRequest.targetTabId;
+    (fresh as { browser?: { ownedTargetTabId?: number; ownedTargetId?: string; ownedProfileId?: string } }).browser?.ownedTargetTabId ===
+      bootstrapRequest.targetTabId &&
+    (fresh as { browser?: { ownedTargetId?: string } }).browser?.ownedTargetId ===
+      bootstrapRequest.targetId &&
+    (fresh as { browser?: { ownedProfileId?: string } }).browser?.ownedProfileId ===
+      bootstrapRequest.profileId;
 }
 
 function result(
