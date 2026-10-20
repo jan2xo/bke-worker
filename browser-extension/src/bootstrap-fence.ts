@@ -608,6 +608,13 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     if (!validateSendClaimCommitReceipt(input as BootstrapFenceInput)) {
       return blocked("SEND_CLAIM_READBACK_INVALID", "DELIVERY_UNCERTAIN");
     }
+    // The browser must be re-observed after the authenticated claim read-back,
+    // not reuse a pre-CAS or stale snapshot for the irreversible submit boundary.
+    const claimReadAt = validIsoUtc(github.sendClaimCommitReceipt?.observedAt ?? "");
+    const pageObservedAt = validIsoUtc(page.observedAt);
+    if (claimReadAt === null || pageObservedAt === null || pageObservedAt < claimReadAt) {
+      return blocked("OBSERVATION_STALE", github.state);
+    }
     const pageError = landingPageReady(input as BootstrapFenceInput);
     if (pageError) return blocked(pageError, github.state);
     return candidate("FENCED_MAY_HAVE_SENT", "FIRST_SUBMISSION_CANDIDATE");
