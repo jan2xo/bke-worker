@@ -55,7 +55,7 @@ test('denies invalid caller context, absent storage and read failures', async ()
 });
 test('denies malformed phase, wake and queued metadata', async () => {
   assert.equal((await witness(storage({...state, active_wake: {wake, phase: 'completed'}}), context)).code, 'ACTIVE_PHASE_MALFORMED');
-  assert.equal((await witness(storage({...state, active_wake: {wake: {...wake, delivery_id: 'bad'}, phase: 'queued'}}), context)).code, 'ACTIVE_WAKE_MALFORMED');
+  assert.equal((await witness(storage({...state, active_wake: {wake: {...wake, delivery_id: 'bad delivery id'}, phase: 'queued'}}), context)).code, 'ACTIVE_WAKE_MALFORMED');
   assert.equal((await witness(storage({...state, queued_wake: {...wake, pr_number: 91}}), context)).code, 'WAKE_CONTEXT_MISMATCH');
   assert.equal((await witness(storage({...state, queued_wake: {...wake, worker_id: 'other'}}), context)).code, 'QUEUED_WAKE_MALFORMED');
 });
@@ -109,7 +109,7 @@ test('exposes socket presence only, never opaque connection id', async () => {
 });
 test('fails closed on malformed connection and recent-delivery state', async () => {
   assert.equal((await witness(storage({...state, active_connection_id: 0}), context)).code, 'CONNECTION_METADATA_MALFORMED');
-  assert.equal((await witness(storage({...state, recent_deliveries: ['bad']}), context)).code, 'RECENT_DELIVERIES_MALFORMED');
+  assert.equal((await witness(storage({...state, recent_deliveries: ['bad delivery id']}), context)).code, 'RECENT_DELIVERIES_MALFORMED');
   assert.equal((await witness(storage({...state, recent_deliveries: Array(65).fill(delivery)}), context)).code, 'RECENT_DELIVERIES_MALFORMED');
 });
 test('each recognized phase remains observed-only and never cleared', async () => {
