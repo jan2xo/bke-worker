@@ -17,10 +17,12 @@ The pure evaluator validates coherence only. It cannot authenticate provider res
 
 ## Source delivered here
 
-- Adds a strict pre-submit gate that requires a durable fence, exact consumed-claim fields, and a matching post-CAS GET read-back receipt with chronology and identity pins.
+- Adds `evaluateFreshChatLanding` to the existing fresh-attempt gate for F1-04: it requires the exact idle `https://chatgpt.com/` landing page, one owned writable target, explicit target/profile binding and no `newConversation` receipt or fabricated `/c/<id>` before the first message.
+- Adds the `AUTHORIZE_FIRST_SUBMISSION` bootstrap-fence stage. It requires a valid durable fence, exact consumed send-claim, exact post-CAS GET read-back receipt, and a browser observation strictly after that read-back. Cross-snapshot binding requires the same repository, PR, head, worker, attempt, exact profile/target/tab and unchanged prior-history record.
+- Adds `evaluateFirstMessageConfirmation` for the post-send phase: the stable `/c/<id>` is checked against the first-message receipt, claim, fence, attempt, target/profile/tab and complete prior-ID history; successful synthetic input only yields a `conversationIdCandidate` with `authority: NONE`. It does not persist or reconcile the ID.
 - Adds an allowlisted bootstrap prompt containing only the canonical repository, exact PR number, exact head SHA and validated worker/attempt/execution identifiers. Arbitrary controller prompts, PR title/body text, JavaScript, page text, local paths and secrets are never interpolated.
-- Adds adversarial tests for wrong worker/PR/head/profile/target/tab, shared or duplicate targets, missing composer, login challenge, busy/UI drift, missing/mismatched claim read-back, uncertain delivery, crash recovery and unsafe prompt identifiers.
-- Actual browser submit, native messaging, GitHub ref writes, authentication automation and any PREPRODUCTION/production operation remain unavailable in this revision.
+- Adds 18 focused adversarial test cases for cross-profile/target/snapshot mismatch, pre-send fake conversation IDs, missing or old IDs after send, stale observation ordering, mismatched send-claim read-back, uncertain delivery, crash recovery and unsafe prompt identifiers.
+- Actual browser submit, native messaging, GitHub ref writes/reconciliation, authentication automation and any PREPRODUCTION/production operation remain unavailable in this revision.
 
 ## Unmet gates
 
