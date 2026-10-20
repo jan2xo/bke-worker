@@ -504,6 +504,13 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
   // closed unless the canonical attempt state is MAY_HAVE_SENT, where only
   // confirmation may proceed and validSendClaim performs strict validation.
   if (github.sendClaim !== undefined && github.state !== "FENCED_MAY_HAVE_SENT") {
+    // Preserve the terminal quarantine label even if a consumed claim is still
+    // visible in a lagging or contradictory projection. Never turn uncertainty
+    // into a prepare/send candidate, but report the uncertainty as such.
+    if (github.state === "DELIVERY_UNCERTAIN" || github.deliveryKnowledge === "UNCERTAIN" ||
+        github.deliveryKnowledge === "MAY_HAVE_SENT") {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
     return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
   }
 
