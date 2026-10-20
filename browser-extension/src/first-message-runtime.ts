@@ -413,7 +413,6 @@ class MemoryLedger implements FirstMessageLedgerPort {
 class MemoryBrowser implements FirstMessageBrowserPort {
   private submitted = false;
   private uncertain = false;
-  private observedAfterSend = false;
   private receipt: FirstMessageConversationReceipt | null = null;
   submitCount = 0;
 
@@ -424,7 +423,6 @@ class MemoryBrowser implements FirstMessageBrowserPort {
       throw new Error("synthetic controller observation failure after claim read-back");
     }
     const postSend = this.submitted && !this.uncertain;
-    if (postSend) this.observedAfterSend = true;
     const observedAt = postSend ? isoPlus(6750) : (Date.parse(nowIso) > BASE_TIME + 4500 ? isoPlus(4750) : nowIso);
     const url = postSend ? `https://chatgpt.com/c/${this.receipt?.conversationId ?? NEW_ID}` : "https://chatgpt.com/";
     const uiState = postSend ? "THREAD" as const : "NEW_CHAT_LANDING" as const;
@@ -722,14 +720,6 @@ async function executeProtocol(
 
 async function executeInMemoryProtocol(fault: FirstMessageSimulationFault): Promise<FirstMessageRuntimeResult> {
   return executeProtocol(new MemoryLedger(fault), new MemoryBrowser(fault));
-}
-
-/** Snapshot used to preserve the first, pre-send GitHub history while validating
- * the later confirmation receipt against the same task/attempt identity. */
-function initialObservationFreshSnapshot(
-  snapshot: { freshAttempt: FreshAttemptInput; bootstrap: BootstrapFenceInput },
-): FreshAttemptInput {
-  return snapshot.freshAttempt;
 }
 
 /**
