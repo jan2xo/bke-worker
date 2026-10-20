@@ -33,6 +33,22 @@ const socket = (changes = {}) => ({
 const deps = (data = state, sockets = [socket()]) =>
   ({storage: store(data), getWebSockets: () => sockets});
 
+const mandatoryNegative = {
+  authority: 'NONE',
+  can_retire: false,
+  delivery_fenced: false,
+  delivery_ack_proven: false,
+  socket_liveness_proven: false,
+  snapshot_atomic: false,
+  socket_sample_atomic: false,
+};
+function assertExplicitNegativeGates(result) {
+  for (const [key, value] of Object.entries(mandatoryNegative)) {
+    assert.equal(Object.hasOwn(result, key), true, 'missing required '+key);
+    assert.equal(result[key], value, 'incorrect required '+key);
+  }
+}
+
 test('matching stored ID and one registered DO socket is a sample, never liveness/retirement', async () => {
   const r = await observe(deps(), expected);
   assert.equal(r.state, 'OBSERVED_ONLY');
@@ -46,6 +62,7 @@ test('matching stored ID and one registered DO socket is a sample, never livenes
   assert.equal(r.delivery_fenced, false);
   assert.equal(r.can_retire, false);
   assert.equal(r.authority, 'NONE');
+  assertExplicitNegativeGates(r);
   assert.equal(JSON.stringify(r).includes('private-connection-id'), false);
   assert.equal(JSON.stringify(r).includes('private-session-id'), false);
 });
@@ -155,4 +172,75 @@ test('no persisted IDs are ever returned when more than one unregistered socket 
   assert.equal(r.socket_collection_sample_size, 2);
   assert.equal(JSON.stringify(r).includes('private-new'), false);
   assert.equal(r.can_retire, false);
+});
+
+
+test('ALL blocked codepaths declare explicit negative gates, including G0-01 failures', async () => {
+  const cases = [
+    ['DO_CONTEXT_REQUIRED', {}, expected],
+    ['EXPECTED_CONTEXT_INVALID', deps(), {...expected, worker_id: 'INVALID'}],
+    ['IDENTITY_MISMATCH_OR_MISSING', deps({...state, worker_id: 'other'}), expected],
+    ['ACTIVE_WAKE_MALFORMED', deps({...state,
+      active_wake: {wake: {...wake, type: 'register'}, phase: 'queued'}}), expected],
+    ['QUEUED_WAKE_MALFORMED', deps({...state,
+      queued_wake: {...wake, reason: 'bad reason with spaces'}}), expected],
+    ['ACTIVE_PHASE_MALFORMED', deps({...state,
+      active_wake: {wake, phase: 'mystery'}}), expected],
+    ['WAKE_CONTEXT_MISMATCH', deps(), {...expected, pr_number: 91}],
+    ['RECENT_DELIVERIES_MALFORMED', deps({...state, recent_deliveries: ['bad delivery id']}), expected],
+    ['CONNECTION_METADATA_MALFORMED', deps({...state, active_connection_id: 0}), expected],
+    ['CONNECTION_METADATA_MALFORMED', deps({...state, active_connection_id: 'z'.repeat(129)}), expected],
+    ['SOCKET_OBSERVATION_FAILED', {storage: store(),
+      getWebSockets: () => {throw Error('private observation failure');}}, expected],
+    ['SOCKET_COLLECTION_INVALID', deps(state, {}), expected],
+    ['SOCKET_ATTACHMENT_UNREADABLE', deps(state, [{}]), expected],
+    ['SOCKET_ATTACHMENT_CONFLICT', deps(state, [socket({workerId: 'not-our-worker'})]), expected],
+    ['REGISTERED_SOCKET_CONFLICT', deps(state, [socket({connectionId: 'other-id'})]), expected],
+    ['DUPLICATE_REGISTERED_SOCKET', deps(state, [socket(), socket()]), expected],
+  ];
+  for (const [code, dependencies, bind] of cases) {
+    const result = await observe(dependencies, bind);
+    assert.equal(result.state, 'BLOCKED', code);
+    assert.equal(result.code, code);
+    assertExplicitNegativeGates(result);
+    assert.deepEqual(Object.keys(result).sort(), ['state', 'code', ...Object.keys(mandatoryNegative)].sort(),
+      'blocked shape must contain only the bounded status, code, and seven negative gates');
+    assert.equal(JSON.stringify(result).includes('private-connection-id'), false);
+  }
+});
+
+test('changed stored connection metadata and storage-read failures also normalize all gates', async () => {
+  let reads = 0;
+  const changingStorage = {
+    async get(key) {
+      if (key === 'active_connection_id') {
+        reads += 1;
+        return reads >= 3 ? 'new-private-id' : 'private-connection-id';
+      }
+      return state[key];
+    },
+  };
+  const raced = await observe({storage: changingStorage, getWebSockets: () => [socket()]}, expected);
+  assert.equal(raced.code, 'CONNECTION_STATE_CHANGED');
+  assertExplicitNegativeGates(raced);
+
+  const failed = await observe({
+    storage: {async get() {throw Error('secrets must never leak');}},
+    getWebSockets: () => [socket()],
+  }, expected);
+  assert.equal(failed.code, 'STORAGE_READ_FAILED');
+  assertExplicitNegativeGates(failed);
+});
+
+test('every successful observation also includes identical explicit negative gates', async () => {
+  for (const sample of [
+    deps(),
+    deps(state, []),
+    deps({worker_id}, []),
+    deps(state, [socket({registered: false, sessionId: null})]),
+  ]) {
+    const result = await observe(sample, expected);
+    assert.equal(result.state, 'OBSERVED_ONLY');
+    assertExplicitNegativeGates(result);
+  }
 });
