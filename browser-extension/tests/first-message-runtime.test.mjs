@@ -90,7 +90,7 @@ test("uncertain submit is quarantined and never retried", async () => {
 test("reused post-send conversation ID cannot be reconciled", async () => {
   const result = await runFirstMessageProtocolSimulation({ fault: "POST_SEND_ID_REUSED" });
   assert.equal(result.status, "BLOCKED");
-  assert.equal(result.code, "POST_SEND_CONFIRMATION_BLOCKED");
+  assert.equal(result.code, "CONVERSATION_ID_REUSED");
   assert.equal(result.simulatedSubmitInvocations, 1);
   assert.equal(result.simulatedLedgerConversationId, null);
   assert.equal(result.phases.includes("RECONCILE_CONVERSATION"), false);
