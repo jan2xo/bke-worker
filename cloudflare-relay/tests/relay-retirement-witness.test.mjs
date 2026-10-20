@@ -102,10 +102,23 @@ test('canonical alternative repo and recovery delivery id require exact expected
   assert.equal(result.can_retire, false);
 });
 
-test('exposes socket presence only, never opaque connection id', async () => {
-  const result = await witness(storage({...state, active_connection_id: 'private-socket-id'}), context);
-  assert.equal(result.registered_connection_present, true);
-  assert.equal(JSON.stringify(result).includes('private-socket-id'), false);
+test('reports stored connection-ID metadata only, never an authenticated live socket', async () => {
+  const result = await witness(storage({...state, active_connection_id: 'stale-private-socket-id'}), context);
+  assert.equal(result.state, 'OBSERVED_ONLY');
+  assert.equal(result.active_connection_id_present, true);
+  assert.equal(Object.hasOwn(result, 'registered_connection_present'), false);
+  assert.equal(Object.hasOwn(result, 'live_socket_present'), false);
+  assert.equal(Object.hasOwn(result, 'authoritative_socket_present'), false);
+  assert.equal(JSON.stringify(result).includes('stale-private-socket-id'), false);
+  assert.equal(result.can_retire, false);
+
+  // The helper has no access to ctx.getWebSockets(), so absence/presence of a
+  // stored ID MUST NOT be interpreted as evidence of connection liveness.
+  const missing = await witness(storage({...state, active_connection_id: undefined}), context);
+  assert.equal(missing.active_connection_id_present, false);
+  assert.equal(Object.hasOwn(missing, 'registered_connection_present'), false);
+  assert.equal(Object.hasOwn(missing, 'live_socket_present'), false);
+  assert.equal(missing.can_retire, false);
 });
 test('fails closed on malformed connection and recent-delivery state', async () => {
   assert.equal((await witness(storage({...state, active_connection_id: 0}), context)).code, 'CONNECTION_METADATA_MALFORMED');
