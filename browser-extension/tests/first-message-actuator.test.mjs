@@ -243,10 +243,21 @@ test("even synthetic all-green upstream flags cannot turn the literal-off live-s
   assert.match(result.promptPreview, /BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS/);
 });
 
-test("wrong worker, PR and head fail closed", () => {
-  blocked(b => { b.github.assignedWorkerId = "worker-b"; }, "GITHUB_ASSIGNMENT_CONFLICT");
-  blocked(b => { b.github.prNumber = 126; }, "GITHUB_ASSIGNMENT_CONFLICT");
-  blocked(b => { b.github.currentHeadSha = "d".repeat(40); }, "GITHUB_HEAD_CHANGED");
+test("wrong worker, PR and head fail closed at both gates and cross-snapshot binding", () => {
+  const wrongWorker = fixture();
+  wrongWorker.bootstrap.github.assignedWorkerId = "worker-b";
+  assert.equal(evaluateBootstrapFence(wrongWorker.bootstrap).code, "GITHUB_ASSIGNMENT_CONFLICT");
+  assert.equal(evaluateFirstMessageActuator(wrongWorker).code, "PRE_SUBMIT_GATE_REQUIRED");
+
+  const wrongPr = fixture();
+  wrongPr.bootstrap.github.prNumber = 126;
+  assert.equal(evaluateBootstrapFence(wrongPr.bootstrap).code, "GITHUB_ASSIGNMENT_CONFLICT");
+  assert.equal(evaluateFirstMessageActuator(wrongPr).code, "PRE_SUBMIT_GATE_REQUIRED");
+
+  const wrongHead = fixture();
+  wrongHead.bootstrap.github.currentHeadSha = "d".repeat(40);
+  assert.equal(evaluateBootstrapFence(wrongHead.bootstrap).code, "GITHUB_HEAD_CHANGED");
+  assert.equal(evaluateFirstMessageActuator(wrongHead).code, "PRE_SUBMIT_GATE_REQUIRED");
 });
 
 test("wrong target/profile/tab, shared profile and duplicate writable targets block", () => {
