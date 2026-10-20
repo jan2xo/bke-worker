@@ -430,6 +430,78 @@ test("possible-send replay stays uncertain when changing away from recovery even
   }
 });
 
+
+test("restart before fence rejects any persisted consumed-claim contradiction before a candidate", () => {
+  const validClaim = postSend(fixture()).github.sendClaim;
+  for (const sendClaim of [validClaim, null, {}, {durable:false, claimId: 12345678}]) {
+    const input = fixture("RECOVER_AFTER_RESTART");
+    input.github.state = "AUTHORIZED_PREPARE";
+    input.github.deliveryKnowledge = "NOT_SENT";
+    input.github.fence = undefined;
+    input.github.sendClaim = sendClaim;
+    const result = evaluateBootstrapFence(input);
+    assert.equal(result.decision, "BLOCKED");
+    assert.equal(result.code, "FENCE_REPLAY_OR_WRONG_EXECUTION");
+    assert.equal(result.state, "AUTHORIZED_PREPARE");
+    assert.equal(result.authority, "NONE");
+  }
+});
+
+test("numeric and array-shaped fence IDs and commit SHAs fail the CAS-candidate path", () => {
+  const badValues = [
+    12345678,
+    ["fence-0001"],
+    12345678,
+    ["b".repeat(40)]
+  ];
+  for (let index = 0; index < badValues.length; index++) {
+    const input = commitFence(fixture());
+    const value = badValues[index];
+    if (index < 2) {
+      input.github.fence.fenceId = value;
+      input.browser.fenceCommitReceipt.fenceId = value;
+    } else {
+      input.github.fence.commitSha = value;
+      input.browser.fenceCommitReceipt.commitSha = value;
+    }
+    const result = evaluateBootstrapFence(input);
+    assert.equal(result.decision, "BLOCKED", `case ${index}`);
+    assert.equal(result.code, "FENCE_INVALID", `case ${index}`);
+    assert.equal(result.authority, "NONE", `case ${index}`);
+  }
+});
+
+test("numeric and array-shaped send-claim IDs and SHAs fail the post-send confirmation path", () => {
+  const badValues = [
+    12345678,
+    ["send-claim-0001"],
+    12345678,
+    ["c".repeat(40)],
+    ["fence-0001"],
+    ["b".repeat(40)]
+  ];
+  for (let index = 0; index < badValues.length; index++) {
+    const input = postSend(fixture());
+    const value = badValues[index];
+    if (index < 2) {
+      input.github.sendClaim.claimId = value;
+      input.browser.firstMessageReceipt.sendClaimId = value;
+    } else if (index < 4) {
+      input.github.sendClaim.commitSha = value;
+      input.browser.firstMessageReceipt.sendClaimCommitSha = value;
+    } else if (index === 4) {
+      input.github.sendClaim.fenceId = value;
+    } else {
+      input.github.sendClaim.fenceCommitSha = value;
+    }
+    const result = evaluateBootstrapFence(input);
+    assert.equal(result.decision, "BLOCKED", `case ${index}`);
+    assert.equal(result.state, "DELIVERY_UNCERTAIN", `case ${index}`);
+    assert.equal(result.code, "DELIVERY_UNCERTAIN", `case ${index}`);
+    assert.equal(result.authority, "NONE", `case ${index}`);
+  }
+});
+
 test("confirmed or blocked attempts are terminal", () => {
   expectBlocked(f => {
     f.github.state = "CONFIRMED_NEW_CONVERSATION";

@@ -291,7 +291,9 @@ function validFence(input: BootstrapFenceInput): boolean {
   const committedAt = validIsoUtc(fence.committedAt);
   return (
     fence.durable === true &&
+    typeof fence.fenceId === "string" &&
     IDENTIFIER.test(fence.fenceId) &&
+    typeof fence.commitSha === "string" &&
     SHA.test(fence.commitSha) &&
     fence.attemptId === request.attemptId &&
     fence.workerId === request.workerId &&
@@ -352,10 +354,16 @@ function validSendClaim(input: BootstrapFenceInput): boolean {
   const committedAt = validIsoUtc(fence?.committedAt);
   return claim !== undefined &&
     claim.durable === true &&
+    typeof claim.claimId === "string" &&
     IDENTIFIER.test(claim.claimId) &&
+    typeof claim.commitSha === "string" &&
     SHA.test(claim.commitSha) &&
-    claim.fenceId === fence?.fenceId &&
-    claim.fenceCommitSha === fence?.commitSha &&
+    typeof claim.fenceId === "string" &&
+    IDENTIFIER.test(claim.fenceId) &&
+    typeof claim.fenceCommitSha === "string" &&
+    SHA.test(claim.fenceCommitSha) &&
+    claim.fenceId === fence.fenceId &&
+    claim.fenceCommitSha === fence.commitSha &&
     claim.attemptId === request.attemptId &&
     claim.workerId === request.workerId &&
     claim.headSha === request.headSha &&
@@ -442,6 +450,15 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
   }
   if (validIsoUtc(github.attemptAuthorizedAt) === null) return blocked("INVALID_INPUT");
 
+  // A persisted sendClaim is an irreversible consumed marker. Reject any
+  // contradictory state projection before a recovery early-return can offer a
+  // PREPARE candidate. Presence alone (including null/malformed values) fails
+  // closed unless the canonical attempt state is MAY_HAVE_SENT, where only
+  // confirmation may proceed and validSendClaim performs strict validation.
+  if (github.sendClaim !== undefined && github.state !== "FENCED_MAY_HAVE_SENT") {
+    return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
+  }
+
   // Recovery is special: no browser observation can turn a post-fence crash into permission to resend.
   if (request.event === "RECOVER_AFTER_RESTART") {
     if (github.state === "FENCED_MAY_HAVE_SENT" ||
@@ -477,12 +494,6 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     if (request.event !== "CONFIRM_NEW_CONVERSATION") {
       return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
     }
-  }
-
-  // Even if a stale/in-memory state projection says NOT_SENT, the durable
-  // sendClaim marker makes this fence consumed and permanently ineligible.
-  if (github.sendClaim !== undefined && github.state !== "FENCED_MAY_HAVE_SENT") {
-    return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
   }
 
   if (github.state === "FENCED_READY_TO_SEND" && github.deliveryKnowledge !== "NOT_SENT") {
