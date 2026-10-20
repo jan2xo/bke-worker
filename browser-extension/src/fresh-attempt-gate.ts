@@ -198,6 +198,7 @@ export function evaluateFreshChatLanding(input: unknown): FreshAttemptResult {
     typeof page.visible !== "boolean" || typeof page.composerAvailable !== "boolean" ||
     typeof page.turnBusy !== "boolean" ||
     !Number.isSafeInteger(page.tabId) || page.tabId < 0 ||
+    typeof page.uiState !== "string" ||
     !["NEW_CHAT_LANDING", "THREAD", "BUSY", "AUTH_REQUIRED", "UNKNOWN"].includes(page.uiState) ||
     typeof root.nowIso !== "string"
   ) return fail("INVALID_INPUT");
