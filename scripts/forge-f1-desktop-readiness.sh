@@ -151,7 +151,7 @@ wait_for_owner(){
 block_real(){ OPERATOR_BLOCKER="$1"; printf 'BKE_F1_REAL_CHROME=BLOCKED reason=%s\n' "$1" >&2; exit 2; }
 
 # First certify source at the exact current main SHA; no browser is touched before this.
-if ! (cd "$ROOT_DIR/browser-extension" && npm install --ignore-scripts --no-audit --no-fund --package-lock=false >/dev/null 2>&1 && npm run build >/dev/null 2>&1 && npm run validate >/dev/null 2>&1); then
+if ! (cd "$ROOT_DIR/browser-extension" && npm install --ignore-scripts --no-audit --no-fund --package-lock=false >/dev/null 2>&1 && npm run check >/dev/null 2>&1); then
   SOURCE_SMOKE_STATUS="FAIL"; OPERATOR_BLOCKER="EXTENSION_BUILD_OR_MANIFEST_VALIDATION_FAILED"; exit 2
 fi
 if SMOKE_OUTPUT="$(bash "$ROOT_DIR/scripts/smoke-desktop-native-integration.sh" 2>&1)"; then
