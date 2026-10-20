@@ -71,8 +71,8 @@ function expectBlocked(edit, code, state, event = "PREPARE") {
 
 function commitFence(input) {
   input.request.event = "VERIFY_FENCE_COMMIT";
-  input.github.state = "FENCED_MAY_HAVE_SENT";
-  input.github.deliveryKnowledge = "MAY_HAVE_SENT";
+  input.github.state = "FENCED_READY_TO_SEND";
+  input.github.deliveryKnowledge = "NOT_SENT";
   input.github.fence = {
     durable: true,
     fenceId: "fence-0001",
@@ -103,17 +103,32 @@ function commitFence(input) {
   return input;
 }
 
-function postSend(input) {
-  input.request.event = "CONFIRM_NEW_CONVERSATION";
+function consumeSendClaim(input, durable = true) {
   input.github.state = "FENCED_MAY_HAVE_SENT";
   input.github.deliveryKnowledge = "MAY_HAVE_SENT";
-  input.github.fence = {
-    durable: true, fenceId: "fence-0001", commitSha: FENCE_SHA,
-    attemptId: input.request.attemptId, workerId: input.request.workerId,
-    headSha: input.request.headSha, targetId: input.request.targetId,
-    profileId: input.request.profileId, targetTabId: input.request.targetTabId,
-    executionId: input.request.executionId, generation: 1, committedAt: FENCED_AT
+  input.github.sendClaim = {
+    durable,
+    claimId: "send-claim-0001",
+    commitSha: "c".repeat(40),
+    fenceId: input.github.fence.fenceId,
+    fenceCommitSha: input.github.fence.commitSha,
+    attemptId: input.request.attemptId,
+    workerId: input.request.workerId,
+    headSha: input.request.headSha,
+    targetId: input.request.targetId,
+    profileId: input.request.profileId,
+    targetTabId: input.request.targetTabId,
+    executionId: input.request.executionId,
+    generation: 1,
+    claimedAt: "2026-10-20T04:00:03.250Z"
   };
+  return input;
+}
+
+function postSend(input) {
+  commitFence(input);
+  consumeSendClaim(input);
+  input.request.event = "CONFIRM_NEW_CONVERSATION";
   input.browser.current.uiState = "THREAD";
   input.browser.current.url = "https://chatgpt.com/c/fresh-chat-0001";
   input.browser.current.observedAt = "2026-10-20T04:00:06.000Z";
@@ -125,6 +140,8 @@ function postSend(input) {
     headSha: input.request.headSha,
     fenceId: "fence-0001",
     fenceCommitSha: FENCE_SHA,
+    sendClaimId: input.github.sendClaim.claimId,
+    sendClaimCommitSha: input.github.sendClaim.commitSha,
     targetId: input.request.targetId,
     profileId: input.request.profileId,
     targetTabId: input.request.targetTabId,
@@ -211,17 +228,17 @@ test("first-message candidate requires already durable matching fence", () => {
   });
   const valid = commitFence(fixture());
   assert.deepEqual(evaluateBootstrapFence(valid), {
-    decision: "CANDIDATE_ONLY", state: "FENCED_MAY_HAVE_SENT",
-    code: "FIRST_MESSAGE_CANDIDATE", authority: "NONE"
+    decision: "CANDIDATE_ONLY", state: "FENCED_READY_TO_SEND",
+    code: "FIRST_SEND_CAS_CANDIDATE", authority: "NONE"
   });
 });
 
 test("fence mismatch, missing durable proof and replay/wrong execution block", () => {
   expectBlocked(f => {
     f.request.event = "VERIFY_FENCE_COMMIT";
-    f.github.state = "FENCED_MAY_HAVE_SENT";
-    f.github.deliveryKnowledge = "MAY_HAVE_SENT";
-  }, "FENCE_INVALID", "FENCED_MAY_HAVE_SENT", "VERIFY_FENCE_COMMIT");
+    f.github.state = "FENCED_READY_TO_SEND";
+    f.github.deliveryKnowledge = "NOT_SENT";
+  }, "FENCE_INVALID", "FENCED_READY_TO_SEND", "VERIFY_FENCE_COMMIT");
   const wrongCommit = commitFence(fixture());
   wrongCommit.github.fence.commitSha = "not-a-sha";
   assert.equal(evaluateBootstrapFence(wrongCommit).code, "FENCE_INVALID");
@@ -235,7 +252,7 @@ test("fence mismatch, missing durable proof and replay/wrong execution block", (
     f.request.event = "PREPARE";
     f.github.state = "FENCED_MAY_HAVE_SENT";
     f.github.deliveryKnowledge = "MAY_HAVE_SENT";
-  }, "FENCE_REPLAY_OR_WRONG_EXECUTION", "FENCED_MAY_HAVE_SENT");
+  }, "DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
 });
 
 test("missing durable fence cannot transition to the first-message event", () => {
@@ -271,10 +288,10 @@ test("first-message receipt must match fence, attempt, head, target and chronolo
     "FIRST_MESSAGE_RECEIPT_INVALID", "FENCED_MAY_HAVE_SENT", "CONFIRM_NEW_CONVERSATION");
 });
 
-test("uncertain send and crash/restart after fence never authorize a retry", () => {
+test("uncertain send and crash/restart after consumed send claim never authorize a retry", () => {
   const recoverFenced = fixture("RECOVER_AFTER_RESTART");
-  recoverFenced.github.state = "FENCED_MAY_HAVE_SENT";
-  recoverFenced.github.deliveryKnowledge = "MAY_HAVE_SENT";
+  commitFence(recoverFenced);
+  consumeSendClaim(recoverFenced);
   assert.deepEqual(evaluateBootstrapFence(recoverFenced), {
     decision: "BLOCKED", state: "DELIVERY_UNCERTAIN",
     code: "DELIVERY_UNCERTAIN", authority: "NONE"
@@ -322,6 +339,69 @@ test("malformed root and invalid protocol fail closed", () => {
   expectBlocked(f => { f.request.prNumber = 0; }, "INVALID_INPUT");
   expectBlocked(f => { f.request.targetTabId = -1; }, "INVALID_INPUT");
   expectBlocked(f => { f.github.deliveryKnowledge = "UNKNOWN"; }, "INVALID_INPUT");
+});
+
+
+test("durable send-once CAS consumes the first-message candidate", () => {
+  const input = commitFence(fixture());
+  const first = evaluateBootstrapFence(input);
+  assert.deepEqual(first, {
+    decision: "CANDIDATE_ONLY", state: "FENCED_READY_TO_SEND",
+    code: "FIRST_SEND_CAS_CANDIDATE", authority: "NONE"
+  });
+
+  // This represents the provider-authenticated, durable CAS/read-back that a
+  // future adapter must win before sending. The candidate itself never sends.
+  consumeSendClaim(input);
+  for (const event of ["VERIFY_FENCE_COMMIT", "PREPARE", "RECOVER_AFTER_RESTART",
+    "MARK_DELIVERY_UNCERTAIN"]) {
+    input.request.event = event;
+    const replay = evaluateBootstrapFence(input);
+    assert.equal(replay.decision, "BLOCKED", event);
+    assert.equal(replay.state, "DELIVERY_UNCERTAIN", event);
+    assert.equal(replay.code, "DELIVERY_UNCERTAIN", event);
+    assert.equal(replay.authority, "NONE", event);
+  }
+});
+
+test("a used send claim cannot be hidden by stale in-memory state regression", () => {
+  const input = commitFence(fixture());
+  consumeSendClaim(input);
+  // Simulate a caller whose local projection regresses but whose GitHub-backed
+  // durable sendClaim marker remains present.
+  input.github.state = "FENCED_READY_TO_SEND";
+  input.github.deliveryKnowledge = "NOT_SENT";
+  input.request.event = "VERIFY_FENCE_COMMIT";
+  const result = evaluateBootstrapFence(input);
+  assert.deepEqual(result, {
+    decision: "BLOCKED", state: "FENCED_READY_TO_SEND",
+    code: "FENCE_REPLAY_OR_WRONG_EXECUTION", authority: "NONE"
+  });
+});
+
+test("a non-durable/in-memory send claim cannot reopen an already used fence", () => {
+  const input = commitFence(fixture());
+  consumeSendClaim(input, false);
+  input.github.state = "FENCED_READY_TO_SEND";
+  input.github.deliveryKnowledge = "NOT_SENT";
+  input.request.event = "VERIFY_FENCE_COMMIT";
+  const result = evaluateBootstrapFence(input);
+  assert.equal(result.decision, "BLOCKED");
+  assert.equal(result.code, "FENCE_REPLAY_OR_WRONG_EXECUTION");
+  assert.equal(result.authority, "NONE");
+});
+
+test("possible-send replay stays uncertain when changing away from recovery event", () => {
+  const input = postSend(fixture());
+  for (const event of ["RECOVER_AFTER_RESTART", "VERIFY_FENCE_COMMIT", "PREPARE",
+    "MARK_DELIVERY_UNCERTAIN"]) {
+    input.request.event = event;
+    const result = evaluateBootstrapFence(input);
+    assert.equal(result.decision, "BLOCKED", event);
+    assert.equal(result.state, "DELIVERY_UNCERTAIN", event);
+    assert.equal(result.code, "DELIVERY_UNCERTAIN", event);
+    assert.equal(result.authority, "NONE", event);
+  }
 });
 
 test("confirmed or blocked attempts are terminal", () => {

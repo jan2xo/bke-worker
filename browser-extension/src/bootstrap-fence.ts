@@ -19,6 +19,7 @@ const ISO_UTC_MILLIS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.
 export type BootstrapState =
   | "UNAUTHORIZED"
   | "AUTHORIZED_PREPARE"
+  | "FENCED_READY_TO_SEND"
   | "FENCED_MAY_HAVE_SENT"
   | "CONFIRMED_NEW_CONVERSATION"
   | "DELIVERY_UNCERTAIN"
@@ -63,6 +64,23 @@ export interface DurablePreSendFence {
   committedAt: string;
 }
 
+export interface DurableFirstSendClaim {
+  durable: boolean;
+  claimId: string;
+  commitSha: string;
+  fenceId: string;
+  fenceCommitSha: string;
+  attemptId: string;
+  workerId: string;
+  headSha: string;
+  targetId: string;
+  profileId: string;
+  targetTabId: number;
+  executionId: string;
+  generation: number;
+  claimedAt: string;
+}
+
 export interface FenceCommitReceipt {
   event: "FENCE_COMMIT_RETURNED";
   fenceId: string;
@@ -84,6 +102,8 @@ export interface FirstMessageConversationReceipt {
   headSha: string;
   fenceId: string;
   fenceCommitSha: string;
+  sendClaimId: string;
+  sendClaimCommitSha: string;
   targetId: string;
   profileId: string;
   targetTabId: number;
@@ -110,6 +130,8 @@ export interface GitHubBootstrapObservation {
   priorConversationIds: string[];
   attemptAuthorizedAt: string;
   fence?: DurablePreSendFence;
+  /** Irreversible durable CAS marker; once present, this fence is consumed. */
+  sendClaim?: DurableFirstSendClaim;
 }
 
 export interface ChatUiObservation {
@@ -164,7 +186,7 @@ export type BootstrapCode =
   | "CONVERSATION_ID_REUSED"
   | "FENCE_CANDIDATE"
   | "PREPARE_CANDIDATE"
-  | "FIRST_MESSAGE_CANDIDATE"
+  | "FIRST_SEND_CAS_CANDIDATE"
   | "NEW_CONVERSATION_CANDIDATE"
   | "DELIVERY_UNCERTAIN"
   | "SAFE_TO_REEVALUATE_PREPARE"
@@ -309,6 +331,38 @@ function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
 }
 
 /**
+ * Validate the durable compare-and-swap marker that consumes the one-shot send
+ * opportunity. Its presence is terminal for first-send eligibility, even when
+ * the surrounding caller-projected state appears to have regressed.
+ */
+function validSendClaim(input: BootstrapFenceInput): boolean {
+  const request = input.request;
+  const github = input.github;
+  const claim = github.sendClaim;
+  const fence = github.fence;
+  const now = validIsoUtc(input.nowIso);
+  const claimedAt = validIsoUtc(claim?.claimedAt);
+  const committedAt = validIsoUtc(fence?.committedAt);
+  return claim !== undefined &&
+    claim.durable === true &&
+    IDENTIFIER.test(claim.claimId) &&
+    SHA.test(claim.commitSha) &&
+    claim.fenceId === fence?.fenceId &&
+    claim.fenceCommitSha === fence?.commitSha &&
+    claim.attemptId === request.attemptId &&
+    claim.workerId === request.workerId &&
+    claim.headSha === request.headSha &&
+    claim.targetId === request.targetId &&
+    claim.profileId === request.profileId &&
+    claim.targetTabId === request.targetTabId &&
+    claim.executionId === request.executionId &&
+    claim.generation === 1 &&
+    claimedAt !== null && committedAt !== null && now !== null &&
+    claimedAt >= committedAt &&
+    claimedAt <= now + BOOTSTRAP_CLOCK_SKEW_MS;
+}
+
+/**
  * Evaluate a proposed bootstrap transition from provider observations.
  * This function is pure and cannot authenticate those observations or perform a transition.
  */
@@ -343,8 +397,8 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
       typeof github.prAssignedWorkerCount !== "number" ||
       typeof github.prOpen !== "boolean" ||
       typeof github.currentAttemptId !== "string" ||
-      !["UNAUTHORIZED", "AUTHORIZED_PREPARE", "FENCED_MAY_HAVE_SENT",
-        "CONFIRMED_NEW_CONVERSATION", "DELIVERY_UNCERTAIN", "BLOCKED"].includes(github.state) ||
+      !["UNAUTHORIZED", "AUTHORIZED_PREPARE", "FENCED_READY_TO_SEND",
+        "FENCED_MAY_HAVE_SENT", "CONFIRMED_NEW_CONVERSATION", "DELIVERY_UNCERTAIN", "BLOCKED"].includes(github.state) ||
       typeof github.previousAttemptResolved !== "boolean" ||
       !["NOT_SENT", "MAY_HAVE_SENT", "CONFIRMED", "UNCERTAIN"].includes(github.deliveryKnowledge) ||
       !(github.previousConversationId === null ||
@@ -405,6 +459,29 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
   }
 
+  // The pre-send fence and the one-shot send claim are separate durable phases.
+  // A claimed/maybe-sent attempt is terminal for send-related events; only
+  // identity confirmation may continue, and it must validate that same claim.
+  if (github.state === "FENCED_MAY_HAVE_SENT" || github.deliveryKnowledge === "MAY_HAVE_SENT") {
+    if (github.state !== "FENCED_MAY_HAVE_SENT" ||
+        github.deliveryKnowledge !== "MAY_HAVE_SENT") {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
+    if (request.event !== "CONFIRM_NEW_CONVERSATION") {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
+  }
+
+  // Even if a stale/in-memory state projection says NOT_SENT, the durable
+  // sendClaim marker makes this fence consumed and permanently ineligible.
+  if (github.sendClaim !== undefined && github.state !== "FENCED_MAY_HAVE_SENT") {
+    return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
+  }
+
+  if (github.state === "FENCED_READY_TO_SEND" && github.deliveryKnowledge !== "NOT_SENT") {
+    return blocked("ATTEMPT_STATE_CONFLICT", github.state);
+  }
+
   if (!targetMatchesRequest(input as BootstrapFenceInput)) {
     return blocked("BROWSER_TARGET_CONFLICT");
   }
@@ -421,9 +498,17 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
   }
 
   if (request.event === "VERIFY_FENCE_COMMIT") {
-    if (github.state !== "FENCED_MAY_HAVE_SENT" || github.deliveryKnowledge !== "MAY_HAVE_SENT") {
+    // This event may only propose a CAS reservation while the durable pre-send
+    // fence is still unconsumed. The returned candidate is NOT a send permit.
+    if (github.state !== "FENCED_READY_TO_SEND" || github.deliveryKnowledge !== "NOT_SENT") {
       return blocked(github.state === "AUTHORIZED_PREPARE" ? "DURABLE_FENCE_REQUIRED" :
-        "ATTEMPT_STATE_CONFLICT", github.state);
+        github.state === "FENCED_MAY_HAVE_SENT" || github.deliveryKnowledge === "MAY_HAVE_SENT" ?
+          "DELIVERY_UNCERTAIN" : "ATTEMPT_STATE_CONFLICT",
+        github.state === "FENCED_MAY_HAVE_SENT" || github.deliveryKnowledge === "MAY_HAVE_SENT" ?
+          "DELIVERY_UNCERTAIN" : github.state);
+    }
+    if (github.sendClaim !== undefined) {
+      return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
     }
     if (!validFence(input as BootstrapFenceInput)) return blocked("FENCE_INVALID", github.state);
     if (!validateFenceCommitReceipt(input as BootstrapFenceInput)) {
@@ -431,7 +516,7 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     }
     const pageError = landingPageReady(input as BootstrapFenceInput);
     if (pageError) return blocked(pageError, github.state);
-    return candidate("FENCED_MAY_HAVE_SENT", "FIRST_MESSAGE_CANDIDATE");
+    return candidate("FENCED_READY_TO_SEND", "FIRST_SEND_CAS_CANDIDATE");
   }
 
   if (request.event === "CONFIRM_NEW_CONVERSATION") {
@@ -440,10 +525,14 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
         "ATTEMPT_STATE_CONFLICT", github.state);
     }
     if (!validFence(input as BootstrapFenceInput)) return blocked("FENCE_INVALID", github.state);
+    if (!validSendClaim(input as BootstrapFenceInput)) {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
     const pageError = threadPageReady(input as BootstrapFenceInput);
     if (pageError) return blocked(pageError, github.state);
     const receipt = browser.firstMessageReceipt;
     const fence = github.fence;
+    const sendClaim = github.sendClaim;
     const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
     const observed = validIsoUtc(page.observedAt);
     const sentAt = validIsoUtc(receipt?.sendStartedAt);
@@ -456,6 +545,8 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
         receipt.headSha !== request.headSha ||
         receipt.fenceId !== fence?.fenceId ||
         receipt.fenceCommitSha !== fence?.commitSha ||
+        receipt.sendClaimId !== sendClaim?.claimId ||
+        receipt.sendClaimCommitSha !== sendClaim?.commitSha ||
         receipt.targetId !== request.targetId ||
         receipt.profileId !== request.profileId ||
         receipt.targetTabId !== request.targetTabId ||
@@ -463,7 +554,7 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
         !conversationId || conversationId !== afterId ||
         receipt.conversationId !== conversationId ||
         !sentAt || !confirmedAt || now === null || observed === null ||
-        sentAt < (validIsoUtc(fence?.committedAt) ?? Number.POSITIVE_INFINITY) ||
+        sentAt < (validIsoUtc(sendClaim?.claimedAt) ?? Number.POSITIVE_INFINITY) ||
         confirmedAt < sentAt ||
         confirmedAt > observed + BOOTSTRAP_CLOCK_SKEW_MS ||
         confirmedAt > now + BOOTSTRAP_CLOCK_SKEW_MS ||
