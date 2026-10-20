@@ -43,7 +43,7 @@ for forbidden in (
 
 assert '"nativeMessaging"' in script  # deny-list, never permission grant
 assert "nativeMessaging" not in manifest
-assert "permissions: [\"storage\"]" in policy
+assert 'extension.permissions[0] !== "storage"' in policy
 assert "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH" in policy
 assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
 assert "PROFILE_PATH_UNSAFE" in policy
