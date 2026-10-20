@@ -391,6 +391,32 @@ test("a non-durable/in-memory send claim cannot reopen an already used fence", (
   assert.equal(result.authority, "NONE");
 });
 
+test("malformed or missing send-claim/fence objects fail closed without throwing", () => {
+  const nullClaim = postSend(fixture());
+  nullClaim.github.sendClaim = null;
+  assert.deepEqual(evaluateBootstrapFence(nullClaim), {
+    decision: "BLOCKED", state: "DELIVERY_UNCERTAIN",
+    code: "DELIVERY_UNCERTAIN", authority: "NONE"
+  });
+
+  const missingClaim = postSend(fixture());
+  delete missingClaim.github.sendClaim;
+  assert.deepEqual(evaluateBootstrapFence(missingClaim), {
+    decision: "BLOCKED", state: "DELIVERY_UNCERTAIN",
+    code: "DELIVERY_UNCERTAIN", authority: "NONE"
+  });
+
+  const nullFence = commitFence(fixture());
+  nullFence.github.fence = null;
+  assert.equal(evaluateBootstrapFence(nullFence).decision, "BLOCKED");
+  assert.equal(evaluateBootstrapFence(nullFence).code, "FENCE_INVALID");
+
+  const nullFenceReceipt = commitFence(fixture());
+  nullFenceReceipt.browser.fenceCommitReceipt = null;
+  assert.equal(evaluateBootstrapFence(nullFenceReceipt).decision, "BLOCKED");
+  assert.equal(evaluateBootstrapFence(nullFenceReceipt).code, "FENCE_REPLAY_OR_WRONG_EXECUTION");
+});
+
 test("possible-send replay stays uncertain when changing away from recovery event", () => {
   const input = postSend(fixture());
   for (const event of ["RECOVER_AFTER_RESTART", "VERIFY_FENCE_COMMIT", "PREPARE",

@@ -286,9 +286,10 @@ function threadPageReady(input: BootstrapFenceInput): BootstrapCode | null {
 function validFence(input: BootstrapFenceInput): boolean {
   const { request, github } = input;
   const fence = github.fence;
+  if (fence === undefined || fence === null || typeof fence !== "object") return false;
   const authorizedAt = validIsoUtc(github.attemptAuthorizedAt);
-  const committedAt = validIsoUtc(fence?.committedAt);
-  return fence !== undefined &&
+  const committedAt = validIsoUtc(fence.committedAt);
+  return
     fence.durable === true &&
     IDENTIFIER.test(fence.fenceId) &&
     SHA.test(fence.commitSha) &&
@@ -309,10 +310,12 @@ function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
   const request = input.request;
   const receipt = input.browser.fenceCommitReceipt;
   const fence = input.github.fence;
+  if (receipt === undefined || receipt === null || typeof receipt !== "object" ||
+      fence === undefined || fence === null || typeof fence !== "object") return false;
   const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
-  const receiptAt = validIsoUtc(receipt?.observedAt);
-  const committedAt = validIsoUtc(fence?.committedAt);
-  return receipt !== undefined &&
+  const receiptAt = validIsoUtc(receipt.observedAt);
+  const committedAt = validIsoUtc(fence.committedAt);
+  return
     receipt.event === "FENCE_COMMIT_RETURNED" &&
     fence !== undefined &&
     receipt.fenceId === fence.fenceId &&
@@ -340,6 +343,8 @@ function validSendClaim(input: BootstrapFenceInput): boolean {
   const github = input.github;
   const claim = github.sendClaim;
   const fence = github.fence;
+  if (claim === undefined || claim === null || typeof claim !== "object" ||
+      fence === undefined || fence === null || typeof fence !== "object") return false;
   const now = validIsoUtc(input.nowIso);
   const claimedAt = validIsoUtc(claim?.claimedAt);
   const committedAt = validIsoUtc(fence?.committedAt);

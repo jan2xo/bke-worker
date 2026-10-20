@@ -13,7 +13,7 @@ This is a source-only state contract. It does not call GitHub, create a commit/r
 - FENCED_READY_TO_SEND: the durable pre-send fence has been committed and read back for this exact attempt, worker, head, execution, target/profile/tab and generation. It is still NOT_SENT and has no consumed send claim; this state is not a send permit.
 - FENCED_MAY_HAVE_SENT: the future trusted adapter has durably consumed the one-shot opportunity via an atomic GitHub compare-and-swap (CAS) and read it back before invoking submission. Once this claim exists, the first message may have been sent; a crash makes delivery uncertain, and this state cannot produce another send candidate.
 - CONFIRMED_NEW_CONVERSATION: a post-send observation proposes a stable new conversation ID for the fenced attempt, not in GitHub-backed prior history.
-- DELIVERY_UNCERTAIN: a crash/restart or unknown send result occurred after the fence. Do not retry the first message or open a second chat under the same attempt.
+- DELIVERY_UNCERTAIN: a crash/restart occurs after the one-shot send claim is consumed, or the send result becomes ambiguous. Do not retry the first message or open a second chat under the same attempt.
 - BLOCKED: evidence is missing, conflicting, stale, reused or malformed.
 
 Transitions are projections, not mutations. A candidate result never writes the GitHub ledger. A future trusted adapter must commit the transition to GitHub and read it back before acting.
