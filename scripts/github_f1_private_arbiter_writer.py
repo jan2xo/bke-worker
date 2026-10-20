@@ -17,8 +17,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from github_atomic_claim import (
-    ARBITER_REF, ClaimDenied, _validate_successor, validated_manifest,
+from github_atomic_claim import ARBITER_REF
+from github_f1_first_send_ledger import (
+    FirstSendLedgerDenied, validate_ledger_successor, validated_ledger,
 )
 
 REPOSITORY = "jan2xo/bke-worker"
@@ -67,8 +68,8 @@ def strict_json(raw: bytes) -> Any:
 
 def canonical(value: Any) -> bytes:
     try:
-        result = validated_manifest(value)
-    except ClaimDenied:
+        result = validated_ledger(value)
+    except FirstSendLedgerDenied:
         deny("F1_PROVIDER_MANIFEST_INVALID")
     raw = (json.dumps(result, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True) + "\n").encode("ascii")
@@ -239,8 +240,10 @@ class GitHubAppArbiterWriter:
                 deny("F1_PROVIDER_REF_MOVED")
             parent = self._snapshot(before)
             try:
-                successor = _validate_successor(parent["manifest"], proposed_manifest)
-            except ClaimDenied:
+                successor = validate_ledger_successor(
+                    parent["manifest"], proposed_manifest, expected_parent_sha=before
+                )
+            except FirstSendLedgerDenied:
                 deny("F1_PROVIDER_TRANSITION_INVALID")
             content = canonical(successor)
             # Re-read immediately before mutation. This is not a substitute
