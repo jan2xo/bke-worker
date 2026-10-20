@@ -1,23 +1,23 @@
 // Source-only internal witness for a future privileged operator retirement gate.
 // Does NOT authenticate Admin, cancel a wake, or grant dispatch/retirement authority.
 // Never import into a public HTTP/WebSocket/browser/device route.
-const ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
+import {CONTROL_REPOSITORIES, isValidDeliveryId, isValidWorkerId, validateWake} from './protocol.js';
 const HEAD = /^[0-9a-f]{40}$/u;
-const DELIVERY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const PHASES = new Set(['queued', 'sent', 'deferred', 'accepted', 'recovery_required']);
 const MAX_RECENT = 64;
 
 const blocked = code => Object.freeze({state: 'BLOCKED', code, authority: 'NONE', can_retire: false});
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const exactKeys = (value, keys) => record(value) &&
+  Object.keys(value).length === keys.length && keys.every(key =>
+    Object.prototype.hasOwnProperty.call(value, key));
 
 function describeWake(value, workerId) {
-  if (!record(value) || Object.keys(value).length > 20) return null;
-  const {worker_id, delivery_id, pr_number, expected_head_sha} = value;
-  if (worker_id !== workerId || typeof delivery_id !== 'string' ||
-      !DELIVERY.test(delivery_id) || !Number.isSafeInteger(pr_number) || pr_number < 1 ||
-      typeof expected_head_sha !== 'string' || !HEAD.test(expected_head_sha)) return null;
+  // Reuse the exact persisted wire contract; a partial or corrupted wake is blocked.
+  if (!validateWake(value, workerId)) return null;
+  const {delivery_id, repo, pr_number, expected_head_sha} = value;
   // Copy only non-secret GitHub routing metadata into the result.
-  return Object.freeze({delivery_id, pr_number, expected_head_sha});
+  return Object.freeze({delivery_id, repo, pr_number, expected_head_sha});
 }
 
 /**
@@ -26,7 +26,8 @@ function describeWake(value, workerId) {
  * and a separately authenticated owner context. This is NOT an atomic snapshot.
  */
 export async function readRelayRetirementWitness(storage, expected) {
-  if (!record(expected) || !ID.test(expected.worker_id ?? '') ||
+  if (!exactKeys(expected, ['worker_id', 'repo', 'pr_number', 'expected_head_sha']) ||
+      !isValidWorkerId(expected.worker_id) || !CONTROL_REPOSITORIES.has(expected.repo) ||
       !Number.isSafeInteger(expected.pr_number) || expected.pr_number < 1 ||
       typeof expected.expected_head_sha !== 'string' || !HEAD.test(expected.expected_head_sha)) {
     return blocked('EXPECTED_CONTEXT_INVALID');
@@ -48,13 +49,15 @@ export async function readRelayRetirementWitness(storage, expected) {
     return blocked('CONNECTION_METADATA_MALFORMED');
   }
   if (recent !== undefined && (!Array.isArray(recent) || recent.length > MAX_RECENT ||
-      recent.some(id => typeof id !== 'string' || !DELIVERY.test(id)))) {
+      recent.some(id => !isValidDeliveryId(id)))) {
     return blocked('RECENT_DELIVERIES_MALFORMED');
   }
 
   let activeSummary = null, queuedSummary = null;
   if (active !== undefined) {
-    if (!record(active) || !PHASES.has(active.phase)) return blocked('ACTIVE_PHASE_MALFORMED');
+    if (!exactKeys(active, ['wake', 'phase']) || !PHASES.has(active.phase)) {
+      return blocked('ACTIVE_PHASE_MALFORMED');
+    }
     const wake = describeWake(active.wake, expected.worker_id);
     if (!wake) return blocked('ACTIVE_WAKE_MALFORMED');
     activeSummary = Object.freeze({...wake, phase: active.phase});
@@ -64,7 +67,7 @@ export async function readRelayRetirementWitness(storage, expected) {
     if (!queuedSummary) return blocked('QUEUED_WAKE_MALFORMED');
   }
   for (const wake of [activeSummary, queuedSummary]) {
-    if (wake && (wake.pr_number !== expected.pr_number ||
+    if (wake && (wake.repo !== expected.repo || wake.pr_number !== expected.pr_number ||
                  wake.expected_head_sha !== expected.expected_head_sha)) {
       return blocked('WAKE_CONTEXT_MISMATCH');
     }
@@ -75,6 +78,7 @@ export async function readRelayRetirementWitness(storage, expected) {
     authority: 'NONE',
     can_retire: false,
     worker_id: expected.worker_id,
+    repo: expected.repo,
     pr_number: expected.pr_number,
     expected_head_sha: expected.expected_head_sha,
     active: activeSummary,
