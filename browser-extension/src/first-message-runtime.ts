@@ -133,12 +133,13 @@ function result(
   simulatedSubmitInvocations = 0,
   conversationIdCandidate: string | null = null,
   simulatedLedgerConversationId: string | null = null,
+  syntheticEvidence = true,
 ): FirstMessageRuntimeResult {
   return {
     status,
     code,
     authority: "NONE",
-    syntheticEvidence: true,
+    syntheticEvidence,
     externalIoPerformed: false,
     realBrowserSubmissions: 0,
     simulatedSubmitInvocations,
@@ -669,7 +670,7 @@ function initialObservationFreshSnapshot(
  */
 export async function runFirstMessageAttempt(_input: unknown): Promise<FirstMessageRuntimeResult> {
   if (!FIRST_MESSAGE_LIVE_SEND_ENABLED) {
-    return result("BLOCKED", "LIVE_SEND_DISABLED", []);
+    return result("BLOCKED", "LIVE_SEND_DISABLED", [], 0, null, null, false);
   }
   return result("BLOCKED", "TRUSTED_ADAPTERS_NOT_INSTALLED", []);
 }
