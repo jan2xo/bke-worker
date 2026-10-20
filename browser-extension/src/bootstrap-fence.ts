@@ -287,7 +287,7 @@ function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
   const request = input.request;
   const receipt = input.browser.fenceCommitReceipt;
   const fence = input.github.fence;
-  const now = validIsoUtc(input.nowIso);
+  const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
   const receiptAt = validIsoUtc(receipt?.observedAt);
   const committedAt = validIsoUtc(fence?.committedAt);
   return receipt !== undefined &&
@@ -444,7 +444,7 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     if (pageError) return blocked(pageError, github.state);
     const receipt = browser.firstMessageReceipt;
     const fence = github.fence;
-    const now = validIsoUtc(input.nowIso);
+    const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
     const observed = validIsoUtc(page.observedAt);
     const sentAt = validIsoUtc(receipt?.sendStartedAt);
     const confirmedAt = validIsoUtc(receipt?.confirmedAt);
