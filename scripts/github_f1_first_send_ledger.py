@@ -92,7 +92,7 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
                 type(item["tab_id"]) is not int or item["tab_id"] < 0 or
                 not _string(_ID, item["execution_id"]) or
                 not _string(_ID, item["fence_id"]) or
-                item["state"] not in _STATES):
+                type(item["state"]) is not str or item["state"] not in _STATES):
             _deny("F1_ATTEMPT_ROW_INVALID")
         if (item["attempt_id"] in seen_ids or
                 item["worker_claim_id"] in seen_claims):
