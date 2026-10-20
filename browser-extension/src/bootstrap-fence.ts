@@ -231,7 +231,7 @@ function targetMatchesRequest(input: BootstrapFenceInput): boolean {
 }
 
 function currentPageIsFresh(input: BootstrapFenceInput): boolean {
-  const now = validIsoUtc(input.nowIso);
+  const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
   const observed = validIsoUtc(input.browser.current.observedAt);
   return now !== null && observed !== null &&
     observed <= now + BOOTSTRAP_CLOCK_SKEW_MS &&
@@ -476,7 +476,7 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
 
   if (request.event === "MARK_DELIVERY_UNCERTAIN") {
     if (github.state === "FENCED_MAY_HAVE_SENT" &&
-        (github.deliveryKnowledge === "MAY_HAVE_SENT" || github.deliveryKnowledge === "UNCERTAIN")) {
+        github.deliveryKnowledge === "MAY_HAVE_SENT") {
       return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
     }
     return blocked(github.state === "AUTHORIZED_PREPARE" ? "DURABLE_FENCE_REQUIRED" :
