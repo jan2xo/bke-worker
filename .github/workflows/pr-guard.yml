@@ -269,6 +269,24 @@ jobs:
         working-directory: browser-extension
         run: npm run check
 
+      - name: Run report-producing desktop/native integration smoke
+        if: steps.paths.outputs.run == 'true'
+        working-directory: browser-extension
+        run: npm run smoke:native -- --report "$RUNNER_TEMP/desktop-native-smoke-report.json"
+
+      - name: Upload desktop/native smoke evidence
+        if: steps.paths.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-native-smoke-report-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/desktop-native-smoke-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Check owner smoke entrypoint syntax
+        if: steps.paths.outputs.run == 'true'
+        run: bash -n scripts/smoke-desktop-native-integration.sh
+
       - name: Diff hygiene
         if: steps.paths.outputs.run == 'true'
         run: git diff --check
