@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { FIRST_MESSAGE_LIVE_SEND_ENABLED, buildApprovedBootstrapPrompt, evaluateFirstMessageActuator } from "../dist/first-message-actuator.js";
 import { evaluateBootstrapFence } from "../dist/bootstrap-fence.js";
+import { evaluateFreshChatLanding } from "../dist/fresh-attempt-gate.js";
 
 const HEAD = "a".repeat(40);
 const FENCE_SHA = "b".repeat(40);
@@ -60,8 +61,54 @@ function fixture() {
     },
   };
   return {
+    freshAttempt: freshAttemptFixture(request),
     bootstrap: { request, github, browser, nowIso: NOW },
     liveProofs: { githubCasOwnerCertified: false, nativePairingOwnerCertified: false, realBrowserOwnerAccepted: false },
+  };
+}
+
+function freshAttemptFixture(request) {
+  const previousConversationId = "older-chat-0001";
+  return {
+    request: {
+      protocolVersion: 1,
+      repository: request.repository,
+      workerId: request.workerId,
+      prNumber: request.prNumber,
+      headSha: request.headSha,
+      attemptId: request.attemptId,
+      kind: "IMPLEMENT",
+    },
+    github: {
+      repository: request.repository,
+      prNumber: request.prNumber,
+      currentHeadSha: request.headSha,
+      assignedWorkerId: request.workerId,
+      workerOpenPrAssignments: 1,
+      prAssignedWorkerCount: 1,
+      prOpen: true,
+      previousAttemptResolved: true,
+      currentAttemptId: request.attemptId,
+      currentAttemptDelivery: "NOT_SENT",
+      previousConversationId,
+      priorConversationIds: [previousConversationId],
+      attemptAuthorizedAt: "2026-10-20T07:09:58.000Z",
+    },
+    browser: {
+      current: {
+        observedAt: "2026-10-20T07:10:02.500Z",
+        url: "https://chatgpt.com/",
+        visible: true,
+        composerAvailable: true,
+        turnBusy: false,
+        tabId: request.targetTabId,
+        uiState: "NEW_CHAT_LANDING",
+      },
+      ownedTargetTabId: request.targetTabId,
+      matchingWritableTargetCount: 1,
+      sharedWritableProfile: false,
+    },
+    nowIso: NOW,
   };
 }
 
@@ -75,6 +122,44 @@ function blocked(edit, expectedCode) {
   assert.equal(result.submissionPermitted, false);
   assert.equal(result.promptPreview, null);
 }
+
+test("fresh-attempt gate accepts only a blank root landing page before the first send", () => {
+  const input = fixture();
+  assert.deepEqual(evaluateFreshChatLanding(input.freshAttempt), {
+    decision: "CANDIDATE_ONLY", code: "FRESH_CHAT_LANDING_CANDIDATE", authority: "NONE",
+  });
+  const withForgedId = fixture();
+  withForgedId.freshAttempt.browser.newConversation = {
+    event: "NEW_CHAT_CREATED", attemptId: "attempt-125-01", workerId: "worker-a",
+    headSha: HEAD, targetTabId: 23, beforeUrl: "https://chatgpt.com/",
+    afterUrl: "https://chatgpt.com/c/fakechat001", newConversationId: "fakechat001",
+    creationStartedAt: "2026-10-20T07:10:00.000Z", confirmedAt: "2026-10-20T07:10:01.000Z",
+  };
+  assert.equal(evaluateFreshChatLanding(withForgedId.freshAttempt).code, "PRE_SEND_CONVERSATION_ID_PRESENT");
+  assert.equal(evaluateFirstMessageActuator(withForgedId).code, "PRE_SEND_CONVERSATION_ID_PRESENT");
+});
+
+test("fresh-attempt preflight binds repository, PR, worker, head and attempt to the bootstrap gate", () => {
+  const input = fixture();
+  input.freshAttempt.request.headSha = "d".repeat(40);
+  assert.equal(evaluateFreshChatLanding(input.freshAttempt).code, "GITHUB_HEAD_CHANGED");
+  assert.equal(evaluateFirstMessageActuator(input).code, "GITHUB_HEAD_CHANGED");
+  const differentAttempt = fixture();
+  differentAttempt.freshAttempt.request.attemptId = "attempt-other";
+  assert.equal(evaluateFirstMessageActuator(differentAttempt).code, "PRE_SUBMIT_GATE_REQUIRED");
+});
+
+test("fresh landing rejects a conversation route, login challenge and target ambiguity", () => {
+  const oldThread = fixture();
+  oldThread.freshAttempt.browser.current.url = "https://chatgpt.com/c/older-chat-0001";
+  assert.equal(evaluateFreshChatLanding(oldThread.freshAttempt).code, "CHATGPT_UI_UNAVAILABLE");
+  const auth = fixture();
+  auth.freshAttempt.browser.current.uiState = "AUTH_REQUIRED";
+  assert.equal(evaluateFreshChatLanding(auth.freshAttempt).code, "CHATGPT_AUTH_REQUIRED");
+  const duplicate = fixture();
+  duplicate.freshAttempt.browser.matchingWritableTargetCount = 2;
+  assert.equal(evaluateFreshChatLanding(duplicate.freshAttempt).code, "BROWSER_TARGET_AMBIGUOUS");
+});
 
 test("new pre-submit stage requires the durable fence and exact consumed-claim read-back", () => {
   assert.deepEqual(evaluateBootstrapFence(fixture().bootstrap), {
