@@ -114,6 +114,43 @@ test("reconciliation read-back mismatch is not reported as success", async () =>
   assert.equal(result.simulatedLedgerConversationId, null);
 });
 
+test("ambiguous fence CAS completion blocks without consuming the send claim", async () => {
+  const result = await runFirstMessageProtocolSimulation({ fault: "FENCE_CAS_UNCERTAIN" });
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.code, "FENCE_COMMIT_FAILED");
+  assert.equal(result.simulatedSubmitInvocations, 0);
+  assert.equal(result.phases.includes("COMMIT_SEND_CLAIM"), false);
+});
+
+test("ambiguous send-claim CAS completion is quarantined without submission", async () => {
+  const result = await runFirstMessageProtocolSimulation({ fault: "SEND_CLAIM_CAS_UNCERTAIN" });
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.code, "DELIVERY_UNCERTAIN");
+  assert.equal(result.simulatedSubmitInvocations, 0);
+  assert.equal(result.phases.includes("SIMULATED_SINGLE_SUBMIT"), false);
+  assert.equal(result.phases.includes("QUARANTINE_UNCERTAIN_DELIVERY"), true);
+});
+
+test("controller failure after claim read-back quarantines before submit", async () => {
+  const result = await runFirstMessageProtocolSimulation({ fault: "REOBSERVE_AFTER_CLAIM_THROW" });
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.code, "DELIVERY_UNCERTAIN");
+  assert.equal(result.simulatedSubmitInvocations, 0);
+  assert.equal(result.phases.includes("REOBSERVE_AFTER_CLAIM"), true);
+  assert.equal(result.phases.includes("SIMULATED_SINGLE_SUBMIT"), false);
+  assert.equal(result.phases.includes("QUARANTINE_UNCERTAIN_DELIVERY"), true);
+});
+
+test("submit adapter exception after invocation is uncertain and cannot retry", async () => {
+  const result = await runFirstMessageProtocolSimulation({ fault: "SUBMIT_THROW_AFTER_INVOKE" });
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.code, "DELIVERY_UNCERTAIN");
+  assert.equal(result.simulatedSubmitInvocations, 1);
+  assert.equal(result.phases.filter(p => p === "SIMULATED_SINGLE_SUBMIT").length, 1);
+  assert.equal(result.phases.includes("QUARANTINE_UNCERTAIN_DELIVERY"), true);
+  assert.equal(result.phases.includes("OBSERVE_POST_SEND"), false);
+});
+
 test("malformed simulation requests are rejected", async () => {
   for (const input of [null, 1, "bad", [], { fault: "RETRY_UNCERTAIN" }]) {
     const result = await runFirstMessageProtocolSimulation(input);
