@@ -152,6 +152,14 @@ test("fresh-attempt preflight binds repository, PR, worker, head and attempt to 
   assert.equal(evaluateFirstMessageActuator(differentAttempt).code, "PRE_SUBMIT_GATE_REQUIRED");
 });
 
+test("fresh-chat and post-claim observations must be from the same short current execution window", () => {
+  const futureFresh = fixture();
+  futureFresh.freshAttempt.nowIso = "2026-10-20T07:10:20.000Z";
+  futureFresh.freshAttempt.browser.current.observedAt = "2026-10-20T07:10:19.500Z";
+  assert.equal(evaluateFreshChatLanding(futureFresh.freshAttempt).decision, "CANDIDATE_ONLY");
+  assert.equal(evaluateFirstMessageActuator(futureFresh).code, "PRE_SUBMIT_GATE_REQUIRED");
+});
+
 test("fresh landing rejects a conversation route, login challenge and target ambiguity", () => {
   const oldThread = fixture();
   oldThread.freshAttempt.browser.current.url = "https://chatgpt.com/c/older-chat-0001";
