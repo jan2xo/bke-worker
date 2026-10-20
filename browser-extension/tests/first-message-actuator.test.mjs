@@ -219,6 +219,7 @@ test("missing, stale or mismatched send-claim read-back blocks", () => {
   blocked(b => { b.github.sendClaimCommitReceipt.commitSha = "d".repeat(40); }, "SEND_CLAIM_READBACK_INVALID");
   blocked(b => { b.github.sendClaimCommitReceipt.executionId = "other-execution"; }, "SEND_CLAIM_READBACK_INVALID");
   blocked(b => { b.github.sendClaim.claimedAt = "2026-10-20T07:10:02.900Z"; }, "SEND_CLAIM_READBACK_INVALID");
+  blocked(b => { b.browser.current.observedAt = "2026-10-20T07:10:01.900Z"; }, "OBSERVATION_STALE");
 });
 
 test("missing/malformed claim or uncertain delivery never reopens first-send", () => {
