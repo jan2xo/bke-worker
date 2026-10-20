@@ -289,7 +289,7 @@ function validFence(input: BootstrapFenceInput): boolean {
   if (fence === undefined || fence === null || typeof fence !== "object") return false;
   const authorizedAt = validIsoUtc(github.attemptAuthorizedAt);
   const committedAt = validIsoUtc(fence.committedAt);
-  return
+  return (
     fence.durable === true &&
     IDENTIFIER.test(fence.fenceId) &&
     SHA.test(fence.commitSha) &&
@@ -303,7 +303,8 @@ function validFence(input: BootstrapFenceInput): boolean {
     fence.generation === 1 &&
     authorizedAt !== null &&
     committedAt !== null &&
-    committedAt >= authorizedAt - BOOTSTRAP_CLOCK_SKEW_MS;
+    committedAt >= authorizedAt - BOOTSTRAP_CLOCK_SKEW_MS
+  );
 }
 
 function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
@@ -315,7 +316,7 @@ function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
   const now = validIsoUtc((input as BootstrapFenceInput).nowIso);
   const receiptAt = validIsoUtc(receipt.observedAt);
   const committedAt = validIsoUtc(fence.committedAt);
-  return
+  return (
     receipt.event === "FENCE_COMMIT_RETURNED" &&
     fence !== undefined &&
     receipt.fenceId === fence.fenceId &&
@@ -330,7 +331,8 @@ function validateFenceCommitReceipt(input: BootstrapFenceInput): boolean {
     receiptAt !== null && committedAt !== null && now !== null &&
     receiptAt >= committedAt &&
     receiptAt <= now + BOOTSTRAP_CLOCK_SKEW_MS &&
-    now - receiptAt <= BOOTSTRAP_OBSERVATION_MAX_AGE_MS;
+    now - receiptAt <= BOOTSTRAP_OBSERVATION_MAX_AGE_MS
+  );
 }
 
 /**
