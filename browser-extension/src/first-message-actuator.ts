@@ -12,6 +12,11 @@ import {
   type BootstrapCode,
   type BootstrapRequest,
 } from "./bootstrap-fence.js";
+import {
+  evaluateFreshChatLanding,
+  type GateCode,
+  type FreshAttemptRequest,
+} from "./fresh-attempt-gate.js";
 
 export const FIRST_MESSAGE_LIVE_SEND_ENABLED = false as const;
 
@@ -31,6 +36,8 @@ export interface FirstMessageLiveProofs {
 }
 
 export interface FirstMessageActuatorInput {
+  /** Existing fresh-attempt gate projection for the blank landing page (no /c ID). */
+  freshAttempt: unknown;
   /** Untrusted observations; evaluateBootstrapFence is a coherence check only. */
   bootstrap: unknown;
   /** These flags are attestations, not credentials or proof by themselves. */
@@ -39,7 +46,7 @@ export interface FirstMessageActuatorInput {
 
 export interface FirstMessageActuatorResult {
   status: "BLOCKED" | "CANDIDATE_ONLY";
-  code: BootstrapCode | "INVALID_INPUT" | "PRE_SUBMIT_GATE_REQUIRED" |
+  code: BootstrapCode | GateCode | "INVALID_INPUT" | "PRE_SUBMIT_GATE_REQUIRED" |
     "UPSTREAM_REAL_PROOF_REQUIRED" | "LIVE_SEND_DISABLED" |
     "TRUSTED_SUBMIT_ADAPTER_ABSENT";
   authority: "NONE";
@@ -90,6 +97,22 @@ export function buildApprovedBootstrapPrompt(request: unknown): string | null {
   ].join("\n");
 }
 
+function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boolean {
+  if (fresh === null || typeof fresh !== "object" || Array.isArray(fresh) ||
+      bootstrap === null || typeof bootstrap !== "object" || Array.isArray(bootstrap)) return false;
+  const freshRequest = (fresh as { request?: Partial<FreshAttemptRequest> }).request;
+  const bootstrapRequest = (bootstrap as { request?: Partial<BootstrapRequest> }).request;
+  return !!freshRequest && !!bootstrapRequest &&
+    freshRequest.repository === bootstrapRequest.repository &&
+    freshRequest.workerId === bootstrapRequest.workerId &&
+    freshRequest.prNumber === bootstrapRequest.prNumber &&
+    freshRequest.headSha === bootstrapRequest.headSha &&
+    freshRequest.attemptId === bootstrapRequest.attemptId &&
+    freshRequest.attemptId === bootstrapRequest.attemptId &&
+    (fresh as { browser?: { ownedTargetTabId?: number } }).browser?.ownedTargetTabId ===
+      bootstrapRequest.targetTabId;
+}
+
 function result(
   status: FirstMessageActuatorResult["status"],
   code: FirstMessageActuatorResult["code"],
@@ -115,6 +138,13 @@ export function evaluateFirstMessageActuator(input: unknown): FirstMessageActuat
       typeof liveProofs.nativePairingOwnerCertified !== "boolean" ||
       typeof liveProofs.realBrowserOwnerAccepted !== "boolean") {
     return result("BLOCKED", "INVALID_INPUT");
+  }
+
+  const fresh = evaluateFreshChatLanding(root.freshAttempt);
+  if (fresh.decision === "BLOCKED") return result("BLOCKED", fresh.code);
+  if (fresh.code !== "FRESH_CHAT_LANDING_CANDIDATE" ||
+      !freshAttemptMatchesBootstrap(root.freshAttempt, root.bootstrap)) {
+    return result("BLOCKED", "PRE_SUBMIT_GATE_REQUIRED");
   }
 
   const gate = evaluateBootstrapFence(root.bootstrap);
