@@ -169,3 +169,52 @@ test("even a self-consistent entirely forged confirmation grants no authority",(
   assert.equal("send" in result,false);
   assert.equal("navigate" in result,false);
 });
+
+test("P2 regression: first attempt rejects a single sparse prior-history hole",()=>{
+  blocked(f=>{
+    f.github.previousConversationId=null;
+    f.github.priorConversationIds=new Array(1);
+    f.browser.newConversation.beforeUrl="https://chatgpt.com/";
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("P2 regression: first attempt rejects multiple sparse holes",()=>{
+  blocked(f=>{
+    f.github.previousConversationId=null;
+    const sparse=new Array(4);
+    sparse[1]="older-chat";
+    sparse[3]="another-chat";
+    f.github.priorConversationIds=sparse;
+    f.browser.newConversation.beforeUrl="https://chatgpt.com/";
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{
+    f.github.previousConversationId=null;
+    f.github.priorConversationIds=new Array(3);
+    f.browser.newConversation.beforeUrl="https://chatgpt.com/";
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("P2 regression: known previous chat plus a sparse hole is invalid",()=>{
+  blocked(f=>{
+    const sparse=new Array(2);
+    sparse[1]="older-chat";
+    f.github.priorConversationIds=sparse;
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{
+    f.github.priorConversationIds=["older-chat",,];
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+});
+
+test("history must contain own valid entries, not inherited or explicit undefined",()=>{
+  blocked(f=>{
+    const inherited=new Array(2);
+    inherited[1]="older-chat";
+    const proto=Object.create(Array.prototype);
+    Object.defineProperty(proto,"0",{value:"another-chat",configurable:true});
+    Object.setPrototypeOf(inherited,proto);
+    f.github.priorConversationIds=inherited;
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+  blocked(f=>{
+    f.github.priorConversationIds=["older-chat",undefined];
+  },"FRESH_CONVERSATION_UNCONFIRMED");
+});
