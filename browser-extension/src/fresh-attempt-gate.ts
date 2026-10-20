@@ -129,12 +129,12 @@ function conversationIdFromUrl(raw: string): string | null {
     const url = new URL(raw);
     if (url.origin !== "https://chatgpt.com" || url.username || url.password ||
         url.search || url.hash) return null;
-    const m = /^\\/c\\/([A-Za-z0-9_-]{8,128})$/.exec(url.pathname);
+    const m = new RegExp("^/c/([A-Za-z0-9_-]{8,128})$").exec(url.pathname);
     return m ? (m[1] ?? null) : null;
   } catch { return null; }
 }
 function validIso(raw: string): number | null {
-  if (!/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$/.test(raw)) return null;
+  if (!new RegExp("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$").test(raw)) return null;
   const ms = Date.parse(raw);
   return Number.isFinite(ms) && new Date(ms).toISOString() === raw ? ms : null;
 }
