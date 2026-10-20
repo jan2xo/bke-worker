@@ -100,20 +100,40 @@ export function buildApprovedBootstrapPrompt(request: unknown): string | null {
 function freshAttemptMatchesBootstrap(fresh: unknown, bootstrap: unknown): boolean {
   if (fresh === null || typeof fresh !== "object" || Array.isArray(fresh) ||
       bootstrap === null || typeof bootstrap !== "object" || Array.isArray(bootstrap)) return false;
-  const freshRequest = (fresh as { request?: Partial<FreshAttemptRequest> }).request;
-  const bootstrapRequest = (bootstrap as { request?: Partial<BootstrapRequest> }).request;
+  const freshRoot = fresh as {
+    request?: Partial<FreshAttemptRequest>;
+    nowIso?: string;
+    browser?: {
+      ownedTargetTabId?: number;
+      ownedTargetId?: string;
+      ownedProfileId?: string;
+      current?: { observedAt?: string };
+    };
+  };
+  const bootstrapRoot = bootstrap as {
+    request?: Partial<BootstrapRequest>;
+    nowIso?: string;
+    browser?: { current?: { observedAt?: string } };
+  };
+  const freshRequest = freshRoot.request;
+  const bootstrapRequest = bootstrapRoot.request;
+  const freshNow = Date.parse(freshRoot.nowIso ?? "");
+  const bootstrapNow = Date.parse(bootstrapRoot.nowIso ?? "");
+  const freshObserved = Date.parse(freshRoot.browser?.current?.observedAt ?? "");
+  const bootstrapObserved = Date.parse(bootstrapRoot.browser?.current?.observedAt ?? "");
   return !!freshRequest && !!bootstrapRequest &&
     freshRequest.repository === bootstrapRequest.repository &&
     freshRequest.workerId === bootstrapRequest.workerId &&
     freshRequest.prNumber === bootstrapRequest.prNumber &&
     freshRequest.headSha === bootstrapRequest.headSha &&
     freshRequest.attemptId === bootstrapRequest.attemptId &&
-    (fresh as { browser?: { ownedTargetTabId?: number; ownedTargetId?: string; ownedProfileId?: string } }).browser?.ownedTargetTabId ===
-      bootstrapRequest.targetTabId &&
-    (fresh as { browser?: { ownedTargetId?: string } }).browser?.ownedTargetId ===
-      bootstrapRequest.targetId &&
-    (fresh as { browser?: { ownedProfileId?: string } }).browser?.ownedProfileId ===
-      bootstrapRequest.profileId;
+    freshRoot.browser?.ownedTargetTabId === bootstrapRequest.targetTabId &&
+    freshRoot.browser?.ownedTargetId === bootstrapRequest.targetId &&
+    freshRoot.browser?.ownedProfileId === bootstrapRequest.profileId &&
+    Number.isFinite(freshNow) && Number.isFinite(bootstrapNow) &&
+    Number.isFinite(freshObserved) && Number.isFinite(bootstrapObserved) &&
+    freshNow <= bootstrapNow + 2_000 && bootstrapNow - freshNow <= 10_000 &&
+    freshObserved <= bootstrapObserved + 2_000 && bootstrapObserved - freshObserved <= 10_000;
 }
 
 function result(
