@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FIRST_MESSAGE_LIVE_SEND_ENABLED, buildApprovedBootstrapPrompt, evaluateFirstMessageActuator } from "../dist/first-message-actuator.js";
+import { FIRST_MESSAGE_LIVE_SEND_ENABLED, buildApprovedBootstrapPrompt, evaluateFirstMessageActuator, evaluateFirstMessageConfirmation } from "../dist/first-message-actuator.js";
 import { evaluateBootstrapFence } from "../dist/bootstrap-fence.js";
 import { evaluateFreshChatLanding } from "../dist/fresh-attempt-gate.js";
 
@@ -112,6 +112,42 @@ function freshAttemptFixture(request) {
     },
     nowIso: NOW,
   };
+}
+
+function confirmationFixture() {
+  const input = fixture();
+  const b = input.bootstrap;
+  b.request.event = "CONFIRM_NEW_CONVERSATION";
+  b.nowIso = "2026-10-20T07:10:10.000Z";
+  b.github.state = "FENCED_MAY_HAVE_SENT";
+  b.github.deliveryKnowledge = "MAY_HAVE_SENT";
+  b.browser.current.observedAt = "2026-10-20T07:10:09.000Z";
+  b.browser.current.url = "https://chatgpt.com/c/new-chat-0002";
+  b.browser.current.uiState = "THREAD";
+  b.browser.firstMessageReceipt = {
+    event: "FIRST_MESSAGE_CREATED_CONVERSATION",
+    attemptId: b.request.attemptId,
+    workerId: b.request.workerId,
+    headSha: b.request.headSha,
+    fenceId: b.github.fence.fenceId,
+    fenceCommitSha: b.github.fence.commitSha,
+    sendClaimId: b.github.sendClaim.claimId,
+    sendClaimCommitSha: b.github.sendClaim.commitSha,
+    targetId: b.request.targetId,
+    profileId: b.request.profileId,
+    targetTabId: b.request.targetTabId,
+    beforeUrl: "https://chatgpt.com/",
+    afterUrl: "https://chatgpt.com/c/new-chat-0002",
+    conversationId: "new-chat-0002",
+    sendStartedAt: "2026-10-20T07:10:03.000Z",
+    confirmedAt: "2026-10-20T07:10:08.000Z",
+  };
+  input.liveProofs = {
+    githubCasOwnerCertified: true,
+    nativePairingOwnerCertified: true,
+    realBrowserOwnerAccepted: true,
+  };
+  return input;
 }
 
 function blocked(edit, expectedCode) {
@@ -256,6 +292,40 @@ test("restart after consumed claim stays quarantined and cannot authorize resend
   assert.equal(result.status, "BLOCKED");
   assert.equal(result.code, "DELIVERY_UNCERTAIN");
   assert.equal(result.submissionPermitted, false);
+});
+
+test("post-send stable conversation ID remains a candidate until the real ledger reconciles it", () => {
+  const input = confirmationFixture();
+  const result = evaluateFirstMessageConfirmation(input);
+  assert.equal(result.status, "CANDIDATE_ONLY");
+  assert.equal(result.code, "FIRST_MESSAGE_DELIVERY_CANDIDATE");
+  assert.equal(result.conversationIdCandidate, "new-chat-0002");
+  assert.equal(result.authority, "NONE");
+  assert.equal(result.submissionPermitted, false);
+  assert.equal(result.promptPreview, null);
+});
+
+test("post-send confirmation rejects old IDs, mismatched claim receipts and absent upstream proof", () => {
+  const reused = confirmationFixture();
+  reused.bootstrap.browser.current.url = "https://chatgpt.com/c/older-chat-0001";
+  reused.bootstrap.browser.firstMessageReceipt.afterUrl = reused.bootstrap.browser.current.url;
+  reused.bootstrap.browser.firstMessageReceipt.conversationId = "older-chat-0001";
+  assert.equal(evaluateFirstMessageConfirmation(reused).code, "CONVERSATION_ID_REUSED");
+  const claimMismatch = confirmationFixture();
+  claimMismatch.bootstrap.browser.firstMessageReceipt.sendClaimCommitSha = "d".repeat(40);
+  assert.equal(evaluateFirstMessageConfirmation(claimMismatch).code, "FIRST_MESSAGE_RECEIPT_INVALID");
+  const noProof = confirmationFixture();
+  noProof.liveProofs.githubCasOwnerCertified = false;
+  assert.equal(evaluateFirstMessageConfirmation(noProof).code, "UPSTREAM_REAL_PROOF_REQUIRED");
+});
+
+test("post-send receipt must use a real conversation route after the send and never grants send authority", () => {
+  const noReceipt = confirmationFixture();
+  delete noReceipt.bootstrap.browser.firstMessageReceipt;
+  assert.equal(evaluateFirstMessageConfirmation(noReceipt).code, "FIRST_MESSAGE_RECEIPT_INVALID");
+  const wrongRoute = confirmationFixture();
+  wrongRoute.bootstrap.browser.current.url = "https://chatgpt.com/";
+  assert.equal(evaluateFirstMessageConfirmation(wrongRoute).code, "CHATGPT_UI_UNAVAILABLE");
 });
 
 test("approved bootstrap prompt is fixed and rejects unsafe identifiers", () => {
