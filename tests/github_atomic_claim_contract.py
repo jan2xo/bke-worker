@@ -449,6 +449,7 @@ class AtomicClaimTests(unittest.TestCase):
 # F1-02 separate GitHub REST transport regressions are intentionally loaded
 # by the existing cheap PR Guard atomic-claim test entrypoint.
 from github_f1_private_arbiter_writer_contract import F1PrivateWriterTests
+from github_f1_first_send_ledger_contract import FirstSendLedgerTests
 
 if __name__ == "__main__":
     unittest.main()
