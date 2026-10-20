@@ -84,3 +84,10 @@ test('literal legacy v1 bearer is never accepted as v2 credential',async()=>{
   const {args}=await fixture();
   blocked(await verify({...args,credential:'Bearer '+args.credential.tag}));
 });
+
+test('reject numerically coerced installation identities and extra untrusted fields',async()=>{
+  const {args}=await fixture();
+  blocked(await verify({...args,expected:{...args.expected,installation_id:123}}));
+  blocked(await verify({...args,credential:{...args.credential,lease:{...args.credential.lease,installation_id:123}}}));
+  blocked(await verify({...args,expected:{...args.expected,verified:true}}));
+});
