@@ -13,7 +13,7 @@ const CANONICAL_ORIGINS = new Set([
 
 function versionMajor(value) {
   if (typeof value !== "string") return null;
-  const match = /^v?(\d+)\.\d+\.\d+(?:[-+].*)?$/.exec(value.trim());
+  const match = /^v?(\d+)(?:\.\d+){1,3}(?:[-+].*)?$/.exec(value.trim());
   return match ? Number(match[1]) : null;
 }
 
