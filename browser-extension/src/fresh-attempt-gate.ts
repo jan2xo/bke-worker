@@ -55,6 +55,8 @@ export interface ChatPageObservation {
   composerAvailable: boolean;
   turnBusy: boolean;
   tabId: number;
+  /** New F1-04 pre-send path requires the current controller-observed UI state. */
+  uiState?: "NEW_CHAT_LANDING" | "THREAD" | "BUSY" | "AUTH_REQUIRED" | "UNKNOWN";
 }
 
 /**
@@ -109,7 +111,10 @@ export type GateCode =
   | "FRESH_CONVERSATION_UNCONFIRMED"
   | "FRESH_CONVERSATION_REUSED"
   | "FRESH_CONVERSATION_STALE"
-  | "FRESH_CONVERSATION_CANDIDATE";
+  | "FRESH_CONVERSATION_CANDIDATE"
+  | "FRESH_CHAT_LANDING_CANDIDATE"
+  | "PRE_SEND_CONVERSATION_ID_PRESENT"
+  | "CHATGPT_AUTH_REQUIRED";
 
 export interface FreshAttemptResult {
   decision: "BLOCKED" | "CANDIDATE_ONLY";
@@ -151,6 +156,91 @@ function validIso(raw: string): number | null {
   if (!new RegExp("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$").test(raw)) return null;
   const ms = Date.parse(raw);
   return Number.isFinite(ms) && new Date(ms).toISOString() === raw ? ms : null;
+}
+
+/**
+ * F1-04 pre-send check. A genuinely fresh blank chat is the canonical
+ * https://chatgpt.com/ landing page, with an idle composer and NO stable
+ * /c/<id>. This is a candidate-only coherence check, never browser authority.
+ */
+export function evaluateFreshChatLanding(input: unknown): FreshAttemptResult {
+  const fail = (code: GateCode): FreshAttemptResult => blocked(code);
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return fail("INVALID_INPUT");
+  const root = input as Partial<FreshAttemptInput>;
+  const req = root.request;
+  const gh = root.github;
+  const target = root.browser;
+  if (!req || !gh || !target || !target.current) return fail("INVALID_INPUT");
+  const page = target.current;
+  if (
+    req.protocolVersion !== ATTEMPT_PROTOCOL_VERSION ||
+    typeof req.workerId !== "string" || !WORKER.test(req.workerId) ||
+    typeof req.repository !== "string" || !REPO.test(req.repository) ||
+    typeof req.prNumber !== "number" || !Number.isSafeInteger(req.prNumber) || req.prNumber < 1 ||
+    typeof req.headSha !== "string" || !SHA.test(req.headSha) ||
+    typeof req.attemptId !== "string" || !ATTEMPT.test(req.attemptId) ||
+    (req.kind !== "IMPLEMENT" && req.kind !== "REMEDIATE") ||
+    typeof gh.repository !== "string" || gh.repository !== req.repository ||
+    typeof gh.prNumber !== "number" || gh.prNumber !== req.prNumber ||
+    typeof gh.currentHeadSha !== "string" || !SHA.test(gh.currentHeadSha) ||
+    typeof gh.assignedWorkerId !== "string" ||
+    typeof gh.workerOpenPrAssignments !== "number" ||
+    typeof gh.prAssignedWorkerCount !== "number" ||
+    typeof gh.previousAttemptResolved !== "boolean" ||
+    typeof gh.prOpen !== "boolean" ||
+    typeof gh.currentAttemptId !== "string" ||
+    !["NOT_SENT", "IN_FLIGHT", "UNCERTAIN", "COMPLETED"].includes(gh.currentAttemptDelivery) ||
+    typeof gh.attemptAuthorizedAt !== "string" ||
+    typeof target.sharedWritableProfile !== "boolean" ||
+    !Number.isSafeInteger(target.ownedTargetTabId) || target.ownedTargetTabId < 0 ||
+    !Number.isSafeInteger(target.matchingWritableTargetCount) ||
+    typeof page.url !== "string" || typeof page.observedAt !== "string" ||
+    typeof page.visible !== "boolean" || typeof page.composerAvailable !== "boolean" ||
+    typeof page.turnBusy !== "boolean" ||
+    !Number.isSafeInteger(page.tabId) || page.tabId < 0 ||
+    !["NEW_CHAT_LANDING", "THREAD", "BUSY", "AUTH_REQUIRED", "UNKNOWN"].includes(page.uiState) ||
+    typeof root.nowIso !== "string"
+  ) return fail("INVALID_INPUT");
+
+  if (gh.assignedWorkerId !== req.workerId ||
+      gh.workerOpenPrAssignments !== 1 || gh.prAssignedWorkerCount !== 1) {
+    return fail("GITHUB_ASSIGNMENT_CONFLICT");
+  }
+  if (gh.currentHeadSha !== req.headSha) return fail("GITHUB_HEAD_CHANGED");
+  if (!gh.prOpen) return fail("PR_NOT_RUNNABLE");
+  if (gh.currentAttemptId !== req.attemptId) return fail("ATTEMPT_NOT_AUTHORIZED");
+  if (!gh.previousAttemptResolved) return fail("PREVIOUS_ATTEMPT_UNRESOLVED");
+  if (gh.currentAttemptDelivery !== "NOT_SENT") return fail("DISPATCH_NOT_NEW");
+  if ((gh.previousConversationId !== null &&
+      (typeof gh.previousConversationId !== "string" ||
+       !CONVERSATION_ID.test(gh.previousConversationId))) ||
+      !isDenseValidConversationHistory(gh.priorConversationIds) ||
+      (gh.previousConversationId !== null &&
+       !gh.priorConversationIds.includes(gh.previousConversationId))) {
+    return fail("FRESH_CONVERSATION_UNCONFIRMED");
+  }
+  if (target.sharedWritableProfile || target.matchingWritableTargetCount !== 1 ||
+      page.tabId !== target.ownedTargetTabId) {
+    return fail("BROWSER_TARGET_AMBIGUOUS");
+  }
+  if (page.uiState === "AUTH_REQUIRED") return fail("CHATGPT_AUTH_REQUIRED");
+  if (page.uiState === "BUSY" || page.turnBusy) return fail("CHATGPT_BUSY");
+  if (page.uiState !== "NEW_CHAT_LANDING" ||
+      page.url !== "https://chatgpt.com/" || !page.visible || !page.composerAvailable) {
+    return fail("CHATGPT_UI_UNAVAILABLE");
+  }
+  // No query/hash/path variation and no pre-send /c/<id> are accepted.
+  if (target.newConversation !== undefined) return fail("PRE_SEND_CONVERSATION_ID_PRESENT");
+
+  const now = validIso(root.nowIso);
+  const observed = validIso(page.observedAt);
+  const authorizedAt = validIso(gh.attemptAuthorizedAt);
+  if (now === null || observed === null || authorizedAt === null ||
+      observed > now + CLOCK_SKEW_MS || now - observed > OBSERVATION_MAX_AGE_MS ||
+      authorizedAt > now + CLOCK_SKEW_MS) {
+    return fail("CHATGPT_OBSERVATION_STALE");
+  }
+  return { decision: "CANDIDATE_ONLY", code: "FRESH_CHAT_LANDING_CANDIDATE", authority: "NONE" };
 }
 
 /** No side effects, no HTTP, no browser APIs, no automatic retry or navigation. */
