@@ -146,6 +146,7 @@ test("fresh-attempt preflight binds repository, PR, worker, head and attempt to 
   assert.equal(evaluateFirstMessageActuator(input).code, "GITHUB_HEAD_CHANGED");
   const differentAttempt = fixture();
   differentAttempt.freshAttempt.request.attemptId = "attempt-other";
+  differentAttempt.freshAttempt.github.currentAttemptId = "attempt-other";
   assert.equal(evaluateFirstMessageActuator(differentAttempt).code, "PRE_SUBMIT_GATE_REQUIRED");
 });
 
