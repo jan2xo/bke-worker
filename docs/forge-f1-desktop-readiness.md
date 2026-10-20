@@ -12,7 +12,7 @@ Run it from a clean checkout of the canonical jan2xo/bke-worker main. It verifie
 
 - Canonical repository origin, clean main, current origin/main SHA, source-smoke SHA, Node runtime SHA-256, and official Google Chrome version/runtime SHA-256.
 - One private user-controlled profile at ~/.bke-worker/f1/chrome-profile and a Chrome process attached to that exact profile. It will not attach to or read the default browser profile.
-- Exactly one enabled extension loaded from the canonical browser-extension folder, at the manifest version and with the intentionally narrow storage and chatgpt.com host permissions.
+- Exactly one enabled extension loaded from the canonical browser-extension folder, at the manifest version and with the intentionally narrow storage and chatgpt.com host permissions. Extension ID/path/version are explicitly owner-verified through chrome://extensions; the script never reads Chrome Preferences or other profile metadata.
 - Exact native-host registration name bke.worker.desktop, extension-origin binding and the existing owner-pinned policy verification.
 - Human visual attestations for profile exclusivity, exactly one open chatgpt.com tab, and a manually authenticated idle ChatGPT UI. It does not read cookies, local storage, page text or login secrets.
 

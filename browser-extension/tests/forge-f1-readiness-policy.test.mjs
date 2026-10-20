@@ -55,6 +55,8 @@ test("complete owner-attested evidence yields readiness but no worker or send au
   assert.equal(report.authority.message_send_authority, "NONE");
   assert.equal(report.chatgpt.conversation_id, "NOT_CREATED_NO_SEND_OCCURRED");
   assert.equal(report.extension.native_messaging_permission, "ABSENT_BY_DESIGN");
+  assert.equal(report.extension.identity_evidence_source, "OWNER_VISUAL_ATTESTATION");
+  assert.equal(report.extension.loaded_enabled_from_canonical_source_owner_attested, true);
   assert.equal(report.native_host.live_chrome_connection, "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN");
 });
 

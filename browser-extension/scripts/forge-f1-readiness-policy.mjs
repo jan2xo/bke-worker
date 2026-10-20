@@ -147,7 +147,8 @@ export function evaluateF1DesktopReadiness(evidence) {
       version: extension.version || "UNAVAILABLE",
       manifest_version: extension.manifestVersion ?? null,
       source_path_sha256: extensionPathSha256,
-      loaded_enabled_from_canonical_source: extension.enabled === true &&
+      identity_evidence_source: "OWNER_VISUAL_ATTESTATION",
+      loaded_enabled_from_canonical_source_owner_attested: extension.enabled === true &&
         extension.pathMatches === true && extension.versionMatches === true && extension.matchCount === 1,
       native_messaging_permission: extension.nativeMessagingPermission === false
         ? "ABSENT_BY_DESIGN" : "UNEXPECTED_OR_UNVERIFIED",
