@@ -349,3 +349,34 @@ to deploy. The earlier attempted dedicated test-file creation was
 tool-safety blocked; no route around that restriction was attempted.
 The PR remains DRAFT/UNMERGED until independent enabled-mode security
 proof and explicit separate owner action scope are complete.
+
+
+## Exact connection-ownership CAS for ACK and socket cleanup (PR #145)
+
+A stale socket could pass the earlier `active_connection_id` check in
+`webSocketMessage()`, yield during a subsequent read, and then mutate an
+active delivery after a newer socket had registered. The ACK storage
+transaction now re-reads `active_connection_id` and requires the same
+registered socket attachment connection ID, exact worker and delivery ID,
+and an eligible already-sent phase (`sent`, `accepted`, or `deferred`)
+**inside that transaction**. An ACK for `queued` or
+`recovery_required` cannot clear or advance an unsent delivery. A stale
+connection refuses mutation without promoting a different queued wake.
+
+`clearConnectionIfAuthoritative()` previously performed a standalone
+read of `active_connection_id` followed by an unconditional delete. A
+newer registration between those two operations could be erased by the
+old socket's close/error event. Cleanup now performs exact worker and
+connection-ID compare-and-delete inside the same DO storage transaction,
+under the same immutable retirement marker checks. Stale or malformed
+attachments, retired DOs and uncertain transaction outcomes never trigger
+a second deletion attempt.
+
+This closes two **specific source-level connection handoff races** and
+preserves `one worker -> one active connection authority`. It does
+not prove the remote ChatGPT message outcome, human owner authentication,
+nonce/PR-head authorization, full in-flight send cutover, or credential
+release. No new adversarial live-Workerd tests were added; earlier
+creation of the dedicated activated-mode security test file was
+safety-blocked and not bypassed. Existing regression CI cannot
+independently certify real concurrent registration/ACK/close behavior.
