@@ -74,6 +74,8 @@ const assignment = {
 
 const wake = (prNumber, headSha, phase = "sent") => ({
   wake: {
+    worker_id: "android-worker-a",
+    repo: "jan2xo/bke-worker",
     pr_number: prNumber,
     expected_head_sha: headSha,
     delivery_id: "existing-delivery",
@@ -260,3 +262,34 @@ assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "accepted")
 assert.deepEqual(planRecovery([], null, null, 0), {state: "waiting_for_assignment"},
   "no archived state retains the existing empty recovery contract");
 assert.throws(() => planRecovery([], null, null, -1), /RECOVERY_ARCHIVE_COUNT_INVALID/);
+
+const matchingControlWake = wake(80, assignment.headSha, "accepted");
+const foreignActive = {
+  ...matchingControlWake,
+  wake: {...matchingControlWake.wake, repo: "jan2xo/bke-demo-app"},
+};
+assert.equal(
+  planRecovery([assignment], foreignActive).state,
+  "assignment_identity_requires_owner",
+  "same PR number and SHA in a different repository must not preserve assignment");
+assert.equal(
+  planRecovery([assignment], matchingControlWake, {
+    ...matchingControlWake.wake,
+    repo: "jan2xo/bke-demo-app",
+    delivery_id: "foreign-queued",
+  }).state,
+  "assignment_identity_requires_owner",
+  "a foreign queued wake must prevent false clean ownership even if active matches");
+assert.equal(
+  planRecovery([assignment], {
+    ...matchingControlWake,
+    wake: {...matchingControlWake.wake, worker_id: "different-worker"},
+  }).state,
+  "assignment_identity_requires_owner",
+  "cross-worker persisted context is not proof of worker ownership");
+const sameIdentity = planRecovery([assignment], matchingControlWake);
+assert.equal(sameIdentity.state, "preserved_active_assignment");
+assert.equal(sameIdentity.deliveryId, "existing-delivery");
+assert.equal(
+  planRecovery([assignment], foreignActive, null, 1).archivedCount, 1,
+  "identity conflict preserves archive count for owner adjudication");

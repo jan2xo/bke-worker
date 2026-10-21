@@ -778,6 +778,7 @@ export class WorkerSession extends DurableObject {
         }
         if (plan.state === "unassigned_delivery_preserved" ||
             plan.state === "assignment_drift_requires_owner" ||
+            plan.state === "assignment_identity_requires_owner" ||
             plan.state === "historical_delivery_requires_owner") {
           // Preserve both durable wake slots and require human reconciliation.
           return {status: 409, body: {

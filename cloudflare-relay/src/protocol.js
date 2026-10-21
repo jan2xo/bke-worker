@@ -461,7 +461,27 @@ export function planRecovery(assignments, active, queued = null, archivedCount =
   }
 
   const assignment = assignments[0];
-  const sameActivePr = active?.wake?.pr_number === assignment.number;
+  // PR numbers and even commit SHAs are not globally unique task identities.
+  // Recovery reads assignments from the BKE control repo, but the same relay
+  // also accepts demo-repo wakes. A foreign active OR queued delivery must
+  // not be certified as an assignment to the control repository.
+  const otherIdentity = [active?.wake, queued].some(wake =>
+    wake && (wake.repo !== CONTROL_REPOSITORY ||
+      wake.worker_id !== assignment.workerId));
+  if (otherIdentity) {
+    return {
+      state: "assignment_identity_requires_owner",
+      assignment,
+      activePhase: active?.phase ?? null,
+      deliveryId: active?.wake?.delivery_id ?? null,
+      queuedDeliveryId: queued?.delivery_id ?? null,
+      archivedCount,
+    };
+  }
+
+  const sameActivePr = active?.wake?.repo === CONTROL_REPOSITORY &&
+    active?.wake?.worker_id === assignment.workerId &&
+    active?.wake?.pr_number === assignment.number;
   const sameActiveHead = sameActivePr &&
     active.wake.expected_head_sha === assignment.headSha;
 

@@ -685,3 +685,29 @@ NOT independent GitHub task authority, a new planning database, or proof
 of owner consent. Real same-DO owner authentication, one-use nonce,
 live retirement writer, issued-ChatGPT-turn adjudication and adversarial
 Workerd certification remain BLOCKED.
+
+## Recovery assignment identity across allowed repositories (PR #145)
+
+The v1 relay allows wake origins in both `jan2xo/bke-worker` and
+`jan2xo/bke-demo-app`. GitHub recovery enumerates **only**
+`jan2xo/bke-worker`. PR number and head SHA alone are therefore
+**insufficient** to prove a persisted active or queued wake belongs to
+that freshly discovered assignment.
+
+`planRecovery()` now rejects a persisted active **or** queued wake
+whose exact repository or worker ID disagrees with the control-repo
+assignment before classifying it as preserved or synthesizing a new
+recovery wake. It returns `assignment_identity_requires_owner` (409)
+without storage mutations or socket send, retaining the last-known
+delivery IDs, phase and archival count for explicit owner reconciliation.
+A fully matching active control-repo identity retains the existing
+`preserved_active_assignment` behavior.
+
+This is not global proof that an assignment is exclusive across *both*
+allowed GitHub repositories: the discovery API still enumerates only
+the control repo, GitHub/DO reads remain non-atomic, and stale
+webhook data can still be received. The cross-repository assignment
+inventory and authoritative owner gate remain independent blockers to
+G0 retirement acceptance. The added tests extend the existing
+reconnect-recovery contract only, not the previously safety-denied
+activated-retirement Workerd test-file.
