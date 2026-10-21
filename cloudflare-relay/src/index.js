@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { inspectSameDurableObjectCandidate } from "./relay-owner-same-do-inspection.js";
 import { fulfillCommandCenterAdminRead, fulfillCommandCenterAdminCatalog, fulfillCommandCenterAdminAssignments } from "./admin-broker.js";
 import {
   mintInstallationToken,
@@ -351,6 +352,19 @@ export class CommandCenterReadBroker extends WorkerEntrypoint {
 }
 
 export class WorkerSession extends DurableObject {
+  // G0-06: PRIVATE WorkerSession RPC candidate, not an HTTP/WSS route.
+  // No Wrangler G0 inspection flag/key is provisioned. Remains fail-closed
+  // until the human-verified CC issuer and scoped private binding are audited.
+  // Method never grants retirement, cancellation, label or read authority.
+  async inspectRetirementCandidate(command) {
+    return inspectSameDurableObjectCandidate({
+      env: this.env,
+      command,
+      storage: this.ctx.storage,
+      getWebSockets: () => this.ctx.getWebSockets(),
+    });
+  }
+
   async fetch(request) {
     const workerId = request.headers.get("x-bke-worker-id") || "";
     if (!isValidWorkerId(workerId)) {
