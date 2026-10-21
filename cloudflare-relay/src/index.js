@@ -624,7 +624,7 @@ export class WorkerSession extends DurableObject {
       return json({error: "DISPATCH_OUTCOME_UNCERTAIN"}, 503);
     }
     if (decision.sendDeliveryId) {
-      const sent = await this.sendActiveIfSafe(decision.sendDeliveryId);
+      const sent = await this.sendActiveIfSafeDelivery(decision.sendDeliveryId);
       return json({
         state: sent ? decision.sentState : decision.queuedState,
         ...decision.body,
@@ -775,7 +775,12 @@ export class WorkerSession extends DurableObject {
     }) || null;
   }
 
-  async sendActiveIfSafe(expectedDeliveryId = null) {
+  async sendActiveIfSafe() {
+    // Preserve the canonical nine-seam WorkerSession interface.
+    return this.sendActiveIfSafeDelivery(null);
+  }
+
+  async sendActiveIfSafeDelivery(expectedDeliveryId = null) {
     if (await this.persistentlyRetired()) return false;
     // Optional source-only PREPRODUCTION quarantine cutover preparation.
     // The configured legacy identity is always denied by quarantined().
@@ -1061,7 +1066,7 @@ export class WorkerSession extends DurableObject {
       return;
     }
     if (promotedDeliveryId)
-      await this.sendActiveIfSafe(promotedDeliveryId);
+      await this.sendActiveIfSafeDelivery(promotedDeliveryId);
   }
   async webSocketClose(socket) {
     if (this.quarantined(socket.deserializeAttachment()?.workerId)) return;
