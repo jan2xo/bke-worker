@@ -411,3 +411,32 @@ failure after durable reservation, concurrent wake replacement,
 partial retirement markers, and the caller's recovery decision remain
 NOT_RUN. The prior security-test-file creation safety denial was not
 bypassed; existing 181-test green alone cannot certify these cases.
+
+
+## Transactional first-identity admission (PR #145)
+
+`WorkerSession.ensureIdentity(workerId)` previously performed a
+negative read of the retirement fence/epoch, then read `worker_id`,
+then checked retirement again, and finally issued an **independent**
+`put(worker_id)`. A concurrent retirement transaction could commit
+after the final marker read but before the identity write. Repeated
+nontransactional checks were insufficient to prevent this first-write
+race.
+
+The method now performs the retirement-marker checks, persisted
+identity comparison, and initial `worker_id` insertion in **one short
+same-DO `storage.transaction()`**, validating the worker ID before
+admission. Either stored marker, existing identity conflict, malformed
+worker ID, or transaction error causes denial. If a transaction throws
+after committing, this method returns denied/uncertain and does not
+repeat its write. No external GitHub/network I/O occurs inside this
+transaction.
+
+This narrows the future retirement cutover to a common local storage
+serialization boundary, but it is **not** a complete authorized
+retirement writer: trusted owner consent/issuer and one-use nonce,
+actual GitHub PR/head/worker assignment proof, already-active socket
+fencing, crash ambiguity, stale deployments and real Workerd race
+tests are still required. The earlier separate adversarial test-file
+creation was safety-denied and was not bypassed. Passing baseline
+regressions cannot prove those pending conditions.
