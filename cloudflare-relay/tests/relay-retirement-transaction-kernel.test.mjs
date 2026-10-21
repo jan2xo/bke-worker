@@ -141,6 +141,116 @@ test('existing fence for another worker/PR/head is immutable and cannot be overw
   }
 });
 
+test('existing-fence observation requires the SAME persisted delivery set',async()=>{
+  const db=store();
+  assert.equal((await commit(db,request)).state,'STAGED_SHAPE_READBACK_ONLY');
+  assertBlocked(await commit(db,{...request,expected_delivery_ids:[delivery2]}),
+    'DELIVERY_SET_MISMATCH');
+  assert.equal((await commit(db,request)).state,'EXISTING_SHAPE_READBACK_ONLY');
+  assert.equal(db.stats().writes,2);
+});
+
+test('existing-fence path blocks missing, changed, or untrusted wake/socket witness',async()=>{
+  const first=store();
+  await commit(first,request);
+  const saved=first.snapshot();
+  const scenarios=[
+    [{...saved,active_wake:undefined,queued_wake:undefined},
+      'NO_PERSISTED_WAKE_TO_RECONCILE'],
+    [{...saved,active_wake:{wake:wake(delivery2),phase:'sent'}},
+      'DELIVERY_SET_MISMATCH'],
+    [{...saved,active_connection_id:'SECRET_SOCKET_ID'},
+      'CONNECTION_ID_PRESENT_SOCKET_UNVERIFIED'],
+    [{...saved,worker_id:'different-worker'},
+      'PERSISTED_WAKE_OR_IDENTITY_UNTRUSTED'],
+  ];
+  for(const [state,code] of scenarios){
+    const db=store(state);
+    assertBlocked(await commit(db,request),code);
+    assert.equal(db.stats().writes,0);
+    assert.deepEqual(db.snapshot()[RETIREMENT_FENCE_KEY],
+      saved[RETIREMENT_FENCE_KEY],'fence is never overwritten');
+  }
+});
+
+// Hold the first transactional storage read so that a caller can mutate its
+// retained request reference while the asynchronous kernel is suspended.
+function suspendFirstRead(db){
+  const original=db.transaction.bind(db);
+  let signal,release;
+  const reached=new Promise(resolve=>{signal=resolve});
+  const gate=new Promise(resolve=>{release=resolve});
+  let held=false;
+  db.transaction=fn=>original(tx=>fn({
+    ...tx,
+    async get(key){
+      if(!held && key===RETIREMENT_FENCE_KEY){
+        held=true;signal();await gate;
+      }
+      return tx.get(key);
+    },
+  }));
+  return {reached,resume:()=>release()};
+}
+
+test('request target and retirement decision are entry-snapshotted before awaited reads',async()=>{
+  const db=store();
+  const hold=suspendFirstRead(db);
+  const mutable={
+    target:{...target},retirement_id:request.retirement_id,
+    created_at_ms:request.created_at_ms,expected_delivery_ids:[delivery],
+  };
+  const pending=commit(db,mutable);
+  await hold.reached;
+  mutable.target.worker_id='other-worker';
+  mutable.target.pr_number=91;
+  mutable.retirement_id='mutated-decision';
+  mutable.created_at_ms++;
+  mutable.expected_delivery_ids[0]=delivery2;
+  mutable.expected_delivery_ids.push(delivery);
+  hold.resume();
+  const result=await pending;
+  assert.equal(result.state,'STAGED_SHAPE_READBACK_ONLY');
+  checkNegative(result);
+  const record=db.snapshot()[RETIREMENT_FENCE_KEY];
+  assert.equal(record.worker_id,target.worker_id);
+  assert.equal(record.pr_number,target.pr_number);
+  assert.equal(record.retirement_id,request.retirement_id);
+  assert.equal(record.created_at_ms,request.created_at_ms);
+  assert.notEqual(record.worker_id,mutable.target.worker_id);
+  assert.notEqual(record.retirement_id,mutable.retirement_id);
+  assert.equal(db.stats().writes,2);
+});
+
+test('a foreign entry target cannot become authorized by mutating to the persisted target',async()=>{
+  const db=store();
+  const hold=suspendFirstRead(db);
+  const mutable={
+    ...request,target:{...target,worker_id:'other-worker'},
+    expected_delivery_ids:[delivery],
+  };
+  const pending=commit(db,mutable);
+  await hold.reached;
+  Object.assign(mutable.target,target);
+  hold.resume();
+  assertBlocked(await pending,'PERSISTED_WAKE_OR_IDENTITY_UNTRUSTED');
+  assert.equal(db.snapshot()[RETIREMENT_FENCE_KEY],undefined);
+  assert.equal(db.stats().writes,0);
+});
+
+test('foreign entry delivery IDs cannot be swapped into a matching set after validation',async()=>{
+  const db=store();
+  const hold=suspendFirstRead(db);
+  const mutable={...request,target:{...target},expected_delivery_ids:[delivery2]};
+  const pending=commit(db,mutable);
+  await hold.reached;
+  mutable.expected_delivery_ids[0]=delivery;
+  hold.resume();
+  assertBlocked(await pending,'DELIVERY_SET_MISMATCH');
+  assert.equal(db.snapshot()[RETIREMENT_FENCE_KEY],undefined);
+  assert.equal(db.stats().writes,0);
+});
+
 test('missing or inconsistent high-water and tombstone block resurrection',async()=>{
   const first=store();await commit(first,request);
   const good=first.snapshot(),fence=good[RETIREMENT_FENCE_KEY];
