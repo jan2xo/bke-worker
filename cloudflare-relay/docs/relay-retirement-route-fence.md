@@ -185,3 +185,40 @@ no special G0 runtime configuration was provisioned. Dedicated interlock
 adversarial/concurrency tests previously failed a tool safety gate and
 remain NOT_RUN; do not call this work independently certified or ready for
 merge/activation despite ordinary regression CI being green.
+
+
+## Exact-delivery transactional ACK and queue promotion (PR #145)
+
+ACK persistence now shares a same-DO `ctx.storage.transaction()` boundary
+with the future retirement tombstone writer: it reads both
+`retirement_fence_v1` and `retirement_epoch_v1`, verifies the
+persisted `worker_id` against the registered socket's worker, and
+re-reads `active_wake` inside that same transaction to match the exact
+ACK delivery. Only then may it persist an `accepted/deferred` phase or
+delete the completed/rejected delivery. Missing, conflicting, partially
+retired or corrupt worker/delivery state refuses mutation; uncertain
+transaction failures close the socket without an ACK retry.
+
+Following a successful deletion, queued-wake promotion now uses a second
+same-DO storage transaction to verify that **neither retirement marker
+exists, no other active wake has appeared, and the queued wake validates
+against the DO's persisted worker**. Delete-queue and write-active occur
+inside the same transaction. Only a successfully promoted wake can enter
+the separate `sendActiveIfSafe()` path, where retirement is checked again.
+
+These are *local atomic ACK/promotion side-effect boundaries*, not an
+atomic owner retirement protocol. Dispatch still includes several
+nontransactional state writes and outbound GitHub work can interleave.
+A previously delivered ChatGPT prompt cannot be recalled. A deployed
+relay version without these fences can bypass them. Human Admin
+authentication, private issuer+nonce, an authoritative same-DO witness,
+the real owner-authorized tombstone writer, complete serialized
+dispatch/register/send race tests, and independently reviewed exact-head
+evidence remain REQUIRED before merge/activation.
+
+**Verification status:** existing relay regression tests and local
+Workerd smoke are required again after this head; there are still no
+dedicated enabled-retirement, transaction-race or stale-ACK
+adversarial tests because an earlier attempt to create that test file
+was safety-blocked and has not been bypassed. Do not represent normal CI
+success as security acceptance.
