@@ -88,3 +88,43 @@ callback `BLOCKED` replaced with forged positive; cloned result; thrown
 transaction after stage/commit; existing-fence readback forgery; interrupted
 owner action; and real DO socket/delivery races. Do not treat ordinary
 default-OFF smoke or source-only doubles as operational G0 retirement.
+
+
+## Conditional wake reservation and socket send (PR #145)
+
+Under the **explicitly configured** `BKE_G0_RUNTIME_QUARANTINE_ENABLED=true`
+runtime mode only, the actual `WorkerSession.sendActiveIfSafe()` now uses
+a short `ctx.blockConcurrencyWhile()` window for the local DO state read,
+registered socket selection, and WebSocket send. No GitHub/network fetch or
+owner-signing request takes place inside that window.
+
+Before sending, the enabled path checks the DO's persisted worker identity
+against the queued wake and registered socket identity and stops if **either**
+`retirement_fence_v1` or `retirement_epoch_v1` storage key exists. This is
+a *negative* marker check, not proof that an absent marker permits retirement
+or releases a GitHub assignment. The configured legacy worker target is still
+denied independently by the server-owned static quarantine predicate.
+
+The enabled path persists `phase: sent` **before** calling `socket.send()`.
+If persistence fails, it does not send; if sending fails or the process
+crashes afterward, the delivery remains ambiguous and is **not**
+automatically replayed as queued. This deliberately prefers recoverable
+uncertainty and possible nondelivery over duplicate ChatGPT prompt delivery.
+It is only a bounded local send ordering seam, **not a complete atomic
+retirement cutover**.
+
+The absent/default-OFF mode still runs the prior v1 implementation without
+entering `blockConcurrencyWhile()` or reading any fence/epoch storage keys.
+Neither switch key is declared in Wrangler; this PR does not deploy or
+enable it.
+
+**BLOCKED before approval/activation:** dedicated real Workerd tests for
+pre-send crash, failed send, stored-fence presence or partial pair,
+competing queued dispatch/ACK/socket replacement, profile ownership and
+replay; trusted Admin consent and private issuer+nonce; a verified current
+GitHub PR/head; real same-DO owner retirement transaction using a compatible
+serial side-effect boundary; old socket and already-delivered prompt
+disposition; credential/assignment release with explicit human approval.
+Tests were not added here because the earlier attempted dedicated
+security-test-file creation was tool-safety blocked. No existing suite's
+green result may be cited as proof of this new behavior.
