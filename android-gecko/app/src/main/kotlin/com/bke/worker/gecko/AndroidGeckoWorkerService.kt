@@ -322,6 +322,36 @@ class AndroidGeckoWorkerService : Service() {
         }
     }
 
+    private val navigationDelegate = object : GeckoSession.NavigationDelegate {
+        override fun onLocationChange(
+            session: GeckoSession,
+            url: String?,
+            permissions: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+            hasUserGesture: Boolean,
+        ) {
+            if (session !== workerSession) return
+            // Location changes are a trusted Gecko callback: invalidate before a page can
+            // reuse a status report emitted for the previous URL.
+            invalidateTargetObservation()
+        }
+    }
+
+    private fun invalidateTargetObservation() {
+        lastObservedPageUrl = null
+        lastObservedTargetAtMs = null
+        readinessWatchGeneration += 1
+    }
+
+    private fun onServiceState(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post {
+                if (isRunning) block()
+            }
+        }
+    }
+
     private val contentDelegate = object : GeckoSession.ContentDelegate {
         override fun onCrash(session: GeckoSession) {
             Log.e(TAG, "Worker GeckoSession crashed; scheduling bounded recovery")
@@ -343,6 +373,7 @@ class AndroidGeckoWorkerService : Service() {
         restoreRelayState()
 
         workerSession.setContentDelegate(contentDelegate)
+        workerSession.setNavigationDelegate(navigationDelegate)
         workerSession.open(runtime)
 
         runtime.getWebExtensionController()
@@ -599,11 +630,13 @@ class AndroidGeckoWorkerService : Service() {
         relayState = "CONNECTING"
         relayClient = RelayWebSocketClient(
             config = config,
-            onWake = ::handleRelayWake,
-            onRecovery = ::handleRelayRecovery,
+            onWake = { wake -> onServiceState { handleRelayWake(wake) } },
+            onRecovery = { recovery -> onServiceState { handleRelayRecovery(recovery) } },
             onState = { state ->
-                relayState = state
-                updateNotification()
+                onServiceState {
+                    relayState = state
+                    updateNotification()
+                }
             },
         ).also { it.start() }
         updateNotification()
@@ -840,6 +873,9 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun handleRelayRecovery(recovery: RelayRecovery) {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "RELAY_RECOVERY_MUST_BE_MAIN_THREAD"
+        }
         if (recovery.workerId != activeWorkerId) return
 
         when (recovery.state) {
@@ -919,6 +955,9 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private fun handleRelayWake(wake: RelayWake) {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "RELAY_WAKE_MUST_BE_MAIN_THREAD"
+        }
         if (wake.workerId != activeWorkerId) return
 
         if (workerState == STATE_WAITING_FOR_ASSIGNMENT && workerPort != null) {
