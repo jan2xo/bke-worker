@@ -440,27 +440,27 @@ export class WorkerSession extends DurableObject {
   }
 
   async ensureIdentity(workerId) {
-    // Also guard direct RPC calls, not only WorkerSession.fetch().
-    if (this.quarantined(workerId) || await this.persistentlyRetired()) return false;
-    const existing = await this.ctx.storage.get(WORKER_ID_KEY);
-    // The read can suspend this invocation; deny before a first identity write.
-    if (this.quarantined(workerId) || await this.persistentlyRetired()) return false;
-    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true") {
-      try {
-        // An unknown/partial durable fence must not be resurrected by a
-        // new identity write, even if the incoming worker ID differs.
-        const fence = await this.ctx.storage.get("retirement_fence_v1");
-        const epoch = await this.ctx.storage.get("retirement_epoch_v1");
-        if (fence !== undefined || epoch !== undefined) return false;
-      } catch {
-        return false;
-      }
+    // First-write identity admission must share the SAME transactional
+    // snapshot as a future durable retirement fence. A separate read of
+    // fence/epoch followed by put(worker_id) could resurrect a worker
+    // after the retirement transaction committed in between.
+    if (!isValidWorkerId(workerId) || this.quarantined(workerId)) return false;
+    try {
+      return await this.ctx.storage.transaction(async tx => {
+        const fence = await tx.get(RETIREMENT_FENCE_KEY);
+        const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+        if (fence !== undefined || epoch !== undefined ||
+            this.quarantined(workerId)) return false;
+        const existing = await tx.get(WORKER_ID_KEY);
+        if (existing !== undefined) return existing === workerId;
+        await tx.put(WORKER_ID_KEY, workerId);
+        return true;
+      });
+    } catch {
+      // Transaction may have committed before an exception: never infer
+      // permission to proceed or automatically retry identity creation.
+      return false;
     }
-    if (existing === undefined) {
-      await this.ctx.storage.put(WORKER_ID_KEY, workerId);
-      return true;
-    }
-    return existing === workerId;
   }
 
   async connect(request, workerId) {
