@@ -19,6 +19,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.WebExtension
 import java.net.URI
+import java.util.UUID
 
 data class AndroidWorkerStatusSnapshot(
     val workerId: String,
@@ -142,7 +143,11 @@ class AndroidGeckoWorkerService : Service() {
     private val binder = LocalBinder()
     private val runtime by lazy { GeckoRuntimeProvider.get(applicationContext) }
     private val relayConfigStore by lazy { RelayConfigStore(applicationContext) }
+    private val peerAttestor by lazy { AndroidPeerAttestor(applicationContext) }
     private val workerSession = GeckoSession()
+    private val sessionBindingId = UUID.randomUUID().toString()
+    private var activeBridgeBindingId: String? = null
+    private var lastObservedPageUrl: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
@@ -190,6 +195,54 @@ class AndroidGeckoWorkerService : Service() {
             lastRecoveryReason = lastRecoveryReason,
         )
 
+    /**
+     * Local in-process API for the trusted enrollment adapter. No extension/page payload can
+     * mark itself trusted; caller must supply a server-issued unpredictable 32-byte challenge.
+     * The proof is withheld unless this exact GeckoSession has a live native port and a ready
+     * ChatGPT target. Server-side certificate-chain verification and pinning remain mandatory.
+     */
+    fun createNativePeerAttestation(challenge: ByteArray): AndroidPeerAttestationEvidence? {
+        if (workerPort == null ||
+            activeBridgeBindingId == null ||
+            activeWakeUncertain ||
+            workerState !in setOf(STATE_READY, STATE_BUSY) ||
+            !isExactChatGptTarget(lastObservedPageUrl)
+        ) return null
+
+        val profileId = getOrCreateProfileBindingId() ?: return null
+        val bridgeId = activeBridgeBindingId ?: return null
+        return peerAttestor.attest(
+            challenge = challenge.copyOf(),
+            workerId = activeWorkerId,
+            sessionId = sessionBindingId,
+            profileId = profileId,
+            bridgeId = bridgeId,
+            targetOrigin = AndroidPeerAttestor.TARGET_ORIGIN,
+        )
+    }
+
+    private fun isExactChatGptTarget(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val uri = runCatching { URI(value) }.getOrNull() ?: return false
+        return uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host.equals("chatgpt.com", ignoreCase = true) &&
+            (uri.port == -1 || uri.port == 443) &&
+            uri.userInfo == null
+    }
+
+    private fun getOrCreateProfileBindingId(): String? = runCatching {
+        val preferences = getSharedPreferences("bke.worker.gecko.peer.binding.v1", MODE_PRIVATE)
+        val existing = preferences.getString("profile_binding_id", null)
+        if (existing != null) {
+            val parsed = runCatching { UUID.fromString(existing) }.getOrNull() ?: return null
+            if (parsed.toString() != existing) return null
+            return existing
+        }
+        val created = UUID.randomUUID().toString()
+        if (!preferences.edit().putString("profile_binding_id", created).commit()) return null
+        created
+    }.getOrNull()
+
     private val portDelegate = object : WebExtension.PortDelegate {
         override fun onPortMessage(message: Any, port: WebExtension.Port) {
             if (port !== workerPort || message !is JSONObject) return
@@ -199,6 +252,8 @@ class AndroidGeckoWorkerService : Service() {
         override fun onDisconnect(port: WebExtension.Port) {
             if (port !== workerPort) return
             workerPort = null
+            activeBridgeBindingId = null
+            lastObservedPageUrl = null
             scheduleNativePortRecovery()
         }
     }
@@ -221,6 +276,8 @@ class AndroidGeckoWorkerService : Service() {
 
             workerPort?.disconnect()
             workerPort = port
+            activeBridgeBindingId = UUID.randomUUID().toString()
+            lastObservedPageUrl = null
             port.setDelegate(portDelegate)
             if (workerState == STATE_FAILED) {
                 updateNotification()
@@ -334,6 +391,8 @@ class AndroidGeckoWorkerService : Service() {
         mainHandler.removeCallbacksAndMessages(null)
         workerPort?.disconnect()
         workerPort = null
+        activeBridgeBindingId = null
+        lastObservedPageUrl = null
         runCatching { workerSession.close() }
             .onFailure { Log.w(TAG, "Unable to close Worker GeckoSession cleanly", it) }
         super.onDestroy()
@@ -570,6 +629,8 @@ class AndroidGeckoWorkerService : Service() {
 
         workerPort?.disconnect()
         workerPort = null
+        activeBridgeBindingId = null
+        lastObservedPageUrl = null
         nativePortRecoveryGeneration += 1
         readinessWatchGeneration += 1
 
@@ -667,6 +728,7 @@ class AndroidGeckoWorkerService : Service() {
         if (!isChatGptUrl(pageUrl) || message.optString("observedAt").isBlank()) {
             return
         }
+        lastObservedPageUrl = pageUrl
 
         if (workerState == STATE_FAILED) {
             Log.w(TAG, "Ignoring worker status after terminal ChatGPT recovery failure")
