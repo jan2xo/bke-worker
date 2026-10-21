@@ -745,3 +745,15 @@ export function classifyUnmatchedRelayAck(recent, archive, workerId, deliveryId,
     return "stale_terminal";
   return "unknown";
 }
+
+
+/**
+ * Durable, non-authoritative evidence that a PR/head wake was reserved for
+ * WebSocket send at least once. Only automatic reconnect recovery consults
+ * this; a new signed GitHub event still follows normal dispatch policy.
+ * Keyed within one worker's own DO and fully scoped to PR + exact head.
+ */
+export function recoverySendFenceKey(wake) {
+  if (!validateWake(wake, wake?.worker_id)) return null;
+  return `recovery_target_sent_v1:${wake.worker_id}:${wake.repo}:${wake.pr_number}:${wake.expected_head_sha}`;
+}

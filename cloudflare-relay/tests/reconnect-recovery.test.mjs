@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath } from "../src/protocol.js";
+import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath, recoverySendFenceKey } from "../src/protocol.js";
 
 const realisticIssuePayload = [
   { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/82" } },
@@ -421,3 +421,31 @@ assert.equal(classifyUnmatchedRelayAck([], [
   "queued-only archive evidence defeats contradictory terminal receipt");
 assert.equal(classifyUnmatchedRelayAck([], undefined, "android-worker-a",
   "never-issued", undefined), "unknown");
+
+
+// A recovery attempt must not reconstruct a previously reserved prompt
+// merely because its active wake slot later became empty. Keep the fence
+// scoped to worker + repo + PR + exact head, not just PR number.
+const targetWake = {
+  protocol:1, type:"wake", worker_id:"android-worker-a",
+  repo:"jan2xo/bke-worker", pr_number:82,
+  expected_head_sha:"010ffef9ec62c8e663e6858938cb17b1cf26056d",
+  reason:"github_pull_request_reconnect_recovery",
+  delivery_id:"recovery-android-worker-a-82-010ffef9ec62c8e663e6858938cb17b1cf26056d",
+};
+const targetFence = recoverySendFenceKey(targetWake);
+assert.equal(typeof targetFence,"string");
+assert.equal(targetFence.startsWith("recovery_target_sent_v1:android-worker-a:"),true);
+for(const changed of [
+  {worker_id:"worker-b"}, {repo:"jan2xo/bke-demo-app"},
+  {pr_number:83},{expected_head_sha:"f".repeat(40)},
+]){
+  assert.notEqual(recoverySendFenceKey({...targetWake,...changed}), targetFence,
+    "distinct worker/repository/PR/head must have an independent send fence");
+}
+for(const invalid of [{...targetWake,repo:"attacker/other"},
+                      {...targetWake,delivery_id:"unsafe id"},
+                      {...targetWake,worker_id:"WRONG"}]){
+  assert.equal(recoverySendFenceKey(invalid),null);
+}
+assert.equal(recoverySendFenceKey(null),null);

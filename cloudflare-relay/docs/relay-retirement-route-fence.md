@@ -1104,3 +1104,40 @@ terminal ACK after its cache eviction and requires the registered
 socket to continue. No new G0 activation, live DO actions,
 credential/assignment edits, prohibited dedicated activated-G0 test
 file, or deployment.
+
+
+## Source-only automatic reconnect cannot reissue a previously sent PR/head (PR #145)
+
+Previously, the recovery planner could reconstruct a synthetic wake
+for an assigned open PR whenever both durable active/queued slots were
+empty. A previously **SENT**, **accepted**, **completed** or uncertain
+wake could have left the slot (including a matched terminal ACK), so
+a subsequent reconnect for the *same repository, PR and exact SHA*
+could create a fresh synthetic wake and potentially issue a second
+ChatGPT prompt without new GitHub delegation.
+
+The ordinary `sendActiveIfSafeOutcome()` reservation transaction now
+persists a non-expiring `recovery_target_sent_v1:<worker>:<repo>:<pr>:<sha>`
+marker **alongside** the change from queued to sent, before socket
+send. It does not assert socket delivery, task completion or remote
+cancellation. It is negative-only evidence of a prior send attempt.
+
+The existing `recover()` DO transaction checks that same key before
+reconstructing a synthetic wake. If present (including any malformed
+persisted value), it returns HTTP 409
+`recovery_target_previously_sent_requires_owner` and preserves both
+delivery slots; no new prompt or send is attempted. A target without a
+reservation remains eligible for existing queued-state behavior.
+Normal explicitly signed GitHub webhook dispatches are not given
+recovery-only authority and are intentionally unaffected.
+
+The key includes exact worker, repository, PR and SHA. It has no TTL
+or automated pruning; it is a local delivery fence, **not** a second
+task database. Existing pre-upgrade sends cannot be retroactively
+proved or fenced by this marker and require owner reconciliation.
+Current source-only tests cover key validity/scope and the existing
+Python contract asserts the same-DO reservation and recovery guard.
+The local Workerd smoke remains a compatibility test, not a dedicated
+injected recovery/reconnect race proof or activated-G0 adversarial
+retirement suite. No deployment, credential/profile mutation, old
+Android wake, or live Cloudflare state action.

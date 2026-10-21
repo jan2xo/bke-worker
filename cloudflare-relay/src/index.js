@@ -9,6 +9,7 @@ import {
 import {
   CONTROL_REPOSITORY,
   normalizeRecoveryAssignments,
+  recoverySendFenceKey,
   retainDisplacedWakes,
   inspectSupersessionEvidence,
   classifyUnmatchedRelayAck,
@@ -857,6 +858,19 @@ export class WorkerSession extends DurableObject {
         if (!validateWake(wake, workerId)) {
           return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
         }
+        // A previous WebSocket send reservation for this worker/repo/PR/SHA
+        // may already have reached ChatGPT even after active_wake was
+        // cleared. A reconnect is NOT a new delegated GitHub event.
+        const targetFenceKey = recoverySendFenceKey(wake);
+        if (!targetFenceKey) {
+          return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
+        }
+        if (await tx.get(targetFenceKey) !== undefined) {
+          return {status: 409, body: {
+            state: "recovery_target_previously_sent_requires_owner",
+            worker_id: workerId, assignment,
+          }};
+        }
         if (!(await preserveDisplacedWakes(tx, workerId, [
           ...(active === undefined ? [] : [{wake: active.wake, phase: active.phase}]),
           ...(queued === undefined ? [] : [{wake: queued, phase: "queued"}]),
@@ -960,8 +974,13 @@ export class WorkerSession extends DurableObject {
               (expectedDeliveryId !== null &&
                active.wake.delivery_id !== expectedDeliveryId)) return null;
 
-          // A crash, restart, lost socket or send failure after this commit
-          // leaves a SENT/UNCERTAIN wake. No caller may retry it as queued.
+          // Mark the exact PR/head before the irreversible WebSocket send.
+          // This and the phase change commit in the SAME DO transaction.
+          // Even an ambiguous post-commit send cannot be recreated solely
+          // because a later reconnect sees an empty active_wake slot.
+          const sendFenceKey = recoverySendFenceKey(active.wake);
+          if (!sendFenceKey) return null;
+          await tx.put(sendFenceKey, true);
           await tx.put(ACTIVE_WAKE_KEY, {
             wake: active.wake,
             phase: "sent",

@@ -112,6 +112,19 @@ assert 'await tx.put(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id, true)' in r
 assert runtime.count('await recordNewDelivery();') == 6
 assert runtime.count('await tx.put(RECENT_DELIVERIES_KEY, recentNext);') == 1
 
+# Reconnect recovery must not synthesize a second wake for an already
+# attempted PR/head when a prior WebSocket send reservation was committed.
+# Only the sender sets the target fence, atomically with marking SENT.
+assert "recoverySendFenceKey" in protocol
+assert "recoverySendFenceKey(active.wake)" in runtime
+assert "await tx.put(sendFenceKey, true)" in runtime
+assert "recoverySendFenceKey(wake)" in runtime
+assert "await tx.get(targetFenceKey)" in runtime
+assert '"recovery_target_previously_sent_requires_owner"' in runtime
+assert runtime.index("await tx.put(sendFenceKey, true)") < runtime.index(
+    'phase: "sent",', runtime.index("await tx.put(sendFenceKey, true)")
+)
+
 # A cleared active wake may temporarily coexist with a queued wake
 # between completed ACK and promotion; another webhook must not overtake.
 dispatch_scope = runtime.split("  async dispatch(request, workerId) {", 1)[1].split(
