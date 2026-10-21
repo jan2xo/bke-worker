@@ -958,3 +958,27 @@ default-OFF routine recovery regression only, NOT the previously
 denied activated-G0 adversarial cutover suite. No new route, owner
 privilege, deployment, live Durable Object operation, or retirement
 authority was introduced.
+
+
+## Webhook envelope/embedded PR identity coherence (PR #145)
+
+GitHub's `pull_request` event carries a PR number at both top-level
+`payload.number` and `payload.pull_request.number`. Before this
+change, `routeGitHubPullRequest()` always preferred the outer
+integer, without checking whether the inner object (including its
+worker label and exact head) referred to another PR. A contradictory
+signed event could therefore construct a wake and ledger checkpoint
+with one PR number and another PR's assignment/head metadata.
+
+When **both integer PR numbers are present**, the normal parser now
+rejects any mismatch with
+`GITHUB_PULL_REQUEST_IDENTITY_MISMATCH` (409), before reading worker
+labels or producing a wake. Events containing only one integer number
+retain the pre-existing v1 fallback behavior; invalid/missing both
+still fail as before. This is source-coherence checking, not proof of
+fresh GitHub assignment or an external authorization grant.
+
+Two ordinary protocol tests cover both mismatch directions and
+single-number compatibility. No new route, secret, deployment, live
+Cloudflare operation, denied activated-G0 concurrency test file or
+retirement authority was introduced.

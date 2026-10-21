@@ -273,3 +273,29 @@ test("GitHub HMAC SHA-256 verification accepts only the matching body", async ()
     false,
   );
 });
+
+test("conflicting GitHub envelope and embedded PR numbers fail closed", () => {
+  for (const inconsistent of [
+    payload({number:29}),
+    payload({pull_request:{...payload().pull_request,number:29}}),
+  ]) {
+    const result=routeGitHubPullRequest(inconsistent,"delivery-pr-mismatch");
+    assert.equal(result.kind,"error");
+    assert.equal(result.status,409);
+    assert.equal(result.error,"GITHUB_PULL_REQUEST_IDENTITY_MISMATCH");
+    assert.equal(Object.hasOwn(result,"wake"),false);
+  }
+});
+
+test("single-number legacy GitHub event still routes its own PR", () => {
+  const noTop=payload();
+  delete noTop.number;
+  const result=routeGitHubPullRequest(noTop,"delivery-no-envelope-number");
+  assert.equal(result.kind,"route");
+  assert.equal(result.wake.pr_number,28);
+  const noEmbedded=payload();
+  delete noEmbedded.pull_request.number;
+  const other=routeGitHubPullRequest(noEmbedded,"delivery-no-embedded-number");
+  assert.equal(other.kind,"route");
+  assert.equal(other.wake.pr_number,28);
+});

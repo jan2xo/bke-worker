@@ -174,6 +174,17 @@ export function routeGitHubPullRequest(payload, deliveryId) {
     return jsonResult("error", { status: 400, error: "GITHUB_PULL_REQUEST_REQUIRED" });
   }
 
+  // Both fields describe the SAME GitHub PR. Never let a signed
+  // envelope PR number route the labels/head from another embedded PR.
+  // Preserve the existing v1 single-number fallback for partial events.
+  if (Number.isInteger(payload.number) &&
+      Number.isInteger(pullRequest.number) &&
+      payload.number !== pullRequest.number) {
+    return jsonResult("error", {
+      status: 409,
+      error: "GITHUB_PULL_REQUEST_IDENTITY_MISMATCH",
+    });
+  }
   const prNumber = Number.isInteger(payload.number)
     ? payload.number
     : Number.isInteger(pullRequest.number)
