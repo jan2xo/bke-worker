@@ -9,6 +9,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import java.util.UUID
 
 class RelayConfigStore(context: Context) {
     companion object {
@@ -18,6 +19,7 @@ class RelayConfigStore(context: Context) {
         private const val KEY_TOKEN_CIPHERTEXT = "token_ciphertext"
         private const val KEY_TOKEN_IV = "token_iv"
         private const val KEY_RELAY_REQUESTED = "relay_requested"
+        private const val KEY_PEER_PROFILE_BINDING_ID = "peer_profile_binding_id"
 
         private const val KEY_ALIAS = "bke.worker.relay.token.v1"
         private const val KEYSTORE = "AndroidKeyStore"
@@ -91,6 +93,22 @@ class RelayConfigStore(context: Context) {
             }
         }.getOrNull()
     }
+
+    /**
+     * Stable non-secret app-install profile binding. Corrupt existing state fails closed rather
+     * than silently creating a new identity that could conflict with a server-pinned key.
+     */
+    fun getOrCreatePeerProfileBindingId(): String? = runCatching {
+        val existing = preferences.getString(KEY_PEER_PROFILE_BINDING_ID, null)
+        if (existing != null) {
+            val parsed = runCatching { UUID.fromString(existing) }.getOrNull() ?: return null
+            if (parsed.toString() != existing) return null
+            return existing
+        }
+        val created = UUID.randomUUID().toString()
+        if (!preferences.edit().putString(KEY_PEER_PROFILE_BINDING_ID, created).commit()) return null
+        created
+    }.getOrNull()
 
     fun saveRelayRequested(requested: Boolean) {
         val committed = preferences.edit()
