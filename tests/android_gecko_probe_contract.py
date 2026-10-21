@@ -653,3 +653,82 @@ for token in (
     "setAttestationChallenge(challenge.copyOf())",
 ):
     assert token in peer_attestor, token
+
+
+# P1 regression contract: security-relevant relay callbacks must be marshalled to
+# the same main-thread state owner as attestation signing; navigation must clear
+# the prior observation before any new page status is accepted.
+for token in (
+    "private val navigationDelegate = object : GeckoSession.NavigationDelegate",
+    "override fun onLocationChange(",
+    "if (session !== workerSession) return",
+    "invalidateTargetObservation()",
+    "workerSession.setNavigationDelegate(navigationDelegate)",
+    "private fun onServiceState(block: () -> Unit)",
+    "onWake = { wake -> onServiceState { handleRelayWake(wake) } }",
+    "onRecovery = { recovery -> onServiceState { handleRelayRecovery(recovery) } }",
+    "onServiceState {",
+    "RELAY_RECOVERY_MUST_BE_MAIN_THREAD",
+    "RELAY_WAKE_MUST_BE_MAIN_THREAD",
+):
+    assert token in service, token
+
+assert service.index("workerSession.setNavigationDelegate(navigationDelegate)") < service.index("workerSession.loadUri(CHATGPT_URL)")
+assert "onRecovery = ::handleRelayRecovery" not in service
+assert "onWake = ::handleRelayWake" not in service
+
+# Executable adversarial state-policy checks. This intentionally models only the
+# authorization gate, not Android Keystore or GeckoView runtime behavior.
+import time as _time
+
+MAX_AGE_MS = 10_000
+
+def observation_is_usable(target, observed_at_ms, now_ms):
+    return (
+        target == "https://chatgpt.com/"
+        and observed_at_ms is not None
+        and 0 <= now_ms - observed_at_ms <= MAX_AGE_MS
+    )
+
+def evidence_may_be_released(before, after, now_ms):
+    binding_keys = (
+        "port", "bridge", "worker", "session", "target",
+        "observation_at", "recovery_generation", "port_generation",
+        "readiness_generation", "state", "wake_uncertain",
+    )
+    return (
+        before == after
+        and not after["wake_uncertain"]
+        and after["state"] in {"READY", "BUSY"}
+        and observation_is_usable(after["target"], after["observation_at"], now_ms)
+        and all(before[key] == after[key] for key in binding_keys)
+    )
+
+now_ms = int(_time.time() * 1000)
+good = {
+    "port": object(), "bridge": "bridge-a", "worker": "worker-a",
+    "session": "session-a", "target": "https://chatgpt.com/",
+    "observation_at": now_ms, "recovery_generation": 4,
+    "port_generation": 7, "readiness_generation": 11,
+    "state": "READY", "wake_uncertain": False,
+}
+assert evidence_may_be_released(good, dict(good), now_ms), "stable fresh binding must pass"
+for changed_key, changed_value in (
+    ("port", object()), ("bridge", "bridge-b"), ("worker", "worker-b"),
+    ("session", "session-b"), ("target", "https://evil.example/"),
+    ("observation_at", now_ms - MAX_AGE_MS - 1),
+    ("recovery_generation", 5), ("port_generation", 8),
+    ("readiness_generation", 12), ("state", "RECOVERING"),
+    ("wake_uncertain", True),
+):
+    after = dict(good)
+    after[changed_key] = changed_value
+    assert not evidence_may_be_released(good, after, now_ms), f"changed {changed_key} must deny"
+assert not observation_is_usable("https://chatgpt.com/", now_ms + 1, now_ms), "future observation must deny"
+assert not observation_is_usable("https://chatgpt.com/", now_ms - MAX_AGE_MS - 1, now_ms), "stale observation must deny"
+# Navigation invalidates observation even inside the freshness window.
+navigated = dict(good)
+navigated["target"] = None
+navigated["observation_at"] = None
+assert not evidence_may_be_released(good, navigated, now_ms), "post-READY navigation must deny"
+print("Android native peer attestation race/navigation negative policy tests: PASS")
