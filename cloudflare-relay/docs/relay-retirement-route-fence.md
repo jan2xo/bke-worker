@@ -440,3 +440,33 @@ fencing, crash ambiguity, stale deployments and real Workerd race
 tests are still required. The earlier separate adversarial test-file
 creation was safety-denied and was not bypassed. Passing baseline
 regressions cannot prove those pending conditions.
+
+
+## Non-interleavable WebSocket registration handoff (PR #145)
+
+The old registration handler committed `active_connection_id`, then
+awaited a separate retirement read **before** serializing the new socket
+attachment and closing previously registered sockets. Two competing
+registrations could interleave there: register A could admit, register B
+could replace A, and resumed A could then close B's socket or mark A
+registered despite no longer owning the stored connection ID.
+
+The real `WorkerSession` now holds a **short local**
+`ctx.blockConcurrencyWhile()` gate across the in-DO
+`storage.transaction()` registration CAS, the final retirement-marker
+read, `serializeAttachment()`, and the retiring of older registered
+sockets. The transaction still checks BOTH persistent retirement markers
+and the exact bound worker ID before writing `active_connection_id`.
+No external GitHub, authorization, browser, or remote network call occurs
+inside the gate; the subsequent queued-wake send happens **outside** it
+and applies its own atomic reservation/connection-ID checks.
+
+An ambiguous registration commit fails closed; there is no retry or
+automatic assignment release. An older socket whose close fails is still
+non-authoritative under the persisted connection-ID comparisons in ACK
+and cleanup. The gate increases event serialization during connection
+handoff and must be evaluated under real Workerd registration/replacement
+races and interruption. Those dedicated adversarial tests are still
+NOT_RUN following the earlier safety-denied test-file creation, which
+was not bypassed. Existing relay regressions cannot prove all these
+races or authorize the retirement writer.
