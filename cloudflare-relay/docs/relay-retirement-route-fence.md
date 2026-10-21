@@ -250,3 +250,36 @@ modified registration, ACK and promotion transactions in PR #145:
 earlier security test-file creation was denied by tool safety checks.
 Until proper independently permitted tests and security review exist,
 the PR remains draft, **NOT_READY_FOR_AUDIT/MERGE/ACTIVATION**.
+
+
+## Atomic dispatch delivery-ledger and wake mutation (PR #145)
+
+`WorkerSession.dispatch()` now performs a short local same-DO
+`ctx.storage.transaction()` that reads `retirement_fence_v1`,
+`retirement_epoch_v1`, and persisted `worker_id` before deciding
+whether a validated wake can be queued. Deduplication, current
+active-wake / cross-PR semantics, recent-delivery record, and the
+chosen active/queued state mutation are evaluated and committed in
+**one transaction**, with no external GitHub calls or socket sends
+inside its callback. A partial/full retirement marker or worker
+identity conflict denies dispatch. An uncertain transaction throws
+`DISPATCH_OUTCOME_UNCERTAIN`; it is not retried automatically.
+
+After the transaction, a send opportunity is explicitly bound to
+the **exact committed delivery ID**. If another concurrent dispatch
+replaces that delivery before `sendActiveIfSafe(expectedDeliveryId)`,
+the old caller cannot send the newly replaced wake in its place.
+The same exact-ID binding is used after queued wake promotion.
+
+This preserves the former cross-PR, synchronize, continuation and
+coalescing response-state contract as far as the existing tests prove,
+but changes timing and transaction boundaries. It is NOT proof of
+full retirement linearizability: `recover()` still has independent
+state transitions and external GitHub I/O, some previously registered
+sockets may still exist, and a deployed legacy version without these
+checks could act on the same storage. The authenticated owner
+transaction and authoritative current DO/PR witness remain absent.
+No new security tests were added: the earlier dedicated security
+test-file attempt was tool-safety denied and not bypassed.
+Dedicated Workerd concurrent dispatch versus retirement/recovery
+tests remain mandatory before independent security acceptance.
