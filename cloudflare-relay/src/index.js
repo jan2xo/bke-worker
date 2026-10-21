@@ -775,7 +775,7 @@ export class WorkerSession extends DurableObject {
     }) || null;
   }
 
-  async sendActiveIfSafe() {
+  async sendActiveIfSafe(expectedDeliveryId = null) {
     if (await this.persistentlyRetired()) return false;
     // Optional source-only PREPRODUCTION quarantine cutover preparation.
     // The configured legacy identity is always denied by quarantined().
@@ -788,6 +788,8 @@ export class WorkerSession extends DurableObject {
         return await this.ctx.blockConcurrencyWhile(async () => {
           const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
           if (!active || active.phase !== "queued" ||
+              (expectedDeliveryId !== null &&
+               active.wake?.delivery_id !== expectedDeliveryId) ||
               this.quarantined(active.wake?.worker_id) ||
               await this.quarantinedBoundWorker(active.wake?.worker_id)) return false;
 
@@ -829,7 +831,9 @@ export class WorkerSession extends DurableObject {
     // retirement-read guard, including one last read before socket.send().
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (this.quarantined(active?.wake?.worker_id)) return false;
-    if (!active || active.phase !== "queued") return false;
+    if (!active || active.phase !== "queued" ||
+        (expectedDeliveryId !== null &&
+         active.wake?.delivery_id !== expectedDeliveryId)) return false;
     // No new await or DO read in default-OFF v1 execution.
     if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
         await this.quarantinedBoundWorker(active.wake.worker_id)) return false;
@@ -1035,9 +1039,9 @@ export class WorkerSession extends DurableObject {
   async promoteQueuedWake() {
     // Promotion must not race the same-DO retirement transaction or replace
     // a newer active delivery. Do not rely on checks made before an await.
-    let promoted = false;
+    let promotedDeliveryId = null;
     try {
-      promoted = await this.ctx.storage.transaction(async tx => {
+      promotedDeliveryId = await this.ctx.storage.transaction(async tx => {
         const fence = await tx.get(RETIREMENT_FENCE_KEY);
         const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
         if (fence !== undefined || epoch !== undefined) return false;
@@ -1050,13 +1054,14 @@ export class WorkerSession extends DurableObject {
             !validateWake(queued, persistedWorker)) return false;
         await tx.delete(QUEUED_WAKE_KEY);
         await tx.put(ACTIVE_WAKE_KEY, { wake: queued, phase: "queued" });
-        return true;
+        return queued.delivery_id;
       });
     } catch {
       // Commit might have occurred before an error: do not redeliver.
       return;
     }
-    if (promoted) await this.sendActiveIfSafe();
+    if (promotedDeliveryId)
+      await this.sendActiveIfSafe(promotedDeliveryId);
   }
   async webSocketClose(socket) {
     if (this.quarantined(socket.deserializeAttachment()?.workerId)) return;
