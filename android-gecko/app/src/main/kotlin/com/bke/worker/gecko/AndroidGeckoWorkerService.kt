@@ -15,11 +15,15 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.WebExtension
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 data class AndroidWorkerStatusSnapshot(
     val workerId: String,
@@ -27,6 +31,18 @@ data class AndroidWorkerStatusSnapshot(
     val relayState: String,
     val recoverySequence: Int,
     val lastRecoveryReason: String?,
+)
+
+private data class NativePeerAttestationSnapshot(
+    val port: WebExtension.Port,
+    val bridgeId: String,
+    val workerId: String,
+    val state: String,
+    val sessionId: String,
+    val chatRecoveryGeneration: Int,
+    val nativePortGeneration: Int,
+    val readinessGeneration: Int,
+    val target: PeerTargetGateSnapshot,
 )
 
 class AndroidGeckoWorkerService : Service() {
@@ -148,9 +164,11 @@ class AndroidGeckoWorkerService : Service() {
     private val workerSession = GeckoSession()
     private val sessionBindingId = UUID.randomUUID().toString()
     private var activeBridgeBindingId: String? = null
-    private var lastObservedPageUrl: String? = null
-    private var lastObservedTargetAtMs: Long? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val attestationExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "bke-peer-attestation").apply { isDaemon = true }
+    }
+    private val peerTargetGate = PeerTargetObservationGate()
 
     @Volatile
     private var activeWorkerId = DEFAULT_WORKER_ID
@@ -198,68 +216,101 @@ class AndroidGeckoWorkerService : Service() {
         )
 
     /**
-     * Local in-process API for the trusted enrollment adapter. No extension/page payload can
-     * mark itself trusted; caller must supply a server-issued unpredictable 32-byte challenge.
-     * The proof is withheld unless this exact GeckoSession has a live native port and a ready
-     * ChatGPT target. Server-side certificate-chain verification and pinning remain mandatory.
+     * Asynchronous local in-process API for the trusted enrollment adapter. Keystore key
+     * creation, certificate retrieval, and signing run off the main thread so Gecko navigation
+     * and relay recovery can update state while signing is in flight. The returned future
+     * completes with evidence only if the exact snapshot is still current at the main-thread
+     * release barrier. Callers must not block the main thread waiting for this future.
      */
-    fun createNativePeerAttestation(challenge: ByteArray): AndroidPeerAttestationEvidence? {
-        // The in-process adapter must call this on the service thread. Serializing signing
-        // with Gecko and native-port callbacks prevents a callback from replacing the binding
-        // midway through Keystore work. Async/off-thread callers fail closed.
-        if (Looper.myLooper() != Looper.getMainLooper()) return null
+    fun createNativePeerAttestation(
+        challenge: ByteArray,
+    ): CompletableFuture<AndroidPeerAttestationEvidence?> {
+        val completion = CompletableFuture<AndroidPeerAttestationEvidence?>()
+        val begin = Runnable {
+            val snapshot = captureNativePeerAttestationSnapshot()
+            if (snapshot == null || !isRunning) {
+                completion.complete(null)
+                return@Runnable
+            }
 
+            try {
+                attestationExecutor.execute {
+                    val evidence = runCatching {
+                        val profileId = relayConfigStore.getOrCreatePeerProfileBindingId()
+                            ?: error("PEER_PROFILE_BINDING_UNAVAILABLE")
+                        peerAttestor.attest(
+                            challenge = challenge.copyOf(),
+                            workerId = snapshot.workerId,
+                            sessionId = snapshot.sessionId,
+                            profileId = profileId,
+                            bridgeId = snapshot.bridgeId,
+                            targetOrigin = AndroidPeerAttestor.TARGET_ORIGIN,
+                        )
+                    }.getOrNull()
+
+                    val release = Runnable {
+                        completion.complete(
+                            if (evidence != null &&
+                                isNativePeerAttestationSnapshotCurrent(snapshot)
+                            ) evidence else null,
+                        )
+                    }
+                    if (!mainHandler.post(release)) completion.complete(null)
+                }
+            } catch (_: RejectedExecutionException) {
+                completion.complete(null)
+            }
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            begin.run()
+        } else if (!mainHandler.post(begin)) {
+            completion.complete(null)
+        }
+        return completion
+    }
+
+    private fun captureNativePeerAttestationSnapshot(): NativePeerAttestationSnapshot? {
+        if (Looper.myLooper() != Looper.getMainLooper()) return null
         val port = workerPort ?: return null
         val bridgeId = activeBridgeBindingId ?: return null
-        val workerId = activeWorkerId
         val state = workerState
-        val recoveryGeneration = chatRecoveryGeneration
-        val nativePortGeneration = nativePortRecoveryGeneration
-        val readinessGeneration = readinessWatchGeneration
-        val observedUrl = lastObservedPageUrl
-        val observedAt = lastObservedTargetAtMs
-        if (activeWakeUncertain || state !in setOf(STATE_READY, STATE_BUSY) ||
-            !isFreshExactChatGptObservation(observedUrl, observedAt)
+        val nowMs = System.currentTimeMillis()
+        if (!isRunning || activeWakeUncertain ||
+            state !in setOf(STATE_READY, STATE_BUSY) ||
+            !peerTargetGate.isObservationCurrent(nowMs)
         ) return null
 
-        val profileId = relayConfigStore.getOrCreatePeerProfileBindingId() ?: return null
-        val evidence = peerAttestor.attest(
-            challenge = challenge.copyOf(),
-            workerId = workerId,
-            sessionId = sessionBindingId,
-            profileId = profileId,
+        return NativePeerAttestationSnapshot(
+            port = port,
             bridgeId = bridgeId,
-            targetOrigin = AndroidPeerAttestor.TARGET_ORIGIN,
-        ) ?: return null
-
-        // Fail closed if anything changed before releasing the signed snapshot.
-        if (!isRunning || workerPort !== port || activeBridgeBindingId != bridgeId ||
-            activeWorkerId != workerId || sessionBindingId != evidence.sessionId ||
-            chatRecoveryGeneration != recoveryGeneration ||
-            nativePortRecoveryGeneration != nativePortGeneration ||
-            readinessWatchGeneration != readinessGeneration ||
-            workerState != state || workerState !in setOf(STATE_READY, STATE_BUSY) ||
-            activeWakeUncertain || lastObservedPageUrl != observedUrl ||
-            lastObservedTargetAtMs != observedAt ||
-            !isFreshExactChatGptObservation(lastObservedPageUrl, lastObservedTargetAtMs)
-        ) return null
-        return evidence
+            workerId = activeWorkerId,
+            state = state,
+            sessionId = sessionBindingId,
+            chatRecoveryGeneration = chatRecoveryGeneration,
+            nativePortGeneration = nativePortRecoveryGeneration,
+            readinessGeneration = readinessWatchGeneration,
+            target = peerTargetGate.snapshot(),
+        )
     }
 
-    private fun isFreshExactChatGptObservation(value: String?, observedAtMs: Long?): Boolean {
-        if (!isExactChatGptTarget(value) || observedAtMs == null) return false
-        return (System.currentTimeMillis() - observedAtMs) in 0..TARGET_OBSERVATION_MAX_AGE_MS
+    private fun isNativePeerAttestationSnapshotCurrent(
+        expected: NativePeerAttestationSnapshot,
+    ): Boolean {
+        if (Looper.myLooper() != Looper.getMainLooper()) return false
+        val current = captureNativePeerAttestationSnapshot() ?: return false
+        return current.port === expected.port &&
+            current.bridgeId == expected.bridgeId &&
+            current.workerId == expected.workerId &&
+            current.state == expected.state &&
+            current.sessionId == expected.sessionId &&
+            current.chatRecoveryGeneration == expected.chatRecoveryGeneration &&
+            current.nativePortGeneration == expected.nativePortGeneration &&
+            current.readinessGeneration == expected.readinessGeneration &&
+            current.target == expected.target &&
+            peerTargetGate.matches(expected.target, System.currentTimeMillis()) &&
+            !activeWakeUncertain
     }
-
-    private fun isExactChatGptTarget(value: String?): Boolean {
-        if (value.isNullOrBlank()) return false
-        val uri = runCatching { URI(value) }.getOrNull() ?: return false
-        return uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host.equals("chatgpt.com", ignoreCase = true) &&
-            (uri.port == -1 || uri.port == 443) &&
-            uri.userInfo == null
-    }
-
 
     private val portDelegate = object : WebExtension.PortDelegate {
         override fun onPortMessage(message: Any, port: WebExtension.Port) {
@@ -271,8 +322,7 @@ class AndroidGeckoWorkerService : Service() {
             if (port !== workerPort) return
             workerPort = null
             activeBridgeBindingId = null
-            lastObservedPageUrl = null
-            lastObservedTargetAtMs = null
+            peerTargetGate.resetBridge()
             scheduleNativePortRecovery()
         }
     }
@@ -296,8 +346,7 @@ class AndroidGeckoWorkerService : Service() {
             workerPort?.disconnect()
             workerPort = port
             activeBridgeBindingId = UUID.randomUUID().toString()
-            lastObservedPageUrl = null
-            lastObservedTargetAtMs = null
+            peerTargetGate.resetBridge()
             port.setDelegate(portDelegate)
             if (workerState == STATE_FAILED) {
                 updateNotification()
@@ -323,6 +372,21 @@ class AndroidGeckoWorkerService : Service() {
     }
 
     private val navigationDelegate = object : GeckoSession.NavigationDelegate {
+        override fun onLoadRequest(
+            session: GeckoSession,
+            request: GeckoSession.NavigationDelegate.LoadRequest,
+        ): GeckoResult<AllowOrDeny>? {
+            if (session === workerSession &&
+                request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_CURRENT
+            ) {
+                // Invalidate at navigation initiation, not only after the URL changes. Signing
+                // runs off-main so this callback can run before the evidence release barrier.
+                peerTargetGate.navigationStarted(System.currentTimeMillis())
+                readinessWatchGeneration += 1
+            }
+            return null
+        }
+
         override fun onLocationChange(
             session: GeckoSession,
             url: String?,
@@ -330,16 +394,9 @@ class AndroidGeckoWorkerService : Service() {
             hasUserGesture: Boolean,
         ) {
             if (session !== workerSession) return
-            // Location changes are a trusted Gecko callback: invalidate before a page can
-            // reuse a status report emitted for the previous URL.
-            invalidateTargetObservation()
+            peerTargetGate.locationChanged(url, System.currentTimeMillis())
+            readinessWatchGeneration += 1
         }
-    }
-
-    private fun invalidateTargetObservation() {
-        lastObservedPageUrl = null
-        lastObservedTargetAtMs = null
-        readinessWatchGeneration += 1
     }
 
     private fun onServiceState(block: () -> Unit) {
@@ -443,8 +500,8 @@ class AndroidGeckoWorkerService : Service() {
         workerPort?.disconnect()
         workerPort = null
         activeBridgeBindingId = null
-        lastObservedPageUrl = null
-        lastObservedTargetAtMs = null
+        peerTargetGate.resetBridge()
+        attestationExecutor.shutdownNow()
         runCatching { workerSession.close() }
             .onFailure { Log.w(TAG, "Unable to close Worker GeckoSession cleanly", it) }
         super.onDestroy()
@@ -684,8 +741,7 @@ class AndroidGeckoWorkerService : Service() {
         workerPort?.disconnect()
         workerPort = null
         activeBridgeBindingId = null
-        lastObservedPageUrl = null
-        lastObservedTargetAtMs = null
+        peerTargetGate.resetBridge()
         nativePortRecoveryGeneration += 1
         readinessWatchGeneration += 1
 
@@ -768,6 +824,7 @@ class AndroidGeckoWorkerService : Service() {
         val expectedKeys = setOf(
             "type",
             "protocolVersion",
+            "reportSequence",
             "observedAt",
             "pageUrl",
             "composerAvailable",
@@ -780,21 +837,17 @@ class AndroidGeckoWorkerService : Service() {
         }
 
         val pageUrl = message.optString("pageUrl")
+        val reportSequence = message.optLong("reportSequence", -1L)
         val observedAt = runCatching {
             java.time.Instant.parse(message.optString("observedAt")).toEpochMilli()
-        }.getOrNull() ?: run {
-            lastObservedPageUrl = null
-            lastObservedTargetAtMs = null
-            return
-        }
-        val age = System.currentTimeMillis() - observedAt
-        if (!isChatGptUrl(pageUrl) || age !in 0..TARGET_OBSERVATION_MAX_AGE_MS) {
-            lastObservedPageUrl = null
-            lastObservedTargetAtMs = null
-            return
-        }
-        lastObservedPageUrl = pageUrl
-        lastObservedTargetAtMs = observedAt
+        }.getOrNull()
+        val acceptance = peerTargetGate.acceptStatus(
+            pageUrl = pageUrl,
+            observedAt = observedAt,
+            reportSequence = reportSequence,
+            nowMs = System.currentTimeMillis(),
+        )
+        if (acceptance != PeerStatusAcceptance.ACCEPTED) return
 
         if (workerState == STATE_FAILED) {
             Log.w(TAG, "Ignoring worker status after terminal ChatGPT recovery failure")
