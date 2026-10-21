@@ -651,3 +651,35 @@ unchanged v1 routing semantics. This is NOT the previously denied
 activated-quarantine adversarial test, nor a replacement for it.
 
 **No live Cloudflare state was read/written and no G0 authority added.**
+
+## Archived delivery IDs across cache rollover (PR #145)
+
+The `recent_deliveries` cache retains only the latest 64 GitHub delivery
+IDs. An ID that was superseded earlier and recorded in
+`supersession_evidence_v1` can outlive that cache. A replay after its
+eviction previously could be mistaken for fresh work and re-enter the
+active/queued dispatch planner. Before any new dispatch state write, the
+same DO transaction now validates the bounded archival ledger and rejects
+an archived ID with `ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER` (409),
+including when the recent cache has forgotten it. Corrupt or inconsistent
+archive entries deny; active/queued delivery-ID reuse also denies after
+recent-cache eviction. This does not claim the old ChatGPT prompt was
+cancelled. Unarchived v1 wake routing remains unchanged.
+
+`recover()` also consults that same validated archive inside its
+transaction. Without GitHub assignment, a nonempty archive now returns
+`unassigned_delivery_preserved` (409), **not** a misleading empty
+`waiting_for_assignment`. With an assignment but no confirmed
+non-queued same-head active wake, nonempty historical evidence returns
+`historical_delivery_requires_owner` (409) without reconstructing or
+sending a new wake. A matching existing accepted/sent/deferred wake is
+only *preserved*; it is not resent. These are ordinary recovery safety
+contracts, exercised by additions to the pre-existing
+`reconnect-recovery.test.mjs`, not the previously denied G0
+activated-mode concurrency suite.
+
+The archive is a per-DO ephemeral evidence cache for safe wake delivery,
+NOT independent GitHub task authority, a new planning database, or proof
+of owner consent. Real same-DO owner authentication, one-use nonce,
+live retirement writer, issued-ChatGPT-turn adjudication and adversarial
+Workerd certification remain BLOCKED.

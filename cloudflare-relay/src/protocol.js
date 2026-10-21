@@ -437,8 +437,10 @@ export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId)
     .filter(Boolean);
 }
 
-export function planRecovery(assignments, active, queued = null) {
+export function planRecovery(assignments, active, queued = null, archivedCount = 0) {
   if (!Array.isArray(assignments)) throw new Error("RECOVERY_ASSIGNMENTS_INVALID");
+  if (!Number.isSafeInteger(archivedCount) || archivedCount < 0 || archivedCount > 64)
+    throw new Error("RECOVERY_ARCHIVE_COUNT_INVALID");
 
   if (assignments.length > 1) {
     return { state: "conflict" };
@@ -446,12 +448,13 @@ export function planRecovery(assignments, active, queued = null) {
   if (assignments.length === 0) {
     // A missing GitHub assignment cannot prove a persisted delivery or
     // previously issued ChatGPT prompt was cancelled. Preserve evidence.
-    if (active || queued) {
+    if (active || queued || archivedCount > 0) {
       return {
         state: "unassigned_delivery_preserved",
         activePhase: active?.phase ?? null,
         deliveryId: active?.wake?.delivery_id ?? null,
         queuedDeliveryId: queued?.delivery_id ?? null,
+        archivedCount,
       };
     }
     return { state: "waiting_for_assignment" };
@@ -471,6 +474,20 @@ export function planRecovery(assignments, active, queued = null) {
       assignment,
       activePhase: active.phase,
       deliveryId: active.wake.delivery_id,
+    };
+  }
+
+  if (archivedCount > 0 && (!active || active.phase === "queued")) {
+    // A queued or empty current slot is not a clean slate after earlier
+    // supersession. Recovery must not synthesize a second wake while its
+    // prior (possibly sent) historical delivery remains unadjudicated.
+    return {
+      state: "historical_delivery_requires_owner",
+      assignment,
+      activePhase: active?.phase ?? null,
+      deliveryId: active?.wake?.delivery_id ?? null,
+      queuedDeliveryId: queued?.delivery_id ?? null,
+      archivedCount,
     };
   }
 
@@ -544,4 +561,26 @@ export function retainDisplacedWakes(existing, displaced, workerId) {
     result.push({wake: {...entry.wake}, phase: entry.phase});
   }
   return result;
+}
+
+/**
+ * A bounded, negative-only observation of archival delivery IDs.
+ * Empty/malformed/duplicate-conflicting stored history is never treated as
+ * proof of a clean recovery state. Does not authorize replay or retirement.
+ */
+export function inspectSupersessionEvidence(existing, workerId, deliveryId = null) {
+  if (!isValidWorkerId(workerId) ||
+      (deliveryId !== null && !isValidDeliveryId(deliveryId)))
+    return {state: "invalid", count: 0};
+  if (existing === undefined) return {state: "none", count: 0};
+  if (!Array.isArray(existing)) return {state: "invalid", count: 0};
+  const checked = retainDisplacedWakes(existing, [], workerId);
+  if (!checked || checked.length !== existing.length)
+    return {state: "invalid", count: 0};
+  return {
+    state: deliveryId !== null &&
+      checked.some(item => item.wake.delivery_id === deliveryId) ?
+      "archived_replay" : "observed",
+    count: checked.length,
+  };
 }

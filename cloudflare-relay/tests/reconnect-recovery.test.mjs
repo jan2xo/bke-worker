@@ -195,7 +195,7 @@ assert.equal(
   "ignore",
 );
 
-import { retainDisplacedWakes } from "../src/protocol.js";
+import { retainDisplacedWakes, inspectSupersessionEvidence } from "../src/protocol.js";
 const priorWake = {
   protocol: 1, type: "wake", worker_id: "android-worker-a",
   repo: "jan2xo/bke-worker", pr_number: 82,
@@ -227,3 +227,36 @@ const cap = Array.from({length: 64}, (_, n) => ({
 }));
 assert.equal(retainDisplacedWakes(cap, [{wake: queuedWake, phase: "queued"}],
   "android-worker-a"), null, "full ledger may not silently erase older evidence");
+
+const evidence = inspectSupersessionEvidence(retained, "android-worker-a", "old-active-82");
+assert.deepEqual(evidence, {state: "archived_replay", count: 2},
+  "archived ID remains a replay denial even if recent 64-ID cache forgets it");
+assert.deepEqual(inspectSupersessionEvidence(retained, "android-worker-a", "new-delivery"),
+  {state: "observed", count: 2});
+assert.deepEqual(inspectSupersessionEvidence(undefined, "android-worker-a", "new-delivery"),
+  {state: "none", count: 0});
+assert.equal(inspectSupersessionEvidence("corrupted", "android-worker-a").state, "invalid");
+assert.equal(inspectSupersessionEvidence([
+  retained[0], {...retained[0]},
+], "android-worker-a").state, "invalid", "duplicate archived records block recovery");
+assert.equal(inspectSupersessionEvidence(retained, "another-worker").state, "invalid");
+assert.equal(inspectSupersessionEvidence(retained, "android-worker-a", "bad id").state,
+  "invalid", "malformed prospective ID cannot bypass the archive scan");
+
+const cleanArchivedRecovery = planRecovery([], null, null, 2);
+assert.equal(cleanArchivedRecovery.state, "unassigned_delivery_preserved",
+  "archived evidence means no assignment cannot be reported as FREE");
+assert.equal(cleanArchivedRecovery.archivedCount, 2);
+const ambiguousArchivedRecovery = planRecovery([assignment], null, null, 2);
+assert.equal(ambiguousArchivedRecovery.state, "historical_delivery_requires_owner",
+  "recovery may not synthesize a new wake over unadjudicated archived evidence");
+assert.equal(ambiguousArchivedRecovery.archivedCount, 2);
+assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "queued"), null, 2).state,
+  "historical_delivery_requires_owner",
+  "queued state is not proof that previous archived sends were cancelled");
+assert.equal(planRecovery([assignment], wake(80, assignment.headSha, "accepted"), null, 2).state,
+  "preserved_active_assignment",
+  "the matching active accepted delivery remains preserved without new dispatch");
+assert.deepEqual(planRecovery([], null, null, 0), {state: "waiting_for_assignment"},
+  "no archived state retains the existing empty recovery contract");
+assert.throws(() => planRecovery([], null, null, -1), /RECOVERY_ARCHIVE_COUNT_INVALID/);

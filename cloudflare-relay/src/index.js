@@ -10,6 +10,7 @@ import {
   CONTROL_REPOSITORY,
   normalizeRecoveryAssignments,
   retainDisplacedWakes,
+  inspectSupersessionEvidence,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
   isValidWorkerId,
@@ -534,7 +535,13 @@ export class WorkerSession extends DurableObject {
 
         const recent = (await tx.get(RECENT_DELIVERIES_KEY)) || [];
         const active = await tx.get(ACTIVE_WAKE_KEY);
-        if (!Array.isArray(recent) ||
+        const queued = await tx.get(QUEUED_WAKE_KEY);
+        const evidence = inspectSupersessionEvidence(
+          await tx.get(SUPERSESSION_EVIDENCE_KEY), workerId, wake.delivery_id,
+        );
+        if (evidence.state === "invalid" ||
+            (queued !== undefined && !validateWake(queued, workerId)) ||
+            !Array.isArray(recent) ||
             recent.length > RECENT_DELIVERY_LIMIT ||
             recent.some(id => typeof id !== "string") ||
             (active !== undefined && (!active || !active.wake ||
@@ -543,11 +550,23 @@ export class WorkerSession extends DurableObject {
                 .includes(active.phase)))) {
           return { status: 423, body: {error: QUARANTINE_DENIAL_CODE} };
         }
+        // The 64-item recent-delivery cache is NOT a permanent replay
+        // barrier. Previously superseded delivery IDs must never become
+        // eligible again when that cache rolls over.
+        if (evidence.state === "archived_replay")
+          return {status: 409, body: {
+            error: "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER",
+          }};
         if (recent.includes(wake.delivery_id)) {
           return {status: 200, body: {
             state: "duplicate", delivery_id: wake.delivery_id,
           }};
         }
+        if (active?.wake?.delivery_id === wake.delivery_id ||
+            queued?.delivery_id === wake.delivery_id)
+          return {status: 409, body: {
+            error: "PERSISTED_DELIVERY_REPLAY_REQUIRES_OWNER",
+          }};
 
         const crossPrRecovery = active &&
           active.wake.pr_number !== wake.pr_number &&
@@ -730,7 +749,11 @@ export class WorkerSession extends DurableObject {
         const persistedWorker = await tx.get(WORKER_ID_KEY);
         const active = await tx.get(ACTIVE_WAKE_KEY);
         const queued = await tx.get(QUEUED_WAKE_KEY);
+        const evidence = inspectSupersessionEvidence(
+          await tx.get(SUPERSESSION_EVIDENCE_KEY), workerId,
+        );
         if (fence !== undefined || epoch !== undefined ||
+            evidence.state === "invalid" ||
             persistedWorker !== workerId || this.quarantined(workerId) ||
             (active !== undefined && (!active || !active.wake ||
               !validateWake(active.wake, workerId))) ||
@@ -742,6 +765,7 @@ export class WorkerSession extends DurableObject {
           assignments.map(assignment => ({...assignment, workerId})),
           active,
           queued,
+          evidence.count,
         );
         if (plan.state === "waiting_for_assignment") {
           return {status: 200, body: {
@@ -749,13 +773,15 @@ export class WorkerSession extends DurableObject {
           }};
         }
         if (plan.state === "unassigned_delivery_preserved" ||
-            plan.state === "assignment_drift_requires_owner") {
+            plan.state === "assignment_drift_requires_owner" ||
+            plan.state === "historical_delivery_requires_owner") {
           // Preserve both durable wake slots and require human reconciliation.
           return {status: 409, body: {
             state: plan.state, worker_id: workerId,
             ...(plan.assignment ? {assignment: plan.assignment} : {}),
             active_phase: plan.activePhase,
             active_delivery_id: plan.deliveryId,
+            archived_delivery_count: evidence.count,
             ...(plan.queuedDeliveryId ?
               {queued_delivery_id: plan.queuedDeliveryId} : {}),
           }};
