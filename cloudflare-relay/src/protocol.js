@@ -420,6 +420,13 @@ export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId)
       if (pull.state !== "open") {
         throw new Error(`RECOVERY_ASSIGNMENT_STATE_INVALID:${number}`);
       }
+      // GitHub's issue list and per-PR details are separate snapshots.
+      // A removed/reassigned worker label must not revive stale ownership.
+      const currentWorkerLabels = readWorkerLabels(pull);
+      if (currentWorkerLabels.length !== 1 ||
+          currentWorkerLabels[0].toLowerCase() !== assignedLabel) {
+        throw new Error(`RECOVERY_ASSIGNMENT_LABEL_CHANGED:${number}`);
+      }
       const headRef = typeof pull.head?.ref === "string" ? pull.head.ref : "";
       const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
       if (!headRef || !SHA.test(headSha)) {

@@ -6,12 +6,37 @@ const realisticIssuePayload = [
   { number: 999, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/999" } },
 ];
 const realisticPullPayload = [
-  { number: 82, state: "open", head: { ref: "bke/task-82", sha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" } },
+  { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], head: { ref: "bke/task-82", sha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" } },
   { number: 999, state: "closed", head: { ref: "bke/stale", sha: "ffffffffffffffffffffffffffffffffffffffff" } },
 ];
 assert.deepEqual(
   normalizeRecoveryAssignments(realisticIssuePayload, realisticPullPayload, "android-worker-a"),
   [{ workerId: "android-worker-a", number: 82, headRef: "bke/task-82", headSha: "010ffef9ec62c8e663e6858938cb17b1cf26056d" }],
+);
+
+for (const liveLabels of [
+  [],
+  [{ name: "bke-worker:another-worker" }],
+  [{ name: "bke-worker:android-worker-a" }, { name: "bke-worker:other-worker" }],
+]) {
+  assert.throws(
+    () => normalizeRecoveryAssignments(
+      realisticIssuePayload.slice(0, 1),
+      [{ ...realisticPullPayload[0], labels: liveLabels }],
+      "android-worker-a",
+    ),
+    /RECOVERY_ASSIGNMENT_LABEL_CHANGED:82/,
+    "live PR details cannot validate stale ownership from an earlier issue listing",
+  );
+}
+assert.throws(
+  () => normalizeRecoveryAssignments(
+    realisticIssuePayload.slice(0, 1),
+    [{ ...realisticPullPayload[0], labels: undefined }],
+    "android-worker-a",
+  ),
+  /RECOVERY_ASSIGNMENT_LABEL_CHANGED:82/,
+  "missing current PR labels are not evidence of ownership",
 );
 
 // GitHub assignment state must never appear FREE when details are unreadable.
