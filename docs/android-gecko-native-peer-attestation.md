@@ -12,7 +12,9 @@
 6. current native extension-port UUID;
 7. exact target origin `https://chatgpt.com`.
 
-The service withholds evidence unless invoked on the service/main thread with its current GeckoSession, connected built-in extension native port, a fresh exact-ChatGPT HTTPS observation, READY/BUSY worker state, and no uncertain wake delivery. Observations must have a parseable ISO-8601 timestamp no more than 10 seconds old; malformed, future-dated and stale observations fail closed. Proof creation snapshots the port, bridge, worker, session, target observation and recovery/readiness generations, then revalidates them after signing and discards the evidence if any binding changed. A disconnected/replaced native port clears its binding. The private key is never exported. Software-only keys, malformed bindings, missing/incomplete attestation chains and uncertain local state fail closed.
+The service keeps security-relevant state on the main-thread owner. GeckoView top-level navigation-start requests and trusted location-change callbacks both advance a navigation epoch and invalidate the prior observation. Each extension status report carries a monotonically increasing `reportSequence`; the shared `PeerTargetObservationGate` ignores out-of-order reports and accepts a target observation only when its timestamp is newer than the latest trusted navigation callback, its sequence is current, the trusted Gecko URL and reported URL both resolve to the exact HTTPS ChatGPT origin, and its age is between zero and 10 seconds. A delayed report from a prior page therefore cannot repopulate a target cleared by navigation. A disconnected/replaced native port resets the report stream and clears the observation.
+
+Native Keystore key creation, attestation-certificate retrieval and signing run on a dedicated single-thread executor rather than the UI/main thread. Before signing, the service captures an immutable snapshot of the port, bridge, worker, session, state, navigation/target observation and recovery/readiness generations. The executor returns evidence only to a main-thread release barrier; the future resolves to evidence only if that same complete snapshot is still current and the target gate is still valid. Navigation/recovery callbacks can run while the signer is working, and any changed binding causes evidence to be discarded. The service API returns a `CompletableFuture`; callers must not block the main thread waiting for it. The private key is never exported. Software-only keys, malformed bindings, missing/incomplete attestation chains and uncertain local state fail closed.
 
 ## Required server verification (not implemented by this PR)
 
@@ -28,7 +30,8 @@ No browser/device-supplied `trusted` flag is accepted. A valid signature proves 
 
 ## Certification boundaries
 
-- The repository contract test verifies the source wiring and fail-closed checks.
-- The Android CI build verifies compilation and APK assembly only.
+- The repository contract script checks service wiring and invokes the Android JVM test task when the Android 37.1 SDK is available.
+- `PeerTargetObservationGateTest` executes the same pure Kotlin state gate used by the service, covering delayed reports after cross-origin and same-origin navigation, out-of-order status, stale/future observations and a navigation transition while a signing snapshot is outstanding.
+- The Android CI debug build verifies Kotlin compilation and APK assembly. The JVM reducer tests do not simulate the GeckoView OS event loop or a physical Keystore operation; physical-device acceptance is still required.
 - Real-device acceptance must verify hardware-backed key generation, actual certificate chain/root/attested package digest, challenge replay rejection, key persistence/rotation, port/session replacement and wrong-worker/target rejection on a physical supported Android device.
 - Human-only owner pin provisioning/revocation and live pairing remain BLOCKED / NOT RUN. No credential issuance, relay mutation, worker wake, Cloudflare deployment or production action is authorized.
