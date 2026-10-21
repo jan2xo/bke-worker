@@ -11,6 +11,7 @@ import {
   normalizeRecoveryAssignments,
   retainDisplacedWakes,
   inspectSupersessionEvidence,
+  classifyUnmatchedRelayAck,
   MAX_WEBHOOK_BYTES,
   relayBearerMatches,
   isValidWorkerId,
@@ -1090,37 +1091,19 @@ export class WorkerSession extends DurableObject {
       socket.close(1008, "worker retired");
       return;
     }
-    if (this.quarantined(socket.deserializeAttachment()?.workerId)) {
-      socket.close(1008, "worker quarantined");
-      return;
-    }
-    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    const ackWorkerId = socket.deserializeAttachment()?.workerId;
-    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-        active !== undefined && active !== null &&
-        active.wake?.worker_id !== ackWorkerId) {
-      socket.close(1008, "worker identity conflict");
-      return;
-    }
-    if (this.quarantined(ackWorkerId) || await this.persistentlyRetired() ||
+    const ackAttachment = socket.deserializeAttachment() || {};
+    const ackWorkerId = ackAttachment.workerId;
+    if (this.quarantined(ackWorkerId) ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         await this.quarantinedBoundWorker(ackWorkerId))) {
+         await this.quarantinedBoundWorker(ackWorkerId)) ||
+        await this.persistentlyRetired()) {
       socket.close(1008, "worker quarantined");
-      return;
-    }
-    if (!active || active.wake.delivery_id !== ack.delivery_id) {
-      const recent = await this.recentDeliveries();
-      if (recent.includes(ack.delivery_id)) {
-        return;
-      }
-      socket.close(1008, "ack delivery mismatch");
       return;
     }
 
-    // Make ACK mutations share the same storage transaction boundary as
-    // the future retirement tombstone writer. An old ACK must not overwrite
-    // an atomic retirement or clear a newer delivery after an awaited read.
-    // This is still NOT a complete all-route retirement integration.
+    // Classify matched ACK, recent stale ACK, archived stale ACK or unknown
+    // under ONE local DO transaction. A read outside this transaction could
+    // race supersession, ID-cache rollover, socket handoff or a retire CAS.
     let disposition;
     try {
       disposition = await this.ctx.storage.transaction(async tx => {
@@ -1129,20 +1112,32 @@ export class WorkerSession extends DurableObject {
         if (fence !== undefined || epoch !== undefined) return "retired";
         const storedWorkerId = await tx.get(WORKER_ID_KEY);
         const registeredConnectionId = await tx.get(ACTIVE_CONNECTION_KEY);
-        const ackAttachment = socket.deserializeAttachment();
         const current = await tx.get(ACTIVE_WAKE_KEY);
-        if (storedWorkerId !== ackWorkerId ||
-            !ackAttachment?.registered ||
-            !registeredConnectionId ||
+        if (!isValidWorkerId(ackWorkerId) ||
+            storedWorkerId !== ackWorkerId ||
+            !ackAttachment.registered || !registeredConnectionId ||
             ackAttachment.connectionId !== registeredConnectionId ||
-            current?.wake?.worker_id !== ackWorkerId ||
-            current?.wake?.delivery_id !== ack.delivery_id ||
-            !["sent", "accepted", "deferred"].includes(current.phase))
+            (current !== undefined &&
+              (!current || !validateWake(current.wake, ackWorkerId) ||
+               !["queued","sent","accepted","deferred","recovery_required"]
+                 .includes(current.phase)))) return "conflict";
+
+        if (!current || current.wake.delivery_id !== ack.delivery_id) {
+          const recent = (await tx.get(RECENT_DELIVERIES_KEY)) ?? [];
+          const archive = await tx.get(SUPERSESSION_EVIDENCE_KEY);
+          const stale = classifyUnmatchedRelayAck(
+            recent, archive, ackWorkerId, ack.delivery_id,
+          );
+          // The stored historical ID is only a *reason to ignore* an
+          // out-of-date ACK. Never record it as another observed completed
+          // ACK, change active_wake, promote or send a wake.
+          if (stale === "stale_recent" || stale === "stale_archived")
+            return "ignored_stale";
+          return "conflict";
+        }
+        if (!["sent", "accepted", "deferred"].includes(current.phase))
           return "conflict";
 
-        // A matched registered-socket ACK is only a relay observation.
-        // Keep its minimal timestamp/scope in the SAME transaction as the
-        // phase change or removal; never store socket/session/profile secrets.
         const observation = nextRelayObservation(
           await tx.get(RELAY_OBSERVATION_KEY), ackWorkerId, Date.now(),
           "ack", ack, current.wake,
@@ -1163,10 +1158,11 @@ export class WorkerSession extends DurableObject {
         return "unknown";
       });
     } catch {
-      // A transaction error is never proof of rollback. Do not retry ACK.
+      // A transaction can commit before reporting an exception. Do not retry.
       socket.close(1011, "ack outcome uncertain");
       return;
     }
+    if (disposition === "ignored_stale" || disposition === "recorded") return;
     if (disposition === "retired" || disposition === "conflict" ||
         disposition === "unknown") {
       socket.close(1008, "ack retirement or identity conflict");

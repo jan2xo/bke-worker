@@ -197,7 +197,7 @@ assert.equal(
   "ignore",
 );
 
-import { retainDisplacedWakes, inspectSupersessionEvidence } from "../src/protocol.js";
+import { retainDisplacedWakes, inspectSupersessionEvidence, classifyUnmatchedRelayAck } from "../src/protocol.js";
 const priorWake = {
   protocol: 1, type: "wake", worker_id: "android-worker-a",
   repo: "jan2xo/bke-worker", pr_number: 82,
@@ -318,3 +318,29 @@ assert.equal(relayCheckpointIssuePath({
 }), null, "invalid worker identity cannot produce a checkpoint target");
 assert.equal(relayCheckpointIssuePath(null), null,
   "absent/malformed wake cannot become a GitHub write target");
+
+
+assert.equal(classifyUnmatchedRelayAck(
+  Array.from({length:64},(_,i)=>"newer-delivery-"+i),
+  retained, "android-worker-a", "old-active-82",
+), "stale_archived",
+  "a sent wake still ACKing after recent-ID eviction must not kill its successor socket");
+assert.equal(classifyUnmatchedRelayAck(
+  ["old-active-82"], retained, "android-worker-a", "old-active-82",
+), "stale_recent", "recent duplicates preserve original benign behavior");
+assert.equal(classifyUnmatchedRelayAck(
+  [], retained, "android-worker-a", "old-queued-82",
+), "unknown", "queued-only archival metadata is not proof of a sent wake");
+assert.equal(classifyUnmatchedRelayAck(
+  [], retained, "android-worker-a", "never-issued",
+), "unknown", "unknown ACK IDs still fail closed");
+assert.equal(classifyUnmatchedRelayAck(
+  [], [{wake:{...priorWake,worker_id:"another-worker"},phase:"sent"}],
+  "android-worker-a", "old-active-82",
+), "invalid", "cross-worker archive corruption fails closed");
+assert.equal(classifyUnmatchedRelayAck(
+  ["INVALID DELIVERY"], retained, "android-worker-a", "old-active-82",
+), "invalid", "invalid recent-ID storage is not valid ACK evidence");
+assert.equal(classifyUnmatchedRelayAck(
+  [], retained, "another-worker", "old-active-82",
+), "invalid", "wrong worker cannot use archived ACK exemption");

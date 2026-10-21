@@ -678,3 +678,29 @@ export function nextRelayObservation(existing, workerId, atMs, kind, ack = null,
     },
   };
 }
+
+
+/**
+ * Classify an ACK that does NOT match the current active wake. A bounded
+ * recent-ID cache is not sufficient: an already sent superseded wake can
+ * ACK only after its ID was evicted from that cache.
+ *
+ * Pure, negative-only classification: never marks an ACK accepted,
+ * completed, cancelled or authorized. Caller must check current socket
+ * authority and retirement keys inside the SAME DO transaction first.
+ */
+export function classifyUnmatchedRelayAck(recent, archive, workerId, deliveryId) {
+  if (!isValidWorkerId(workerId) || !isValidDeliveryId(deliveryId) ||
+      !Array.isArray(recent) || recent.length > 64 ||
+      recent.some(id => !isValidDeliveryId(id))) return "invalid";
+  const prior = inspectSupersessionEvidence(archive, workerId, deliveryId);
+  if (prior.state === "invalid") return "invalid";
+  if (recent.includes(deliveryId)) return "stale_recent";
+  if (prior.state === "archived_replay") {
+    // A queued-only supersession is not proof that a wake was ever sent.
+    // Ignoring a made-up ACK for such a wake would conceal a bad peer.
+    const entry = archive.find(item => item.wake.delivery_id === deliveryId);
+    return entry.phase === "queued" ? "unknown" : "stale_archived";
+  }
+  return "unknown";
+}

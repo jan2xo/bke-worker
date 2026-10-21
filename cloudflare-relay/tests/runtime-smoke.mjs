@@ -372,6 +372,26 @@ try {
     state: "accepted",
   }));
 
+  // Roll over the 64-item recent-ID cache without sending another wake.
+  // The first superseded delivery remains in the durable archive, and its
+  // late ACK must not close the current registered socket after eviction.
+  await new Promise(resolve => setTimeout(resolve, 100));
+  for (let n = 0; n < 66; n++) {
+    const suppressed = await postWebhook({
+      deliveryId: `cloudflare-rollover-${n}`,
+      action: "synchronize",
+      sha: "9999999999999999999999999999999999999999",
+      sender: "jan2xo",
+      headRepoOwner: "jan2xo",
+    });
+    assert.equal(suppressed.status, 202);
+    assert.equal(suppressed.body.relay.state, "self_synchronize_suppressed");
+  }
+  ws.sendText(JSON.stringify({
+    protocol: 1, type: "ack", worker_id: workerId,
+    delivery_id: wake.delivery_id, state: "completed",
+  }));
+
   // Same-head re-evaluation is still serialized behind the active delivery.
   const sameHead = await postWebhook({
     deliveryId: "cloudflare-smoke-003",

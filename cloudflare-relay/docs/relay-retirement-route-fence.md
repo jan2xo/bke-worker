@@ -869,3 +869,35 @@ queued wake exists. The original same-repo smoke continuation still
 proves compatible delivery. This is NOT a new/repackaged
 activated-G0 retirement security test, nor proof of a live owner
 cutover. No Cloudflare configuration or deployment changed.
+
+
+## Late superseded ACK after recent-ID cache rollover (PR #145)
+
+The active WebSocket can legitimately receive an ACK for an earlier
+`sent` wake after that wake was superseded by a newer GitHub head.
+Before this change, `WorkerSession.handleAck()` tolerated that ACK
+only while its ID remained in the 64-entry `recent_deliveries` cache.
+Once 64 newer deliveries/suppression events evicted it, the *same*
+historical ACK caused a `1008 ack delivery mismatch` socket close,
+even though `supersession_evidence_v1` still held the displaced wake.
+This unnecessarily terminated the authoritative worker session.
+
+The ACK path now verifies durable retirement keys, persisted worker ID,
+registered connection authority, current active wake and the bounded
+history **inside the same DO transaction**. For a non-current ACK it
+ignores a still-recent delivery as before, or an archived delivery
+whose last-known phase indicates it may have been sent. A queued-only
+archive entry and an unknown/malformed/wrong-worker ACK still cause a
+conflict; no ACK is trusted to complete, cancel, clear or promote a
+different current wake. Both stale classes make **zero** storage writes
+and cannot alter the last matched-ACK observation. This is a liveness
+preservation rule, not retroactive ChatGPT completion evidence.
+
+The existing reconnect planner test exercises cache rollover,
+queued-only and corruption classification. The existing normal
+`runtime-smoke.mjs` now evicts the superseded wake via 66 signed,
+same-repository self-synchronize suppression events, delivers its
+late ACK, and verifies subsequent current-wake/queue operation.
+This is ordinary default-OFF WebSocket regression, NOT the previously
+denied dedicated activated-retirement adversarial Workerd suite.
+No new route, deployment, owner authorization or credentials.
