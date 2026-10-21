@@ -686,19 +686,20 @@ for token in (
     assert token in peer_attestor, token
 
 
-# P1 source wiring assertions are above; callback/status ordering is tested in Kotlin/JUnit.
+# Service wiring: navigation-start and location-change events invalidate the same gate
+# used to accept worker reports; expensive Keystore work must run outside the UI Looper.
 for token in (
     "private val navigationDelegate = object : GeckoSession.NavigationDelegate",
+    "override fun onLoadRequest(",
     "override fun onLocationChange(",
-    "if (session !== workerSession) return",
-    "invalidateTargetObservation()",
+    "peerTargetGate.navigationStarted(System.currentTimeMillis())",
+    "peerTargetGate.locationChanged(url, System.currentTimeMillis())",
     "workerSession.setNavigationDelegate(navigationDelegate)",
-    "private fun onServiceState(block: () -> Unit)",
-    "onWake = { wake -> onServiceState { handleRelayWake(wake) } }",
-    "onRecovery = { recovery -> onServiceState { handleRelayRecovery(recovery) } }",
-    "onServiceState {",
-    "RELAY_RECOVERY_MUST_BE_MAIN_THREAD",
-    "RELAY_WAKE_MUST_BE_MAIN_THREAD",
+    "attestationExecutor.execute",
+    "if (Looper.myLooper() == Looper.getMainLooper())",
+    "mainHandler.post(release)",
+    "isNativePeerAttestationSnapshotCurrent(snapshot)",
+    "current.target == expected.target",
 ):
     assert token in service, token
 
