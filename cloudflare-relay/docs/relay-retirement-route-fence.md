@@ -37,3 +37,21 @@ The seam inventory is `connect`, `register`, `dispatch`, `recover`, `send`, `ack
 Before any real G0-07 writer or G0-08 observer may gate active runtime, the operator must separately authorize authenticated owner Access and per-action consent, verified Command Center private service principal and nonce issuance/one-use consumption, live same-DO provenance, trusted GitHub assignment/head, truly atomic **all-path** enforcement (including `ensureIdentity()`), crash/race and previously connected sockets, fenced readback, and credential and label release gates. Tests in this source PR are not evidence that any of those have been achieved. Do not enable PREPRODUCTION or production flags, deploy, modify credentials or revivify quarantined Android [PR #90](https://github.com/jan2xo/bke-worker/pull/90) / `bke-worker:android-worker-a`.
 
 **Issue #135 remains OPEN / LIVE RETIREMENT BLOCKED** until independently reviewed exact owner scope and explicit operator authorization establish genuine live safety.
+
+
+## G0 runtime interlock integration status — PR #145 (not retirement)
+
+A separate **default-OFF operator configuration emergency-stop** is now imported by `WorkerSession` from `relay-runtime-quarantine-interlock.js`. The keys `BKE_G0_RUNTIME_QUARANTINE_ENABLED` and `BKE_G0_RUNTIME_QUARANTINE_WORKER_ID` are deliberately absent from `wrangler.toml`. Nothing was activated or deployed by the source change. An absent / literal `false` switch preserves existing v1 behavior; an intentionally set literal `true` denies the configured old worker identity, while malformed activation or identity denies all attempted operations.
+
+The guard is inserted before the first `ensureIdentity()` write and across the actual `connect`, `dispatch`, `recover`, `rememberDelivery`, `sendActiveIfSafe`, WebSocket register/message, ACK, wake promotion and socket cleanup paths. Several asynchronous steps also recheck the flag just before writes or socket sending. These checks are best-effort protection against accidentally routing a known retired identity **only after an independently authorized deployment owner configures the stop**. They do **not** prove a linearizable retirement cutover.
+
+**Mandatory missing proofs before merge or activation:**
+
+- The interlock has **no authenticated owner consent, no trusted private issuer, no nonce consumption, no GitHub assignment proof, and no persisted retirement epoch**. Configuring it is a future human-controlled PREPRODUCTION gate, not a routine source operation.
+- The current implementation intentionally does **not** call the G0-07 writer or G0-08 observer. No caller may interpret an absent tombstone as evidence of permission.
+- A previously issued WebSocket wake or ChatGPT prompt remains uncertain. Mutable runtime configuration checks cannot serialize with existing Cloudflare Durable Object events, WebSocket closure, multi-step storage writes or a request already running in another deployed isolate. Even rechecking after individual awaits cannot guarantee that **every** in-flight operation was fenced.
+- A matching configured worker identity does not guarantee a trustworthy persisted `worker_id`/wake/connection tuple. Any cross-identity corruption must fail closed in a separately proven same-DO transactional integration.
+- The newly authored dedicated runtime-interlock adversarial-test **file creation was rejected by tool safety checks**; no such suite is present or certified. Existing Node + local relay smoke PASS only demonstrates absence of existing regressions with default OFF, **not correctness when the stop is enabled**. Do not claim independent ACCEPT, merge readiness or live retirement from that PASS.
+- A trustworthy finish still requires Admin-authenticated private DO inspection, one-use authorization, atomic monotonic persisted fence+epoch, enforced cutover on all paths, old socket/delivery readback, explicit credential/assignment reconciliation, and a separate operator-approved real-world acceptance.
+
+Track PR #145 and parent Issue #135 as **SOURCE IN PROGRESS / LIVE RETIREMENT BLOCKED**. Historical PR #90 and `android-worker-a` remain untouched.
