@@ -929,3 +929,32 @@ duplicate rejection for inspection, empty append, new append, and
 idempotent retry, alongside normal new-displacement idempotence.
 No new G0 activation, retirement authorization, public route, owner
 credential, dedicated denied adversarial test file or deployment.
+
+
+## Same-repository queued PR ownership drift (PR #145)
+
+The pre-existing GitHub recovery planner already rejected a persisted
+queued wake with a different **repository or worker ID**, but did not
+reject a different **PR number within the same repository**. A stored
+active wake matching the sole live assigned PR could return
+`preserved_active_assignment` while a different PR remained queued for
+the same worker; an empty active slot could reconstruct assigned work
+over an unrelated queued PR. This is not a clean single-assignment
+state and must not be silently reconciled.
+
+`planRecovery()` now considers a queued wake for a different PR number
+a conflicting task identity, even when its repository and worker ID
+match. It returns the already handled
+`assignment_identity_requires_owner` (409) without state changes or
+socket sends, retaining active/queued delivery IDs, active phase, and
+archived count for explicit owner reconciliation. It does **not**
+invent an assignment for the queued PR or erase it. The same-PR queue
+and existing queued stale-head reconstruction remain compatible.
+
+The ordinary `reconnect-recovery.test.mjs` was extended for matching
+active + foreign queued, empty active + foreign queued, recoverable
+queued active + foreign queued, and same-PR compatibility. This is
+default-OFF routine recovery regression only, NOT the previously
+denied activated-G0 adversarial cutover suite. No new route, owner
+privilege, deployment, live Durable Object operation, or retirement
+authority was introduced.

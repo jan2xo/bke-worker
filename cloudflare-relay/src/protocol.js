@@ -468,7 +468,13 @@ export function planRecovery(assignments, active, queued = null, archivedCount =
   const otherIdentity = [active?.wake, queued].some(wake =>
     wake && (wake.repo !== CONTROL_REPOSITORY ||
       wake.worker_id !== assignment.workerId));
-  if (otherIdentity) {
+  // A queued wake from another PR in the SAME repository is also a
+  // different task. One worker cannot treat PR #80 as its clean GitHub
+  // assignment while silently holding a queued PR #79 for later delivery.
+  // Do not mutate either slot or reconstruct work until the owner resolves
+  // the second task's assignment and already-issued delivery uncertainty.
+  const queuedOtherPr = queued && queued.pr_number !== assignment.number;
+  if (otherIdentity || queuedOtherPr) {
     return {
       state: "assignment_identity_requires_owner",
       assignment,

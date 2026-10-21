@@ -364,3 +364,41 @@ assert.equal(classifyUnmatchedRelayAck(
 assert.equal(classifyUnmatchedRelayAck(
   [], retained, "another-worker", "old-active-82",
 ), "invalid", "wrong worker cannot use archived ACK exemption");
+
+const sameRepoForeignQueued = {
+  ...matchingControlWake.wake,
+  pr_number: assignment.number + 1,
+  delivery_id: "same-repo-different-pr-queued",
+};
+const queuedMismatchWithActive = planRecovery(
+  [assignment], matchingControlWake, sameRepoForeignQueued,
+);
+assert.equal(queuedMismatchWithActive.state, "assignment_identity_requires_owner",
+  "matching active PR cannot conceal an unrelated queued PR in the same repo");
+assert.equal(queuedMismatchWithActive.deliveryId, "existing-delivery",
+  "owner receives the preserved active delivery identity");
+assert.equal(queuedMismatchWithActive.queuedDeliveryId,
+  "same-repo-different-pr-queued", "conflicting queued delivery remains visible");
+assert.equal(queuedMismatchWithActive.archivedCount, 0);
+const queuedMismatchWithoutActive = planRecovery(
+  [assignment], null, sameRepoForeignQueued,
+);
+assert.equal(queuedMismatchWithoutActive.state, "assignment_identity_requires_owner",
+  "empty active slot cannot permit recreating one PR over a different queued PR");
+assert.equal(queuedMismatchWithoutActive.queuedDeliveryId,
+  "same-repo-different-pr-queued");
+assert.equal(planRecovery(
+  [assignment], wake(80, assignment.headSha, "queued"), sameRepoForeignQueued,
+).state, "assignment_identity_requires_owner",
+"queued cross-PR conflict blocks replacing an otherwise recoverable active slot");
+assert.equal(planRecovery(
+  [assignment], matchingControlWake, {
+    ...sameRepoForeignQueued, pr_number: assignment.number,
+  },
+).state, "preserved_active_assignment",
+"ordinary serialized same-repository same-PR queue remains compatible");
+assert.equal(planRecovery(
+  [assignment], null, {
+    ...sameRepoForeignQueued, pr_number: assignment.number,
+  },
+).state, "recovered", "ordinary same-PR queued recovery remains compatible");
