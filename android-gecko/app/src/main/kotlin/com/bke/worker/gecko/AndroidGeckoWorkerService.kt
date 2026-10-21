@@ -209,7 +209,7 @@ class AndroidGeckoWorkerService : Service() {
             !isExactChatGptTarget(lastObservedPageUrl)
         ) return null
 
-        val profileId = getOrCreateProfileBindingId() ?: return null
+        val profileId = relayConfigStore.getOrCreatePeerProfileBindingId() ?: return null
         val bridgeId = activeBridgeBindingId ?: return null
         return peerAttestor.attest(
             challenge = challenge.copyOf(),
@@ -230,18 +230,6 @@ class AndroidGeckoWorkerService : Service() {
             uri.userInfo == null
     }
 
-    private fun getOrCreateProfileBindingId(): String? = runCatching {
-        val preferences = getSharedPreferences("bke.worker.gecko.peer.binding.v1", MODE_PRIVATE)
-        val existing = preferences.getString("profile_binding_id", null)
-        if (existing != null) {
-            val parsed = runCatching { UUID.fromString(existing) }.getOrNull() ?: return null
-            if (parsed.toString() != existing) return null
-            return existing
-        }
-        val created = UUID.randomUUID().toString()
-        if (!preferences.edit().putString("profile_binding_id", created).commit()) return null
-        created
-    }.getOrNull()
 
     private val portDelegate = object : WebExtension.PortDelegate {
         override fun onPortMessage(message: Any, port: WebExtension.Port) {
