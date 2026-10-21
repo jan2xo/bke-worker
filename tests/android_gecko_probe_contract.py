@@ -577,3 +577,44 @@ for forbidden in (
     'production deploy',
 ):
     assert forbidden not in operator_script, forbidden
+
+
+# Android native peer identity is evidence, never an authorization decision.
+peer_attestor_path = base / "kotlin/com/bke/worker/gecko/AndroidPeerAttestor.kt"
+peer_attestor = peer_attestor_path.read_text(encoding="utf-8")
+for token in (
+    'class AndroidPeerAttestor(context: Context)',
+    'KEY_ALIAS = "bke.worker.gecko.peer.identity.v1"',
+    'setAttestationChallenge(challenge.copyOf())',
+    'keyInfo.isInsideSecureHardware',
+    'check(chain.size >= 2)',
+    'Signature.getInstance("SHA256withECDSA")',
+    'targetOrigin != TARGET_ORIGIN',
+    'challenge.size != CHALLENGE_BYTES',
+    'attestationChainBase64Url = chain',
+    'hardwareBacked = true',
+    'PEER_KEYSTORE_IDENTITY_INCONSISTENT',
+):
+    assert token in peer_attestor, token
+
+for token in (
+    'fun createNativePeerAttestation(challenge: ByteArray)',
+    'workerPort == null',
+    'activeBridgeBindingId == null',
+    'activeWakeUncertain',
+    'workerState !in setOf(STATE_READY, STATE_BUSY)',
+    '!isExactChatGptTarget(lastObservedPageUrl)',
+    'workerId = activeWorkerId',
+    'sessionId = sessionBindingId',
+    'profileId = profileId',
+    'bridgeId = bridgeId',
+    'targetOrigin = AndroidPeerAttestor.TARGET_ORIGIN',
+    'activeBridgeBindingId = UUID.randomUUID().toString()',
+    'activeBridgeBindingId = null',
+    'lastObservedPageUrl = null',
+):
+    assert token in service, token
+
+# The app may emit device evidence only for the exact HTTPS ChatGPT origin.
+assert 'uri.host.equals("chatgpt.com", ignoreCase = true)' in service
+assert 'uri.userInfo == null' in service
