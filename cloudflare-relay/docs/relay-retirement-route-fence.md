@@ -801,3 +801,38 @@ atomic DO+GitHub view, live WebSocket authority, owner authentication, or
 ChatGPT prompt cancellation. Existing G0-04 tests were extended; no
 activated-retirement adversarial test-file was created or bypassed.
 Nothing was imported into a public route or deployed.
+
+
+## Read-only displaced-delivery reconciliation view (PR #145)
+
+A normal `readRelayRetirementWitness()` rightly BLOCKS when
+`supersession_evidence_v1` is present: current active/queued slots
+are not a complete delivery inventory. This previously left no
+well-scoped source-only way to retrieve the already-persisted
+displaced records for a future owner review.
+
+A separate **dormant** `readRelayArchivedWakeEvidence()` in the existing
+G0-01 witness module now validates the exact worker identity and the
+entire bounded (maximum 64) `supersession_evidence_v1` archive. It
+returns redacted delivery IDs, last recorded phase, repo, PR number,
+exact head, and a per-record boolean indicating a match to the
+requested scope. Other PR/repository records are **retained**, not
+silently discarded, because cross-PR replacement is precisely the
+case requiring reconciliation. The full wire wake, reason, session,
+socket, credentials and browser details are excluded.
+
+The result is deliberately `ARCHIVE_OBSERVED_ONLY` with
+`authority=NONE`, `can_retire=false`,
+`can_release_assignment=false`, `delivery_ack_proven=false`,
+`snapshot_atomic=false`, and `historical_completeness_proven=false`.
+An absent archive key proves **nothing** about deliveries lost before
+the archive's introduction. A recorded `sent` or `accepted` phase
+cannot establish that ChatGPT received, finished, or cancelled work.
+Malformed/foreign/duplicate/overflowing archives fail closed.
+
+This **does not alter** the original blocking retirement witness or
+provide an authenticated owner read channel; arbitrary supplied
+storage does not prove a real Cloudflare Durable Object. No new route
+or deployment is added. The previously denied activated-G0 Workerd
+adversarial test-file was not recreated or bypassed. Existing G0-01
+source tests cover this ordinary read-only contract only.
