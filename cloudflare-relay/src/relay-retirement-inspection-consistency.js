@@ -12,6 +12,8 @@ const OBSERVED_KEYS = Object.freeze([
   'active_connection_id', RETIREMENT_FENCE_KEY,
 ]);
 const MAX_SNAPSHOT_BYTES = 65536;
+// UTF-16 string.length is not an encoded-byte count (e.g., emoji and CJK).
+const UTF8_ENCODER = new TextEncoder();
 const NEGATIVE = Object.freeze({
   authority: 'NONE',
   can_retire: false,
@@ -44,13 +46,14 @@ async function capture(storage) {
     // Stringify each value immediately, not after later asynchronous reads.
     // The missing marker must distinguish undefined from an explicit null.
     const encoded = JSON.stringify([value === undefined, value]);
-    if (typeof encoded !== 'string' || encoded.length > MAX_SNAPSHOT_BYTES) {
+    if (typeof encoded !== 'string' ||
+        UTF8_ENCODER.encode(encoded).byteLength > MAX_SNAPSHOT_BYTES) {
       return null;
     }
     parts.push(encoded);
   }
   const fingerprint = JSON.stringify(parts);
-  if (fingerprint.length > MAX_SNAPSHOT_BYTES) return null;
+  if (UTF8_ENCODER.encode(fingerprint).byteLength > MAX_SNAPSHOT_BYTES) return null;
   return {fingerprint, fence};
 }
 
