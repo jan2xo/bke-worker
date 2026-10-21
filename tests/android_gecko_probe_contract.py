@@ -599,12 +599,12 @@ for token in (
 
 for token in (
     'fun createNativePeerAttestation(challenge: ByteArray)',
-    'workerPort == null',
-    'activeBridgeBindingId == null',
+    'workerPort ?: return null',
+    'activeBridgeBindingId ?: return null',
     'activeWakeUncertain',
     'workerState !in setOf(STATE_READY, STATE_BUSY)',
-    '!isExactChatGptTarget(lastObservedPageUrl)',
-    'workerId = activeWorkerId',
+    'isFreshExactChatGptObservation(observedUrl, observedAt)',
+    'workerId = workerId',
     'sessionId = sessionBindingId',
     'profileId = profileId',
     'bridgeId = bridgeId',
