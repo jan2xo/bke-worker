@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import os
+import shutil
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
@@ -582,6 +584,10 @@ for forbidden in (
 # Android native peer identity is evidence, never an authorization decision.
 peer_attestor_path = base / "kotlin/com/bke/worker/gecko/AndroidPeerAttestor.kt"
 peer_attestor = peer_attestor_path.read_text(encoding="utf-8")
+peer_target_gate_path = base / "kotlin/com/bke/worker/gecko/PeerTargetObservationGate.kt"
+peer_target_gate = peer_target_gate_path.read_text(encoding="utf-8")
+peer_target_gate_test_path = root / "android-gecko/app/src/test/kotlin/com/bke/worker/gecko/PeerTargetObservationGateTest.kt"
+peer_target_gate_test = peer_target_gate_test_path.read_text(encoding="utf-8")
 for token in (
     'class AndroidPeerAttestor(context: Context)',
     'KEY_ALIAS = "bke.worker.gecko.peer.identity.v1"',
@@ -598,26 +604,37 @@ for token in (
     assert token in peer_attestor, token
 
 for token in (
-    'fun createNativePeerAttestation(challenge: ByteArray)',
-    'workerPort ?: return null',
-    'activeBridgeBindingId ?: return null',
-    'activeWakeUncertain',
-    'workerState !in setOf(STATE_READY, STATE_BUSY)',
-    'isFreshExactChatGptObservation(observedUrl, observedAt)',
-    'workerId = workerId',
-    'sessionId = sessionBindingId',
-    'profileId = profileId',
-    'bridgeId = bridgeId',
-    'targetOrigin = AndroidPeerAttestor.TARGET_ORIGIN',
-    'activeBridgeBindingId = UUID.randomUUID().toString()',
-    'activeBridgeBindingId = null',
-    'lastObservedPageUrl = null',
+    "fun createNativePeerAttestation(",
+    "CompletableFuture<AndroidPeerAttestationEvidence?>",
+    "attestationExecutor.execute",
+    "mainHandler.post(release)",
+    "captureNativePeerAttestationSnapshot()",
+    "isNativePeerAttestationSnapshotCurrent(snapshot)",
+    "workerPort ?: return null",
+    "activeBridgeBindingId ?: return null",
+    "activeWakeUncertain",
+    "state !in setOf(STATE_READY, STATE_BUSY)",
+    "peerTargetGate.isObservationCurrent(nowMs)",
+    "current.port === expected.port",
+    "current.chatRecoveryGeneration == expected.chatRecoveryGeneration",
+    "current.nativePortGeneration == expected.nativePortGeneration",
+    "current.readinessGeneration == expected.readinessGeneration",
+    "peerTargetGate.matches(expected.target, System.currentTimeMillis())",
+    "attestationExecutor.shutdownNow()",
+    "activeBridgeBindingId = UUID.randomUUID().toString()",
+    "activeBridgeBindingId = null",
+    "peerTargetGate.resetBridge()",
 ):
     assert token in service, token
 
-# The app may emit device evidence only for the exact HTTPS ChatGPT origin.
-assert 'uri.host.equals("chatgpt.com", ignoreCase = true)' in service
-assert 'uri.userInfo == null' in service
+# The target trust policy is pure Kotlin and also exercised by JVM unit tests.
+for token in (
+    "class PeerTargetObservationGate",
+    "isExactChatGptTarget(trustedLocationUrl)",
+    'uri.host.equals("chatgpt.com", ignoreCase = true)',
+    "uri.userInfo == null",
+):
+    assert token in peer_target_gate, token
 
 for token in (
     "fun getOrCreatePeerProfileBindingId(): String?",
@@ -628,22 +645,36 @@ for token in (
     assert token in relay_store, token
 
 
-# Native peer attestation lifecycle: snapshots and timestamp freshness must fail closed.
+# Attestation lifecycle: the navigation/status gate is shared by production service and JVM tests.
 for token in (
-    "createNativePeerAttestation(challenge: ByteArray)",
-    "Looper.myLooper() != Looper.getMainLooper()",
-    "workerPort !== port",
-    "activeBridgeBindingId != bridgeId",
-    "chatRecoveryGeneration != recoveryGeneration",
-    "nativePortRecoveryGeneration != nativePortGeneration",
-    "readinessWatchGeneration != readinessGeneration",
-    "lastObservedTargetAtMs != observedAt",
-    "TARGET_OBSERVATION_MAX_AGE_MS = 10_000L",
+    '"reportSequence"',
     "java.time.Instant.parse(message.optString",
-    "age !in 0..TARGET_OBSERVATION_MAX_AGE_MS",
-    "lastObservedTargetAtMs = observedAt",
+    "peerTargetGate.acceptStatus(",
+    "PeerStatusAcceptance.ACCEPTED",
+    "override fun onLoadRequest(",
+    "request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_CURRENT",
+    "peerTargetGate.navigationStarted(System.currentTimeMillis())",
+    "peerTargetGate.locationChanged(url, System.currentTimeMillis())",
+    "workerSession.setNavigationDelegate(navigationDelegate)",
+    "onWake = { wake -> onServiceState { handleRelayWake(wake) } }",
+    "onRecovery = { recovery -> onServiceState { handleRelayRecovery(recovery) } }",
+    "RELAY_RECOVERY_MUST_BE_MAIN_THREAD",
+    "RELAY_WAKE_MUST_BE_MAIN_THREAD",
 ):
     assert token in service, token
+
+for token in (
+    "delayedOldPageStatusCannotRestoreTargetAfterNavigationAway",
+    "delayedOldStatusCannotRestoreTargetAfterSameOriginNavigation",
+    "delayedOutOfOrderStatusDoesNotOverwriteNewerObservation",
+    "snapshotBecomesInvalidWhileSignerIsRunningAndNavigationArrives",
+    "staleFutureWrongOriginAndMissingReportsFailClosed",
+):
+    assert token in peer_target_gate_test, token
+
+assert "onRecovery = ::handleRelayRecovery" not in service
+assert "onWake = ::handleRelayWake" not in service
+assert 'testImplementation("junit:junit:4.13.2")' in build
 
 for token in (
     "initialAttestationChallengeBase64Url",
@@ -655,9 +686,7 @@ for token in (
     assert token in peer_attestor, token
 
 
-# P1 regression contract: security-relevant relay callbacks must be marshalled to
-# the same main-thread state owner as attestation signing; navigation must clear
-# the prior observation before any new page status is accepted.
+# P1 source wiring assertions are above; callback/status ordering is tested in Kotlin/JUnit.
 for token in (
     "private val navigationDelegate = object : GeckoSession.NavigationDelegate",
     "override fun onLocationChange(",
@@ -732,3 +761,19 @@ navigated["target"] = None
 navigated["observation_at"] = None
 assert not evidence_may_be_released(good, navigated, now_ms), "post-READY navigation must deny"
 print("Android native peer attestation race/navigation negative policy tests: PASS")
+
+# Run executable Kotlin/JUnit gate tests in Android certification jobs, after Gradle/SDK setup.
+# Contract-only jobs without API 37.1 are allowed to skip this Android-specific task.
+android_platform = Path(os.environ.get("ANDROID_HOME", "")) / "platforms/android-37.1"
+if android_platform.is_dir():
+    gradle = shutil.which("gradle")
+    if not gradle:
+        raise SystemExit("Android SDK 37.1 is present but Gradle is unavailable; JVM gate tests must not be skipped")
+    subprocess.run(
+        [gradle, "-p", str(root / "android-gecko"), ":app:testDebugUnitTest", "--stacktrace"],
+        check=True,
+    )
+    print("Android native peer target-gate JUnit tests: PASS")
+else:
+    print("Android native peer target-gate JUnit tests: NOT RUN (API 37.1 absent in contract-only job)")
+
