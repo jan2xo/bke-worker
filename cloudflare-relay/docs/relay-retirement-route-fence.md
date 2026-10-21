@@ -283,3 +283,32 @@ No new security tests were added: the earlier dedicated security
 test-file attempt was tool-safety denied and not bypassed.
 Dedicated Workerd concurrent dispatch versus retirement/recovery
 tests remain mandatory before independent security acceptance.
+
+
+## Transactional GitHub recovery wake reconstruction (PR #145)
+
+`WorkerSession.recover()` performs GitHub ownership discovery **outside**
+the Durable Object storage transaction. After completing that bounded
+external read and resolving conflict to fail-closed, the handler now
+re-reads the current DO `retirement_fence_v1`, `retirement_epoch_v1`,
+`worker_id` and `active_wake` inside a **single storage transaction**.
+The `planRecovery` decision, any active/queued deletion, and any
+reconstructed active-wake write are committed together. A retirement
+marker or worker identity conflict denies, while uncertain transaction
+outcomes produce `RECOVERY_OUTCOME_UNCERTAIN` with no automatic replay.
+
+For plans that create a `queued` wake, the later WebSocket send is bound
+to the precise `delivery_id` selected in that recovery transaction,
+preventing an older recovery invocation from inadvertently sending
+another transaction's replacement wake.
+
+This reduces DO-local stale-read races **but does not prove GitHub
+ownership CAS**: the external GitHub label/head could change after
+recovery discovery and before the local commit. No owner authentication
+or privileged retirement writer is imported. Already delivered prompts,
+preexisting sockets, legacy deployments and remote GitHub mutation
+cannot be made atomic with this storage transaction. Dedicated
+concurrent recovery-vs-retirement, GitHub ownership drift, malformed
+prior wake and failed commit security tests remain NOT_RUN because a
+prior attempt to create the dedicated test file was safety-blocked
+and was not bypassed. Keep source PR draft until independent proof.
