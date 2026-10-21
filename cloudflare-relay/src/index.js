@@ -474,7 +474,7 @@ export class WorkerSession extends DurableObject {
       return json({ error: "WEBSOCKET_UPGRADE_REQUIRED" }, 426);
     }
     // Bearer verification is asynchronous; recheck identity from THIS DO.
-    if (this.quarantined(workerId) ||
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(workerId)))
       return json({ error: QUARANTINE_DENIAL_CODE }, 423);
@@ -507,13 +507,14 @@ export class WorkerSession extends DurableObject {
     }
 
     const recent = await this.recentDeliveries();
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) || await this.persistentlyRetired())
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     if (recent.includes(wake.delivery_id)) {
       return json({ state: "duplicate", delivery_id: wake.delivery_id }, 200);
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(workerId) ||
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          (active !== undefined && active !== null &&
            active.wake?.worker_id !== workerId ||
@@ -545,7 +546,7 @@ export class WorkerSession extends DurableObject {
       wake.reason === "github_pull_request_self_synchronize";
 
     if (!(await this.rememberDelivery(recent, wake.delivery_id, workerId)) ||
-        this.quarantined(workerId)) {
+        this.quarantined(workerId) || await this.persistentlyRetired()) {
       return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     }
 
@@ -659,8 +660,8 @@ export class WorkerSession extends DurableObject {
         error: error instanceof Error ? error.message : "GITHUB_ASSIGNMENT_RECOVERY_FAILED",
       }, 502);
     }
-    // GitHub preflight may be slow; bind subsequent writes to persisted identity.
-    if (this.quarantined(workerId) ||
+    // GitHub preflight may be slow; never resume after a durable retirement.
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(workerId)))
       return json({ error: QUARANTINE_DENIAL_CODE }, 423);
@@ -698,7 +699,7 @@ export class WorkerSession extends DurableObject {
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(workerId) ||
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          (active !== undefined && active !== null &&
            active.wake?.worker_id !== workerId ||
@@ -934,7 +935,7 @@ export class WorkerSession extends DurableObject {
     }
 
     const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
-    if (this.quarantined(workerId) ||
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(workerId))) {
       socket.close(1008, "worker quarantined");
@@ -965,7 +966,7 @@ export class WorkerSession extends DurableObject {
       socket.close(1008, "worker identity conflict");
       return;
     }
-    if (this.quarantined(ackWorkerId) ||
+    if (this.quarantined(ackWorkerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(ackWorkerId))) {
       socket.close(1008, "worker quarantined");
@@ -997,7 +998,7 @@ export class WorkerSession extends DurableObject {
   async promoteQueuedWake() {
     if (await this.persistentlyRetired()) return;
     const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
-    if (this.quarantined(queued?.worker_id)) return;
+    if (this.quarantined(queued?.worker_id) || await this.persistentlyRetired()) return;
     if (!queued) return;
     if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
         await this.quarantinedBoundWorker(queued.worker_id)) return;
