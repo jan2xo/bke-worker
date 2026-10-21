@@ -377,7 +377,7 @@ class AndroidGeckoWorkerService : Service() {
             request: GeckoSession.NavigationDelegate.LoadRequest,
         ): GeckoResult<AllowOrDeny>? {
             if (session === workerSession &&
-                request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_CURRENT
+                request.target != GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW
             ) {
                 // Invalidate at navigation initiation, not only after the URL changes. Signing
                 // runs off-main so this callback can run before the evidence release barrier.
@@ -501,7 +501,7 @@ class AndroidGeckoWorkerService : Service() {
         workerPort = null
         activeBridgeBindingId = null
         peerTargetGate.resetBridge()
-        attestationExecutor.shutdownNow()
+        attestationExecutor.shutdown()
         runCatching { workerSession.close() }
             .onFailure { Log.w(TAG, "Unable to close Worker GeckoSession cleanly", it) }
         super.onDestroy()
