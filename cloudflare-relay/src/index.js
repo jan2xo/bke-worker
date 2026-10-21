@@ -398,6 +398,8 @@ export class WorkerSession extends DurableObject {
     // First-write seam: do not create/reuse a quarantined identity.
     if (this.quarantined(workerId)) return false;
     const existing = await this.ctx.storage.get(WORKER_ID_KEY);
+    // The read can suspend this invocation; deny before a first identity write.
+    if (this.quarantined(workerId)) return false;
     if (existing === undefined) {
       await this.ctx.storage.put(WORKER_ID_KEY, workerId);
       return true;
@@ -414,6 +416,8 @@ export class WorkerSession extends DurableObject {
     if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
       return json({ error: "WEBSOCKET_UPGRADE_REQUIRED" }, 426);
     }
+    // Bearer verification is asynchronous; recheck before accepting a socket.
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
 
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -442,11 +446,13 @@ export class WorkerSession extends DurableObject {
     }
 
     const recent = await this.recentDeliveries();
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     if (recent.includes(wake.delivery_id)) {
       return json({ state: "duplicate", delivery_id: wake.delivery_id }, 200);
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const crossPrRecovery = active &&
       active.wake.pr_number !== wake.pr_number &&
       wake.reason === "github_pull_request_cross_pr_recovery";
@@ -472,7 +478,10 @@ export class WorkerSession extends DurableObject {
       active.wake.expected_head_sha !== wake.expected_head_sha &&
       wake.reason === "github_pull_request_self_synchronize";
 
-    await this.rememberDelivery(recent, wake.delivery_id, workerId);
+    if (!(await this.rememberDelivery(recent, wake.delivery_id, workerId)) ||
+        this.quarantined(workerId)) {
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    }
 
     if (selfSynchronizeSuppression) {
       return json({
@@ -583,6 +592,8 @@ export class WorkerSession extends DurableObject {
         error: error instanceof Error ? error.message : "GITHUB_ASSIGNMENT_RECOVERY_FAILED",
       }, 502);
     }
+    // GitHub preflight may be slow: never resume writes using a stale gate.
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
 
     if (assignments.length > 1) {
       const checkpointPr = assignments[0]?.number;
@@ -617,6 +628,7 @@ export class WorkerSession extends DurableObject {
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const plan = planRecovery(
       assignments.map((assignment) => ({ ...assignment, workerId })),
       active,
@@ -676,12 +688,13 @@ export class WorkerSession extends DurableObject {
   }
 
   async rememberDelivery(recent, deliveryId, workerId) {
-    if (this.quarantined(workerId)) return;
+    if (this.quarantined(workerId)) return false;
     const next = recent
       .filter((item) => item !== deliveryId)
       .concat(deliveryId)
       .slice(-RECENT_DELIVERY_LIMIT);
     await this.ctx.storage.put(RECENT_DELIVERIES_KEY, next);
+    return !this.quarantined(workerId);
   }
 
   async authoritativeSocket() {
@@ -702,6 +715,9 @@ export class WorkerSession extends DurableObject {
 
     const socket = await this.authoritativeSocket();
     if (!socket) return false;
+    // Don't send after the authoritative-socket lookup suspended the call.
+    if (this.quarantined(active.wake.worker_id) ||
+        this.quarantined(socket.deserializeAttachment()?.workerId)) return false;
 
     socket.send(JSON.stringify(active.wake));
     await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
@@ -737,7 +753,15 @@ export class WorkerSession extends DurableObject {
         return;
       }
 
+      if (this.quarantined(workerId)) {
+        socket.close(1008, "worker quarantined");
+        return;
+      }
       await this.ctx.storage.put(ACTIVE_CONNECTION_KEY, connectionId);
+      if (this.quarantined(workerId)) {
+        socket.close(1008, "worker quarantined");
+        return;
+      }
 
       for (const other of this.ctx.getWebSockets()) {
         if (other === socket) continue;
@@ -777,6 +801,10 @@ export class WorkerSession extends DurableObject {
       return;
     }
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+    if (this.quarantined(socket.deserializeAttachment()?.workerId)) {
+      socket.close(1008, "worker quarantined");
+      return;
+    }
     if (!active || active.wake.delivery_id !== ack.delivery_id) {
       const recent = await this.recentDeliveries();
       if (recent.includes(ack.delivery_id)) {
@@ -830,6 +858,7 @@ export class WorkerSession extends DurableObject {
     const attachment = socket.deserializeAttachment() || {};
     if (this.quarantined(attachment.workerId)) return;
     const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
+    if (this.quarantined(attachment.workerId)) return;
     if (attachment.connectionId === activeConnectionId) {
       await this.ctx.storage.delete(ACTIVE_CONNECTION_KEY);
     }
