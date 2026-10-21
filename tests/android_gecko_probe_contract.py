@@ -621,11 +621,36 @@ for token in (
     "current.readinessGeneration == expected.readinessGeneration",
     "peerTargetGate.matches(expected.target, System.currentTimeMillis())",
     "attestationExecutor.shutdown()",
+    "pendingAttestationFutures.close()",
+    "pendingAttestationFutures.complete(completion, null)",
+    "val completion = pendingAttestationFutures.create()",
+    "if (completion.isDone) return completion",
     "activeBridgeBindingId = UUID.randomUUID().toString()",
     "activeBridgeBindingId = null",
     "peerTargetGate.resetBridge()",
 ):
     assert token in service, token
+
+# Shutdown/cancellation liveness is enforced by the production registry and JVM tests.
+pending_futures_path = root / "android-gecko/app/src/main/kotlin/com/bke/worker/gecko/PendingAttestationFutures.kt"
+pending_futures = pending_futures_path.read_text(encoding="utf-8")
+pending_futures_test_path = root / "android-gecko/app/src/test/kotlin/com/bke/worker/gecko/PendingAttestationFuturesTest.kt"
+pending_futures_test = pending_futures_test_path.read_text(encoding="utf-8")
+for token in (
+    "class PendingAttestationFutures",
+    "fun create(): CompletableFuture<T?>",
+    "fun complete(future: CompletableFuture<T?>, value: T?): Boolean",
+    "fun close()",
+    "pending.toList().forEach { it.complete(null) }",
+):
+    assert token in pending_futures, token
+for token in (
+    "closeSettlesOutstandingFutureAndLateSignerResultCannotReplaceIt",
+    "futureCreatedAfterCloseIsImmediatelySettled",
+    "successfulCompletionRemovesFutureFromPendingRegistry",
+    "closeSettlesEveryOutstandingFuture",
+):
+    assert token in pending_futures_test, token
 
 # The target trust policy is pure Kotlin and also exercised by JVM unit tests.
 for token in (
