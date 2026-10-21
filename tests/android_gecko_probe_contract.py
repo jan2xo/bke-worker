@@ -652,7 +652,7 @@ for token in (
     "peerTargetGate.acceptStatus(",
     "PeerStatusAcceptance.ACCEPTED",
     "override fun onLoadRequest(",
-    "request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_CURRENT",
+    "request.target != GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW",
     "peerTargetGate.navigationStarted(System.currentTimeMillis())",
     "peerTargetGate.locationChanged(url, System.currentTimeMillis())",
     "workerSession.setNavigationDelegate(navigationDelegate)",
