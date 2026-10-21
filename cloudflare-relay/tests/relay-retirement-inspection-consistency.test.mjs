@@ -114,8 +114,10 @@ test('wrong worker, repository, PR and head are never trusted inputs', async () 
     assert.equal(r.code,'TARGET_INVALID');
     assertNegative(r);
   }
+  const otherWorker=await inspect(deps(),{...expected,worker_id:'different-worker'});
+  assert.equal(otherWorker.code,'IDENTITY_MISMATCH_OR_MISSING');
+  assertNegative(otherWorker);
   for(const e of [
-    {...expected,worker_id:'different-worker'},
     {...expected,repo:'jan2xo/bke-demo-app'},
     {...expected,pr_number:91},
     {...expected,expected_head_sha:'f'.repeat(40)},
