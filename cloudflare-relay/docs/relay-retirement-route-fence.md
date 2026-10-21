@@ -776,3 +776,28 @@ read channel, cross-repo GitHub ownership, full delivery-history
 adjudication, one-use issuer, retirement CAS and mixed-version
 certification remain **BLOCKED**. No live DO was inspected, no config
 switch was enabled, and no Cloudflare deployment was performed.
+
+
+## Two-pass retirement snapshot now covers all critical durable markers (PR #145)
+
+The dormant G0-04 `readRetirementInspectionConsistency()` previously
+fingerprinted `retirement_fence_v1` but omitted the separately durable
+`retirement_epoch_v1` high-water key and `supersession_evidence_v1` archive.
+A marker or displaced-delivery mutation could therefore escape the two-pass
+comparison. A lone fence/epoch or mismatched epoch could also be misreported
+as a stable, positive-shaped observation.
+
+Both keys are now sampled in **both** passes with the existing bounded UTF-8
+size checks. The inspected fence must have a matching positive safe-integer
+high-water epoch, or the result is explicitly `FENCE_EPOCH_INCONSISTENT`
+(BLOCKED). An epoch without a fence is likewise BLOCKED. A changed epoch or
+archive during the samples yields `DO_STATE_CHANGED_DURING_INSPECTION`.
+A stable nonempty/archive-present key still fails through the existing G0-01
+`SUPERSESSION_EVIDENCE_REQUIRES_OWNER_RECONCILIATION` contract.
+
+These are negative-only consistency guarantees in **source-only** code.
+Two equal snapshots cannot prove no intervening ABA change, a globally
+atomic DO+GitHub view, live WebSocket authority, owner authentication, or
+ChatGPT prompt cancellation. Existing G0-04 tests were extended; no
+activated-retirement adversarial test-file was created or bypassed.
+Nothing was imported into a public route or deployed.

@@ -73,7 +73,7 @@ test('bound sampled observation is read-only, redacted and never authority', asy
 });
 
 test('valid-shaped stored tombstone is only schema observation, not provenance', async () => {
-  const r=await inspect(deps({...state,retirement_fence_v1:fence}),expected);
+  const r=await inspect(deps({...state,retirement_fence_v1:fence,retirement_epoch_v1:1}),expected);
   assert.equal(r.state,'OBSERVED_ONLY');
   assert.equal(r.retired_record_schema_observed,true);
   assert.equal(r.retired_epoch_shape_observed,1);
@@ -229,7 +229,9 @@ test('UTF-8 aggregate cap rejects combined Unicode even when each part fits', as
   const stored = {...state, active_wake: payload, queued_wake: payload};
   const keys = [
     'worker_id', 'active_wake', 'queued_wake', 'recent_deliveries',
-    'active_connection_id', 'retirement_fence_v1',
+    'active_connection_id', 'relay_observation_v1',
+    'supersession_evidence_v1', 'retirement_fence_v1',
+    'retirement_epoch_v1',
   ];
   const encoder = new TextEncoder();
   const parts = keys.map(key => JSON.stringify([
@@ -287,4 +289,47 @@ test('all blocked outputs contain only fixed code and explicit negative gates', 
     assert.deepEqual(Object.keys(x).sort(), ['state','code',...Object.keys(negative)].sort());
     assertNegative(x);
   }
+});
+
+
+test('epoch high-water and fence must be a consistent marker pair', async () => {
+  for (const sample of [
+    {...state,retirement_fence_v1:fence}, // missing high-water
+    {...state,retirement_epoch_v1:1}, // orphan epoch
+    {...state,retirement_fence_v1:fence,retirement_epoch_v1:0},
+    {...state,retirement_fence_v1:fence,retirement_epoch_v1:2},
+    {...state,retirement_fence_v1:fence,retirement_epoch_v1:'1'},
+    {...state,retirement_fence_v1:fence,retirement_epoch_v1:null},
+  ]) {
+    const r = await inspect(deps(sample),expected);
+    assert.equal(r.code,'FENCE_EPOCH_INCONSISTENT');
+    assertNegative(r);
+  }
+});
+test('detects retirement epoch changed between first and second snapshots',async()=>{
+  let epochReads=0;
+  const sample={...state,retirement_fence_v1:fence,retirement_epoch_v1:1};
+  const source={async get(key) {
+    if(key==='retirement_epoch_v1')return ++epochReads >= 2 ? 2 : 1;
+    return sample[key];
+  }};
+  const r=await inspect({storage:source,getWebSockets:()=>[socket()]},expected);
+  assert.equal(r.code,'DO_STATE_CHANGED_DURING_INSPECTION');
+  assertNegative(r);
+});
+test('detects unadjudicated displaced delivery appearing between snapshots',async()=>{
+  let archiveReads=0;
+  const archive=[{wake,phase:'sent'}];
+  const source={async get(key){
+    if(key==='supersession_evidence_v1')return ++archiveReads>=3 ? archive : undefined;
+    return state[key];
+  }};
+  const r=await inspect({storage:source,getWebSockets:()=>[socket()]},expected);
+  assert.equal(r.code,'DO_STATE_CHANGED_DURING_INSPECTION');
+  assertNegative(r);
+});
+test('a stable archive requires owner reconciliation rather than a clean witness',async()=>{
+  const r=await inspect(deps({...state,supersession_evidence_v1:[{wake,phase:'sent'}]}),expected);
+  assert.equal(r.code,'SUPERSESSION_EVIDENCE_REQUIRES_OWNER_RECONCILIATION');
+  assertNegative(r);
 });

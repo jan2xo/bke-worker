@@ -9,7 +9,8 @@ import {
 
 const OBSERVED_KEYS = Object.freeze([
   'worker_id', 'active_wake', 'queued_wake', 'recent_deliveries',
-  'active_connection_id', 'relay_observation_v1', RETIREMENT_FENCE_KEY,
+  'active_connection_id', 'relay_observation_v1',
+  'supersession_evidence_v1', RETIREMENT_FENCE_KEY, 'retirement_epoch_v1',
 ]);
 const MAX_SNAPSHOT_BYTES = 65536;
 // UTF-16 string.length is not an encoded-byte count (e.g., emoji and CJK).
@@ -39,10 +40,11 @@ const exact = (x, keys) => object(x) &&
 
 async function capture(storage) {
   const parts = [];
-  let fence;
+  let fence, epoch;
   for (const key of OBSERVED_KEYS) {
     const value = await storage.get(key);
     if (key === RETIREMENT_FENCE_KEY) fence = value;
+    if (key === 'retirement_epoch_v1') epoch = value;
     // Stringify each value immediately, not after later asynchronous reads.
     // The missing marker must distinguish undefined from an explicit null.
     const encoded = JSON.stringify([value === undefined, value]);
@@ -54,7 +56,7 @@ async function capture(storage) {
   }
   const fingerprint = JSON.stringify(parts);
   if (UTF8_ENCODER.encode(fingerprint).byteLength > MAX_SNAPSHOT_BYTES) return null;
-  return {fingerprint, fence};
+  return {fingerprint, fence, epoch};
 }
 
 /**
@@ -88,7 +90,7 @@ export async function readRetirementInspectionConsistency(deps, expected) {
     return block(sampled?.state === 'BLOCKED' ? sampled.code : 'SOCKET_WITNESS_UNAVAILABLE');
   }
 
-  const fence = before.fence;
+  const {fence, epoch} = before;
   if (fence !== undefined) {
     if (!validateRetiredFenceRecord(fence)) return block('FENCE_RECORD_MALFORMED');
     if (fence.worker_id !== expected.worker_id ||
@@ -97,6 +99,13 @@ export async function readRetirementInspectionConsistency(deps, expected) {
         fence.expected_head_sha !== expected.expected_head_sha) {
       return block('FENCE_TARGET_MISMATCH');
     }
+    // A lone fence, stale high-water epoch, or contradictory marker pair
+    // cannot establish even an internally consistent snapshot. Both are
+    // part of the same eventual transactional retirement writer.
+    if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch !== fence.epoch)
+      return block('FENCE_EPOCH_INCONSISTENT');
+  } else if (epoch !== undefined) {
+    return block('FENCE_EPOCH_INCONSISTENT');
   }
 
   return Object.freeze({
