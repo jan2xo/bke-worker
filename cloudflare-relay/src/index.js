@@ -903,45 +903,64 @@ export class WorkerSession extends DurableObject {
         socket.close(1008, "worker quarantined");
         return;
       }
-      // Serialize registration with the same retirement marker keys.
-      // A future owner retirement transaction must not be able to commit
-      // from the same pre-registration snapshot while this connection wins.
-      let admitted = false;
+      // The persisted connection-id CAS and its WebSocket side effects
+      // MUST be one non-interleavable local admission. Otherwise register A
+      // can commit, yield, register B can replace it, and A can close B.
+      // This short gate holds NO GitHub/network/browser/auth I/O.
+      let registration = "uncertain";
       try {
-        admitted = await this.ctx.storage.transaction(async tx => {
-          const fence = await tx.get(RETIREMENT_FENCE_KEY);
-          const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
-          const persistedWorker = await tx.get(WORKER_ID_KEY);
-          if (fence !== undefined || epoch !== undefined ||
-              persistedWorker !== workerId || this.quarantined(workerId))
-            return false;
-          await tx.put(ACTIVE_CONNECTION_KEY, connectionId);
-          return true;
+        registration = await this.ctx.blockConcurrencyWhile(async () => {
+          try {
+            const admitted = await this.ctx.storage.transaction(async tx => {
+              const fence = await tx.get(RETIREMENT_FENCE_KEY);
+              const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+              const persistedWorker = await tx.get(WORKER_ID_KEY);
+              if (fence !== undefined || epoch !== undefined ||
+                  persistedWorker !== workerId || this.quarantined(workerId))
+                return false;
+              await tx.put(ACTIVE_CONNECTION_KEY, connectionId);
+              return true;
+            });
+            if (!admitted || this.quarantined(workerId) ||
+                await this.persistentlyRetired()) return "denied";
+
+            // Bind the new socket attachment while the DO cannot accept
+            // a competing register/close event, then retire older sockets.
+            // A failed close is harmless: stale sockets have no stored
+            // authority, and their later cleanup compare-and-delete denies.
+            socket.serializeAttachment({
+              workerId,
+              connectionId,
+              registered: true,
+              sessionId: parsed.session_id,
+            });
+            for (const other of this.ctx.getWebSockets()) {
+              if (other === socket) continue;
+              const otherAttachment = other.deserializeAttachment();
+              if (otherAttachment?.registered === true &&
+                  otherAttachment.connectionId !== connectionId) {
+                try { other.close(4001, "replaced by newer session"); }
+                catch { /* Stored connection authority still wins. */ }
+              }
+            }
+            return "registered";
+          } catch {
+            // A storage transaction might have committed before throwing;
+            // do not retry registration or claim the old socket is safe.
+            return "uncertain";
+          }
         });
       } catch {
-        socket.close(1011, "registration outcome uncertain");
+        registration = "uncertain";
+      }
+      if (registration !== "registered") {
+        try {
+          socket.close(registration === "denied" ? 1008 : 1011,
+            registration === "denied" ?
+              "worker quarantined or retired" : "registration outcome uncertain");
+        } catch { /* Failed closure does not confer connection authority. */ }
         return;
       }
-      if (!admitted || this.quarantined(workerId) ||
-          await this.persistentlyRetired()) {
-        socket.close(1008, "worker quarantined or retired");
-        return;
-      }
-
-      for (const other of this.ctx.getWebSockets()) {
-        if (other === socket) continue;
-        const otherAttachment = other.deserializeAttachment();
-        if (otherAttachment?.registered === true) {
-          other.close(4001, "replaced by newer session");
-        }
-      }
-
-      socket.serializeAttachment({
-        workerId,
-        connectionId,
-        registered: true,
-        sessionId: parsed.session_id,
-      });
       await this.sendActiveIfSafe();
       return;
     }
