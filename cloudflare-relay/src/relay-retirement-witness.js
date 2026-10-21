@@ -41,6 +41,11 @@ export async function readRelayRetirementWitness(storage, expected) {
     queued = await storage.get('queued_wake');
     registered = await storage.get('active_connection_id');
     recent = await storage.get('recent_deliveries');
+    // Normal v1 dispatch can supersede earlier deliveries while preserving
+    // their context in a separate internal ledger. Do not call the remaining
+    // active+queued pair a COMPLETE retirement witness if such history exists.
+    const displaced = await storage.get('supersession_evidence_v1');
+    if (displaced !== undefined) return blocked('SUPERSESSION_EVIDENCE_REQUIRES_OWNER_RECONCILIATION');
   } catch {
     return blocked('STORAGE_READ_FAILED');
   }

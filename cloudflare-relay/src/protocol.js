@@ -514,3 +514,34 @@ export function validateAck(value, expectedWorkerId) {
     isValidDeliveryId(value.delivery_id) &&
     ACK_STATES.has(value.state);
 }
+
+/**
+ * Retain the exact wake and last known phase when a normal v1 route replaces
+ * a persisted slot. No delivery is cancelled and no new dispatch authority
+ * is created. Malformed, duplicate-conflicting or full ledgers fail closed.
+ */
+export function retainDisplacedWakes(existing, displaced, workerId) {
+  const maxEntries = 64;
+  const phases = new Set(["queued", "sent", "accepted", "deferred", "recovery_required"]);
+  if (!isValidWorkerId(workerId) || !Array.isArray(displaced) ||
+      (existing !== undefined && !Array.isArray(existing))) return null;
+  const entries = existing === undefined ? [] : existing;
+  if (entries.length > maxEntries) return null;
+  const result = [];
+  const seen = new Set();
+  for (const entry of [...entries, ...displaced]) {
+    if (!exactKeys(entry, ["wake", "phase"]) ||
+        !phases.has(entry.phase) || !validateWake(entry.wake, workerId)) return null;
+    const id = entry.wake.delivery_id;
+    if (seen.has(id)) {
+      // Idempotence is allowed only for a byte-for-byte matching witness.
+      const earlier = result.find(item => item.wake.delivery_id === id);
+      if (JSON.stringify(earlier) !== JSON.stringify(entry)) return null;
+      continue;
+    }
+    if (result.length >= maxEntries) return null;
+    seen.add(id);
+    result.push({wake: {...entry.wake}, phase: entry.phase});
+  }
+  return result;
+}

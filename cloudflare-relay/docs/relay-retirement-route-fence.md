@@ -617,3 +617,37 @@ Reference platform contracts:
 - https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/
 - https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/
 - https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/
+
+## Atomic displaced-wake evidence, without v1 routing changes (PR #145)
+
+The normal `WorkerSession.dispatch()` path supports genuine historical
+GitHub synchronize, labeled and explicit cross-PR recovery semantics.
+Changing those semantics without owner-approved cutover and dedicated
+activated-G0 tests could break existing v1. Instead, any overwritten
+`active_wake` or `queued_wake` is now appended **before its replacement**
+to a bounded same-DO `supersession_evidence_v1` history *within that
+same storage transaction*. The compatible v1 dispatch decisions and wire
+messages are unchanged. An identical displaced witness is idempotent;
+malformed histories, worker/PR details, duplicate delivery-ID conflicts
+and full ledgers **reject the incoming replacement**. Rejection occurs
+before writing its new recent-delivery entry.
+
+This includes dispatch stale-head/reassignment/cross-PR supersession,
+queued coalescing, queued replacement and recovery of still-queued work.
+The archive is internal liveness evidence, not GitHub task authority or
+a claim of ChatGPT cancellation; it is never exposed through a new
+HTTP/WebSocket route. No secrets, browser profiles or credentials are
+stored. Historical displacement **before this source revision** cannot
+be recreated or proven from the new key.
+
+The dormant G0 read-only retirement witness now returns
+`SUPERSESSION_EVIDENCE_REQUIRES_OWNER_RECONCILIATION` if any archive
+key exists. G0-07 cannot pretend that just today's active/queued slots
+represent the complete historical delivery set; archive reconciliation
+requires separate trusted owner approval and real DO proof. Existing
+ordinary reconnect-recovery tests cover the pure bounded append
+contract, while the pre-existing Workerd runtime smoke covers the
+unchanged v1 routing semantics. This is NOT the previously denied
+activated-quarantine adversarial test, nor a replacement for it.
+
+**No live Cloudflare state was read/written and no G0 authority added.**

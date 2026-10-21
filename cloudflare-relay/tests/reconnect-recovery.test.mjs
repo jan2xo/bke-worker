@@ -194,3 +194,36 @@ assert.equal(
   routeGitHubPullRequest(duplicateContinuation, "delivery-duplicate-82").kind,
   "ignore",
 );
+
+import { retainDisplacedWakes } from "../src/protocol.js";
+const priorWake = {
+  protocol: 1, type: "wake", worker_id: "android-worker-a",
+  repo: "jan2xo/bke-worker", pr_number: 82,
+  expected_head_sha: "010ffef9ec62c8e663e6858938cb17b1cf26056d",
+  reason: "github_pull_request_opened", delivery_id: "old-active-82",
+};
+const queuedWake = {...priorWake, delivery_id: "old-queued-82"};
+const retained = retainDisplacedWakes(undefined, [
+  {wake: priorWake, phase: "sent"}, {wake: queuedWake, phase: "queued"},
+], "android-worker-a");
+assert.deepEqual(retained?.map(x => [x.wake.delivery_id, x.phase]), [
+  ["old-active-82", "sent"], ["old-queued-82", "queued"],
+]);
+assert.equal(retainDisplacedWakes(retained, [
+  {wake: {...priorWake}, phase: "sent"},
+], "android-worker-a")?.length, 2, "identical source wake is idempotent");
+assert.equal(retainDisplacedWakes(retained, [
+  {wake: {...priorWake, expected_head_sha: "a".repeat(40)}, phase: "sent"},
+], "android-worker-a"), null, "same delivery ID with different head fails closed");
+assert.equal(retainDisplacedWakes(retained, [
+  {wake: priorWake, phase: "accepted"},
+], "android-worker-a"), null, "same delivery ID with conflicting phase fails closed");
+assert.equal(retainDisplacedWakes([], [{wake: priorWake, phase: "sent"}],
+  "another-worker"), null, "cross-worker displacement fails closed");
+assert.equal(retainDisplacedWakes([], [{wake: {delivery_id: "bad"}, phase: "sent"}],
+  "android-worker-a"), null, "malformed displaced wake fails closed");
+const cap = Array.from({length: 64}, (_, n) => ({
+  wake: {...priorWake, delivery_id: `old-${n}`}, phase: "queued",
+}));
+assert.equal(retainDisplacedWakes(cap, [{wake: queuedWake, phase: "queued"}],
+  "android-worker-a"), null, "full ledger may not silently erase older evidence");
