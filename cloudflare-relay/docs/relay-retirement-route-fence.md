@@ -128,3 +128,24 @@ disposition; credential/assignment release with explicit human approval.
 Tests were not added here because the earlier attempted dedicated
 security-test-file creation was tool-safety blocked. No existing suite's
 green result may be cited as proof of this new behavior.
+
+
+## Enabled-mode persisted marker enforcement extension
+
+With `BKE_G0_RUNTIME_QUARANTINE_ENABLED=true` only, the shared
+`WorkerSession.quarantinedBoundWorker()` now fails closed if its actual
+bound DO has **either** `retirement_fence_v1` or
+`retirement_epoch_v1`, even when its worker ID is otherwise consistent.
+`ensureIdentity()` checks the same two keys **before first write**,
+preventing accidental resurrection of an untrusted partial or complete
+retirement marker. Malformed, unreadable and partial markers deny; this
+read-only enforcement never writes or deletes a retired record.
+
+This change is part of the source-only preparation for a durable fence.
+It is not atomic proof that *all* already-in-flight
+`dispatch/recover/ACK` paths are synchronized with future privileged
+retirement RPCs; it does not certify shutdown of an earlier browser send
+or previously delivered ChatGPT prompt. Runtime feature remains
+undeclared in Wrangler and OFF. Real Cloudflare and adversarial concurrency
+tests plus owner/nonce/head authority and live retirement transaction are
+mandatory before activation or PR merge.
