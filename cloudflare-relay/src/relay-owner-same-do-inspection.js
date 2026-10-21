@@ -39,7 +39,18 @@ async function readIdentity(storage) {
   if (active !== undefined) options.push(targetFromWake(active.wake,workerId));
   if (queued !== undefined) options.push(targetFromWake(queued,workerId));
   if (options.some(x=>!x) || options.some(x=>!equal(x, options[0]))) return null;
-  return options[0];
+  // Bound preflight state and retain exact bytes for a post-inspection re-read.
+  // Different wake phases/IDs with the same target are not the same session.
+  let fingerprint;
+  try {
+    fingerprint = JSON.stringify([
+      [workerId === undefined, workerId],
+      [active === undefined, active],
+      [queued === undefined, queued],
+    ]);
+  } catch { return null; }
+  if (new TextEncoder().encode(fingerprint).byteLength > 65536) return null;
+  return {expected:options[0], fingerprint};
 }
 
 /**
@@ -58,10 +69,11 @@ export async function inspectSameDurableObjectCandidate({
     return block('SAME_DO_RECEIVER_LOCKED');
   if (!storage || typeof storage.get !== 'function' ||
       typeof getWebSockets !== 'function') return block('SAME_DO_CONTEXT_INVALID');
-  let expected;
-  try { expected = await readIdentity(storage); }
+  let before;
+  try { before = await readIdentity(storage); }
   catch { return block('SAME_DO_IDENTITY_READ_FAILED'); }
-  if (!expected) return block('SAME_DO_PERSISTED_TARGET_AMBIGUOUS');
+  if (!before) return block('SAME_DO_PERSISTED_TARGET_AMBIGUOUS');
+  const expected = before.expected;
   const proof = await verifyOwnerInspectionCommand({
     env, command, expected, cryptoImpl, clock,
   });
@@ -74,7 +86,8 @@ export async function inspectSameDurableObjectCandidate({
     },expected);
     after = await readIdentity(storage);
   } catch { return block('SAME_DO_INSPECTION_FAILED'); }
-  if (!after || !equal(after,expected))
+  if (!after || after.fingerprint !== before.fingerprint ||
+      !equal(after.expected,expected))
     return block('SAME_DO_IDENTITY_CHANGED');
   if (observed?.state !== 'OBSERVED_ONLY')
     return block('SAME_DO_WITNESS_UNAVAILABLE');
