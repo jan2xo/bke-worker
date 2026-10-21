@@ -26,6 +26,8 @@ const QUEUED_WAKE_KEY = "queued_wake";
 const RECENT_DELIVERIES_KEY = "recent_deliveries";
 const WORKER_ID_KEY = "worker_id";
 const ACTIVE_CONNECTION_KEY = "active_connection_id";
+const RETIREMENT_FENCE_KEY = "retirement_fence_v1";
+const RETIREMENT_EPOCH_KEY = "retirement_epoch_v1";
 const SESSION_OBJECT_GENERATION = "v2";
 
 function workerSessionObjectId(env, workerId) {
@@ -371,6 +373,20 @@ export class WorkerSession extends DurableObject {
     return mustStopWorkerRoute(this.env, workerId);
   }
 
+  // A durable marker cannot become a route ALLOW after an env toggle.
+  // Every deployed version that may coexist with a retirement transaction
+  // must read the same two keys; a malformed/partial marker or storage outage
+  // means STOP. This is negative enforcement, NEVER owner authorization.
+  async persistentlyRetired() {
+    try {
+      const fence = await this.ctx.storage.get(RETIREMENT_FENCE_KEY);
+      const epoch = await this.ctx.storage.get(RETIREMENT_EPOCH_KEY);
+      return fence !== undefined || epoch !== undefined;
+    } catch {
+      return true;
+    }
+  }
+
   // An on-switch check against only a wake payload or socket attachment is
   // insufficient: the actual DO might persist a DIFFERENT worker identity.
   // Preserve all existing default-OFF v1 behavior and IO. With quarantine
@@ -401,7 +417,8 @@ export class WorkerSession extends DurableObject {
 
   async fetch(request) {
     const workerId = request.headers.get("x-bke-worker-id") || "";
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) || await this.persistentlyRetired())
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     if (!isValidWorkerId(workerId)) {
       return json({ error: "WORKER_ID_INVALID" }, 400);
     }
@@ -423,11 +440,11 @@ export class WorkerSession extends DurableObject {
   }
 
   async ensureIdentity(workerId) {
-    // First-write seam: do not create/reuse a quarantined identity.
-    if (this.quarantined(workerId)) return false;
+    // Also guard direct RPC calls, not only WorkerSession.fetch().
+    if (this.quarantined(workerId) || await this.persistentlyRetired()) return false;
     const existing = await this.ctx.storage.get(WORKER_ID_KEY);
     // The read can suspend this invocation; deny before a first identity write.
-    if (this.quarantined(workerId)) return false;
+    if (this.quarantined(workerId) || await this.persistentlyRetired()) return false;
     if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true") {
       try {
         // An unknown/partial durable fence must not be resurrected by a
@@ -447,7 +464,8 @@ export class WorkerSession extends DurableObject {
   }
 
   async connect(request, workerId) {
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) || await this.persistentlyRetired())
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const token = this.env.BKE_WORKER_RELAY_TOKEN_KEY;
     if (!token || !(await relayBearerMatches(request.headers.get("Authorization") || "", token, workerId))) {
       return json({ error: "RELAY_UNAUTHORIZED" }, 401);
@@ -481,7 +499,8 @@ export class WorkerSession extends DurableObject {
   }
 
   async dispatch(request, workerId) {
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) || await this.persistentlyRetired())
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const wake = parseJson(await request.text());
     if (!validateWake(wake, workerId)) {
       return json({ error: "WAKE_INVALID" }, 400);
@@ -625,7 +644,8 @@ export class WorkerSession extends DurableObject {
   }
 
   async recover(request, workerId) {
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) || await this.persistentlyRetired())
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const value = parseJson(await request.text());
     if (!validateRecoveryRequest(value, workerId)) {
       return json({ error: "RECOVERY_REQUEST_INVALID" }, 400);
@@ -743,7 +763,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async rememberDelivery(recent, deliveryId, workerId) {
-    if (this.quarantined(workerId) ||
+    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(workerId))) return false;
     const next = recent
@@ -766,6 +786,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async sendActiveIfSafe() {
+    if (await this.persistentlyRetired()) return false;
     // Optional source-only PREPRODUCTION quarantine cutover preparation.
     // The configured legacy identity is always denied by quarantined().
     // For other workers, keep the short *local* wake reservation and socket
@@ -814,7 +835,8 @@ export class WorkerSession extends DurableObject {
         return false;
       }
     }
-    // Existing default-OFF v1 path below is intentionally unchanged.
+    // Ordinary v1 ordering is preserved except for the required persistent
+    // retirement-read guard, including one last read before socket.send().
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (this.quarantined(active?.wake?.worker_id)) return false;
     if (!active || active.phase !== "queued") return false;
@@ -835,6 +857,7 @@ export class WorkerSession extends DurableObject {
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(socketWorkerId))) return false;
 
+    if (await this.persistentlyRetired()) return false;
     socket.send(JSON.stringify(active.wake));
     await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
       wake: active.wake,
@@ -844,6 +867,10 @@ export class WorkerSession extends DurableObject {
   }
 
   async webSocketMessage(socket, message) {
+    if (await this.persistentlyRetired()) {
+      socket.close(1008, "worker retired");
+      return;
+    }
     if (typeof message !== "string") {
       socket.close(1003, "text frames required");
       return;
@@ -922,6 +949,10 @@ export class WorkerSession extends DurableObject {
   }
 
   async handleAck(ack, socket) {
+    if (await this.persistentlyRetired()) {
+      socket.close(1008, "worker retired");
+      return;
+    }
     if (this.quarantined(socket.deserializeAttachment()?.workerId)) {
       socket.close(1008, "worker quarantined");
       return;
@@ -964,6 +995,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async promoteQueuedWake() {
+    if (await this.persistentlyRetired()) return;
     const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
     if (this.quarantined(queued?.worker_id)) return;
     if (!queued) return;
@@ -992,6 +1024,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async clearConnectionIfAuthoritative(socket) {
+    if (await this.persistentlyRetired()) return;
     const attachment = socket.deserializeAttachment() || {};
     if (this.quarantined(attachment.workerId)) return;
     const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
