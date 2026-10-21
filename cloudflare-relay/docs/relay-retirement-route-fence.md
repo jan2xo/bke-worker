@@ -470,3 +470,28 @@ races and interruption. Those dedicated adversarial tests are still
 NOT_RUN following the earlier safety-denied test-file creation, which
 was not bypassed. Existing relay regressions cannot prove all these
 races or authorize the retirement writer.
+
+
+## G0 recovery evidence preservation (PR #145)
+
+When GitHub assignment discovery returns **zero current assignments**, it is
+not authority to erase a durable `active_wake` or `queued_wake`.
+Recovery now returns `unassigned_delivery_preserved` (409) without
+deleting or replacing either record. If GitHub selects another PR/head
+while a non-queued wake persists, `assignment_drift_requires_owner` (409)
+preserves the original delivery ID and phase instead of synthesizing
+another `recovery_required` wake or dispatching a new ChatGPT prompt.
+A genuinely empty DO with no assignment still returns
+`waiting_for_assignment` without mutations. A queued-only case retains
+its original delivery. The DO transaction validates both persisted wake
+slots before planning.
+
+This removes two automatic evidence-discard paths from the source runtime.
+It does **not** certify cancellation, GitHub/DO atomicity, a live tombstone,
+or earlier deployed code versions; nor does it implement authenticated
+owner reconciliation. Regression assertions were added only to the
+existing `reconnect-recovery.test.mjs` for this distinct recovery change.
+The previously safety-denied enabled-G0 adversarial test-file creation
+was not retried or bypassed. Real Workerd concurrency, trusted owner
+authority, one-use private nonce, same-DO witness, full deployment-version
+barrier and independent security review remain required.

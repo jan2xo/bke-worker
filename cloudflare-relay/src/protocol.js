@@ -437,13 +437,23 @@ export function normalizeRecoveryAssignments(issueItems, pullRequests, workerId)
     .filter(Boolean);
 }
 
-export function planRecovery(assignments, active) {
+export function planRecovery(assignments, active, queued = null) {
   if (!Array.isArray(assignments)) throw new Error("RECOVERY_ASSIGNMENTS_INVALID");
 
   if (assignments.length > 1) {
     return { state: "conflict" };
   }
   if (assignments.length === 0) {
+    // A missing GitHub assignment cannot prove a persisted delivery or
+    // previously issued ChatGPT prompt was cancelled. Preserve evidence.
+    if (active || queued) {
+      return {
+        state: "unassigned_delivery_preserved",
+        activePhase: active?.phase ?? null,
+        deliveryId: active?.wake?.delivery_id ?? null,
+        queuedDeliveryId: queued?.delivery_id ?? null,
+      };
+    }
     return { state: "waiting_for_assignment" };
   }
 
@@ -464,6 +474,17 @@ export function planRecovery(assignments, active) {
     };
   }
 
+  if (active && active.phase !== "queued") {
+    // Changing the assigned PR or SHA cannot cancel an earlier sent wake.
+    // Do not lose its original delivery ID or synthesize another prompt.
+    return {
+      state: "assignment_drift_requires_owner",
+      assignment,
+      activePhase: active.phase,
+      deliveryId: active.wake.delivery_id,
+    };
+  }
+
   const wake = {
     protocol: PROTOCOL,
     type: "wake",
@@ -474,14 +495,6 @@ export function planRecovery(assignments, active) {
     reason: "github_pull_request_reconnect_recovery",
     delivery_id: `recovery-${assignment.workerId}-${assignment.number}-${assignment.headSha}`,
   };
-
-  if (active && sameActivePr && active.phase !== "queued") {
-    return {
-      state: "head_converged_without_redelivery",
-      assignment,
-      wake,
-    };
-  }
 
   return {
     state: "recovered",

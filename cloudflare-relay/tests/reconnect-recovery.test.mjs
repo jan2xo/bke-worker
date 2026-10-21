@@ -111,15 +111,18 @@ const drift = planRecovery(
   [assignment],
   wake(80, "949aaed2edfad0f1ea889410a1fe6fe28e81f928", "sent"),
 );
-assert.equal(drift.state, "head_converged_without_redelivery");
-assert.equal(drift.wake.expected_head_sha, assignment.headSha);
+assert.equal(drift.state, "assignment_drift_requires_owner");
+assert.equal(drift.deliveryId, "existing-delivery");
+assert.equal(drift.activePhase, "sent");
+assert.equal(drift.assignment.headSha, assignment.headSha);
 
 const crossPr = planRecovery(
   [assignment],
   wake(79, "949aaed2edfad0f1ea889410a1fe6fe28e81f928", "sent"),
 );
-assert.equal(crossPr.state, "recovered");
-assert.equal(crossPr.wake.pr_number, 80);
+assert.equal(crossPr.state, "assignment_drift_requires_owner");
+assert.equal(crossPr.deliveryId, "existing-delivery");
+assert.equal(crossPr.activePhase, "sent");
 
 console.log("Reconnect recovery planner: PASS");
 
@@ -140,7 +143,26 @@ const continuationRoute = routeGitHubPullRequest(continuationPayload, "delivery-
 assert.equal(continuationRoute.kind, "route");
 assert.equal(continuationRoute.wake.reason, "github_pull_request_continuation");
 
-assert.equal(planRecovery([], wake(80, assignment.headSha, "sent")).state, "waiting_for_assignment");
+for (const phase of ["queued", "sent", "accepted", "deferred", "recovery_required"]) {
+  const preserved = planRecovery([], wake(80, assignment.headSha, phase));
+  assert.equal(preserved.state, "unassigned_delivery_preserved");
+  assert.equal(preserved.deliveryId, "existing-delivery");
+  assert.equal(preserved.activePhase, phase);
+  assert.equal(preserved.queuedDeliveryId, null);
+}
+const orphanedQueued = planRecovery([], null, {
+  pr_number: 80,
+  expected_head_sha: assignment.headSha,
+  delivery_id: "queued-delivery",
+});
+assert.equal(orphanedQueued.state, "unassigned_delivery_preserved");
+assert.equal(orphanedQueued.queuedDeliveryId, "queued-delivery");
+assert.equal(orphanedQueued.deliveryId, null);
+for (const phase of ["sent", "accepted", "deferred", "recovery_required"]) {
+  const drift = planRecovery([assignment], wake(79, assignment.headSha, phase));
+  assert.equal(drift.state, "assignment_drift_requires_owner");
+  assert.equal(drift.deliveryId, "existing-delivery");
+}
 assert.equal(
   planRecovery(
     [

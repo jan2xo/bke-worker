@@ -700,22 +700,35 @@ export class WorkerSession extends DurableObject {
         const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
         const persistedWorker = await tx.get(WORKER_ID_KEY);
         const active = await tx.get(ACTIVE_WAKE_KEY);
+        const queued = await tx.get(QUEUED_WAKE_KEY);
         if (fence !== undefined || epoch !== undefined ||
             persistedWorker !== workerId || this.quarantined(workerId) ||
             (active !== undefined && (!active || !active.wake ||
-              !validateWake(active.wake, workerId)))) {
+              !validateWake(active.wake, workerId))) ||
+            (queued !== undefined && !validateWake(queued, workerId))) {
           return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
         }
 
         const plan = planRecovery(
           assignments.map(assignment => ({...assignment, workerId})),
           active,
+          queued,
         );
         if (plan.state === "waiting_for_assignment") {
-          await tx.delete(ACTIVE_WAKE_KEY);
-          await tx.delete(QUEUED_WAKE_KEY);
           return {status: 200, body: {
             state: "waiting_for_assignment", worker_id: workerId,
+          }};
+        }
+        if (plan.state === "unassigned_delivery_preserved" ||
+            plan.state === "assignment_drift_requires_owner") {
+          // Preserve both durable wake slots and require human reconciliation.
+          return {status: 409, body: {
+            state: plan.state, worker_id: workerId,
+            ...(plan.assignment ? {assignment: plan.assignment} : {}),
+            active_phase: plan.activePhase,
+            active_delivery_id: plan.deliveryId,
+            ...(plan.queuedDeliveryId ?
+              {queued_delivery_id: plan.queuedDeliveryId} : {}),
           }};
         }
 
@@ -731,15 +744,6 @@ export class WorkerSession extends DurableObject {
         if (!validateWake(wake, workerId)) {
           return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
         }
-        if (plan.state === "head_converged_without_redelivery") {
-          await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "recovery_required"});
-          await tx.delete(QUEUED_WAKE_KEY);
-          return {status: 200, body: {
-            state: plan.state, worker_id: workerId, assignment,
-            delivery_id: wake.delivery_id,
-          }};
-        }
-
         await tx.delete(QUEUED_WAKE_KEY);
         await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
         return {status: 200, sendDeliveryId: wake.delivery_id,
