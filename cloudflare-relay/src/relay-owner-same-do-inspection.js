@@ -69,16 +69,37 @@ export async function inspectSameDurableObjectCandidate({
     return block('SAME_DO_RECEIVER_LOCKED');
   if (!storage || typeof storage.get !== 'function' ||
       typeof getWebSockets !== 'function') return block('SAME_DO_CONTEXT_INVALID');
+  // Authenticate the strictly validated signed *claim* BEFORE reading any
+  // persisted DO state. This is only a MAC-validation input, NEVER a trusted
+  // worker/PR assignment or permission to inspect; the actual target is
+  // derived independently from storage immediately after MAC verification.
+  let signedTarget, proof;
+  try {
+    signedTarget = {
+      worker_id: command?.worker_id,
+      repo: command?.repo,
+      pr_number: command?.pr_number,
+      expected_head_sha: command?.expected_head_sha,
+    };
+    if (!validateRetirementTarget(signedTarget))
+      return block('SAME_DO_SIGNATURE_OR_SCOPE_DENIED');
+    proof = await verifyOwnerInspectionCommand({
+      env, command, expected:signedTarget, cryptoImpl, clock,
+    });
+  } catch { return block('SAME_DO_SIGNATURE_OR_SCOPE_DENIED'); }
+  if (proof?.state !== 'COMMAND_SIGNATURE_VERIFIED_ONLY')
+    return block('SAME_DO_SIGNATURE_OR_SCOPE_DENIED');
+
+  // Only a cryptographically valid, short-lived, exact-purpose command can
+  // enter this read path. Even then, HMAC is not human consent or a live
+  // service principal. Compare against BOTH stored worker identity and wakes.
   let before;
   try { before = await readIdentity(storage); }
   catch { return block('SAME_DO_IDENTITY_READ_FAILED'); }
   if (!before) return block('SAME_DO_PERSISTED_TARGET_AMBIGUOUS');
   const expected = before.expected;
-  const proof = await verifyOwnerInspectionCommand({
-    env, command, expected, cryptoImpl, clock,
-  });
-  if (proof.state !== 'COMMAND_SIGNATURE_VERIFIED_ONLY')
-    return block('SAME_DO_SIGNATURE_OR_SCOPE_DENIED');
+  if (!equal(signedTarget, expected))
+    return block('SAME_DO_PERSISTED_TARGET_MISMATCH');
   let observed, after;
   try {
     observed = await readRetirementInspectionConsistency({
