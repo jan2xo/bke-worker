@@ -168,6 +168,8 @@ class AndroidGeckoWorkerService : Service() {
     private val attestationExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "bke-peer-attestation").apply { isDaemon = true }
     }
+    private val pendingAttestationFutures =
+        PendingAttestationFutures<AndroidPeerAttestationEvidence>()
     private val peerTargetGate = PeerTargetObservationGate(TARGET_OBSERVATION_MAX_AGE_MS)
 
     @Volatile
@@ -225,11 +227,17 @@ class AndroidGeckoWorkerService : Service() {
     fun createNativePeerAttestation(
         challenge: ByteArray,
     ): CompletableFuture<AndroidPeerAttestationEvidence?> {
-        val completion = CompletableFuture<AndroidPeerAttestationEvidence?>()
+        val completion = pendingAttestationFutures.create()
+        if (completion.isDone) return completion
+
         val begin = Runnable {
+            if (completion.isDone || !isRunning) {
+                pendingAttestationFutures.complete(completion, null)
+                return@Runnable
+            }
             val snapshot = captureNativePeerAttestationSnapshot()
             if (snapshot == null || !isRunning) {
-                completion.complete(null)
+                pendingAttestationFutures.complete(completion, null)
                 return@Runnable
             }
 
@@ -249,23 +257,28 @@ class AndroidGeckoWorkerService : Service() {
                     }.getOrNull()
 
                     val release = Runnable {
-                        completion.complete(
+                        pendingAttestationFutures.complete(
+                            completion,
                             if (evidence != null &&
                                 isNativePeerAttestationSnapshotCurrent(snapshot)
                             ) evidence else null,
                         )
                     }
-                    if (!mainHandler.post(release)) completion.complete(null)
+                    // If service shutdown races with posting/removing callbacks, the registry
+                    // has already settled this future; late completion is harmless.
+                    if (!mainHandler.post(release)) {
+                        pendingAttestationFutures.complete(completion, null)
+                    }
                 }
             } catch (_: RejectedExecutionException) {
-                completion.complete(null)
+                pendingAttestationFutures.complete(completion, null)
             }
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
             begin.run()
         } else if (!mainHandler.post(begin)) {
-            completion.complete(null)
+            pendingAttestationFutures.complete(completion, null)
         }
         return completion
     }
@@ -496,6 +509,9 @@ class AndroidGeckoWorkerService : Service() {
         chatRecoveryGeneration += 1
         readinessWatchGeneration += 1
         nativePortRecoveryGeneration += 1
+        // Settle callers before removing queued begin/release callbacks. The registry also
+        // prevents a signer result that finishes later from changing the shutdown result.
+        pendingAttestationFutures.close()
         mainHandler.removeCallbacksAndMessages(null)
         workerPort?.disconnect()
         workerPort = null
