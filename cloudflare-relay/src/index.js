@@ -10,6 +10,8 @@ import {
   CONTROL_REPOSITORY,
   normalizeRecoveryAssignments,
   recoverySendFenceKey,
+  persistRecoverySendAttempt,
+  inspectRecoverySendAttempt,
   retainDisplacedWakes,
   inspectSupersessionEvidence,
   classifyUnmatchedRelayAck,
@@ -854,20 +856,27 @@ export class WorkerSession extends DurableObject {
           }};
         }
 
+        if (plan.state === "recovery_evidence_missing_requires_owner") {
+          const evidenceState = await inspectRecoverySendAttempt(tx, plan.wake, false);
+          if (evidenceState === "invalid")
+            return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
+          return {status: 409, body: {
+            state: evidenceState === "previously_sent"
+              ? "recovery_target_previously_sent_requires_owner"
+              : "recovery_evidence_missing_requires_owner",
+            worker_id: workerId, assignment: plan.assignment,
+          }};
+        }
         const wake = plan.wake;
         if (!validateWake(wake, workerId)) {
           return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
         }
-        // A previous WebSocket send reservation for this worker/repo/PR/SHA
-        // may already have reached ChatGPT even after active_wake was
-        // cleared. A reconnect is NOT a new delegated GitHub event.
-        const targetFenceKey = recoverySendFenceKey(wake);
-        if (!targetFenceKey) {
-          return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
-        }
-        if (await tx.get(targetFenceKey) !== undefined) {
-          return {status: 409, body: {
-            state: "recovery_target_previously_sent_requires_owner",
+        const sendState = await inspectRecoverySendAttempt(tx, wake, true);
+        if (sendState !== "resume_persisted_wake") {
+          return {status: sendState === "invalid" ? 423 : 409, body: {
+            state: sendState === "previously_sent"
+              ? "recovery_target_previously_sent_requires_owner"
+              : "recovery_evidence_missing_requires_owner",
             worker_id: workerId, assignment,
           }};
         }
@@ -980,7 +989,7 @@ export class WorkerSession extends DurableObject {
           // because a later reconnect sees an empty active_wake slot.
           const sendFenceKey = recoverySendFenceKey(active.wake);
           if (!sendFenceKey) return null;
-          await tx.put(sendFenceKey, true);
+          await persistRecoverySendAttempt(tx, active.wake);
           await tx.put(ACTIVE_WAKE_KEY, {
             wake: active.wake,
             phase: "sent",

@@ -1141,3 +1141,47 @@ The local Workerd smoke remains a compatibility test, not a dedicated
 injected recovery/reconnect race proof or activated-G0 adversarial
 retirement suite. No deployment, credential/profile mutation, old
 Android wake, or live Cloudflare state action.
+
+
+## G0 handoff: deterministic reconnect-crash gate and missing-history denial
+
+The previous exact-head send reservation blocked a same PR/head reconnect
+only when its marker was present. That left a pre-upgrade or partially
+recorded identity with **both wake slots empty and no reservation** able
+to synthesize a fresh wake from GitHub assignment alone. Such a
+synthetic wake cannot prove that an earlier prompt never happened.
+
+The ordinary recovery planner now classifies this case as
+`recovery_evidence_missing_requires_owner`. Inside the same DO
+transaction, the runtime checks the scoped send reservation: present
+(including malformed value) yields
+`recovery_target_previously_sent_requires_owner`; absent yields
+`recovery_evidence_missing_requires_owner`. Both are HTTP 409 with
+**zero synthetic delivery or storage mutation**. A pre-existing queued
+wake and no sent reservation can still progress under normal
+serialization and exact GitHub assignment checks. Fresh signed
+GitHub webhook dispatch is unchanged; a reconnect is not a new task
+authority.
+
+The existing `tests/reconnect-recovery.test.mjs` now runs executable
+deterministic transaction-adapter scenarios through the **same**
+`persistRecoverySendAttempt()` and
+`inspectRecoverySendAttempt()` functions invoked by production
+WorkerSession: PR/head reservation committed then active slot
+removed/crashed; 12 parallel reconnect attempts all deny; wrong
+worker/repository/PR/head all deny without same-target evidence;
+missing and corrupt marker deny; post-commit-throw and precommit
+rollback are treated as uncertain; read failure propagates; eight
+parallel attempts to reserve a genuine queued wake produce a single
+sent transition. This is a simulated serialized DO transaction, not
+an injected live Workerd crash/SQLite commit-race test.
+
+**Evidence boundary:** The previously safety-denied dedicated
+activated-G0 adversarial Workerd test-file was NOT recreated or
+renamed. Existing normal local Workerd smoke remains required for
+compatibility but does NOT exercise this injected recovery crash
+sequence. Enabled-G0 adversarial cutover tests, real DO witness and
+authenticated owner retirement remain NOT RUN/BLOCKED. Older
+pre-upgrade delivery histories cannot be repaired by the new marker
+or a green Node harness; they require owner reconciliation. No
+activation, deployment, secrets, PR #90 wake/label or credential action.

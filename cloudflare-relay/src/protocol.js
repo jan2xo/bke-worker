@@ -550,11 +550,15 @@ export function planRecovery(assignments, active, queued = null, archivedCount =
     delivery_id: `recovery-${assignment.workerId}-${assignment.number}-${assignment.headSha}`,
   };
 
-  return {
-    state: "recovered",
-    assignment,
-    wake,
+  // A fresh GitHub assignment listing alone is not evidence that an old
+  // ChatGPT prompt was never issued. With no persisted wake to resume,
+  // recover must never synthesize task authority. The caller may inspect
+  // the durable target send fence to report the stronger prior-send reason,
+  // but both marked and missing evidence remain negative decisions.
+  if (!active && !queued) return {
+    state: "recovery_evidence_missing_requires_owner", assignment, wake,
   };
+  return {state:"recovered",assignment,wake};
 }
 
 export function validateAck(value, expectedWorkerId) {
@@ -756,4 +760,28 @@ export function classifyUnmatchedRelayAck(recent, archive, workerId, deliveryId,
 export function recoverySendFenceKey(wake) {
   if (!validateWake(wake, wake?.worker_id)) return null;
   return `recovery_target_sent_v1:${wake.worker_id}:${wake.repo}:${wake.pr_number}:${wake.expected_head_sha}`;
+}
+
+
+/**
+ * These two helpers are the real WorkerSession send/recover transaction
+ * seams. Callers must execute them inside the SAME DO storage transaction
+ * that also changes active_wake; a returned marker never proves remote
+ * ChatGPT receipt, completion, or cancellation.
+ */
+export async function persistRecoverySendAttempt(tx, wake) {
+  const key = recoverySendFenceKey(wake);
+  if (!key || !tx || typeof tx.put !== "function")
+    throw new Error("RECOVERY_SEND_FENCE_INVALID");
+  await tx.put(key, true);
+}
+
+export async function inspectRecoverySendAttempt(tx, wake, hasPersistedWake) {
+  const key = recoverySendFenceKey(wake);
+  if (!key || !tx || typeof tx.get !== "function" ||
+      typeof hasPersistedWake !== "boolean")
+    return "invalid";
+  const value = await tx.get(key); // storage uncertainty MUST propagate
+  if (value !== undefined) return "previously_sent";
+  return hasPersistedWake ? "resume_persisted_wake" : "missing_evidence";
 }

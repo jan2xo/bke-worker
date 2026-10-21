@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath, recoverySendFenceKey } from "../src/protocol.js";
+import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath, recoverySendFenceKey, persistRecoverySendAttempt, inspectRecoverySendAttempt } from "../src/protocol.js";
 
 const realisticIssuePayload = [
   { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/82" } },
@@ -449,3 +449,144 @@ for(const invalid of [{...targetWake,repo:"attacker/other"},
   assert.equal(recoverySendFenceKey(invalid),null);
 }
 assert.equal(recoverySendFenceKey(null),null);
+
+
+// Deterministic in-memory transactional DO-storage adapter exercising the
+// very same send/recovery helpers used by WorkerSession. This is an executable
+// isolated crash/commit-uncertainty test, NOT a live Workerd socket race.
+function durableStorage(initial = []) {
+  let persisted = new Map(initial);
+  let chain = Promise.resolve();
+  let throwAfterCommit = false;
+  let throwBeforeCommit = false;
+  return {
+    snapshot: () => new Map(persisted),
+    failAfterCommit: () => {throwAfterCommit = true;},
+    failBeforeCommit: () => {throwBeforeCommit = true;},
+    transaction(fn) {
+      const result = chain.then(async () => {
+        const next = new Map(persisted);
+        const tx = {
+          get: async key => next.get(key),
+          put: async (key,value) => { next.set(key,value); },
+          delete: async key => { next.delete(key); },
+        };
+        const value = await fn(tx);
+        if (throwBeforeCommit) {
+          throwBeforeCommit = false;
+          throw new Error("STORAGE_PRECOMMIT_UNCERTAIN");
+        }
+        persisted = next;
+        if (throwAfterCommit) {
+          throwAfterCommit = false;
+          throw new Error("STORAGE_POSTCOMMIT_UNCERTAIN");
+        }
+        return value;
+      });
+      chain = result.catch(()=>{});
+      return result;
+    },
+  };
+}
+const crashWake = {...targetWake,reason:"github_pull_request_opened",
+  delivery_id:"original-delivery-before-crash"};
+const expectedRecoveryWake = {
+  ...targetWake,
+  reason:"github_pull_request_reconnect_recovery",
+};
+const sameTargetKey = recoverySendFenceKey(expectedRecoveryWake);
+assert.equal(recoverySendFenceKey(crashWake),sameTargetKey,
+  "send marker must bind to PR/head, NOT event reason or delivery ID");
+const crashStore = durableStorage();
+let secondSends = 0;
+await crashStore.transaction(async tx => {
+  await persistRecoverySendAttempt(tx,crashWake);
+  await tx.put("active_wake",{wake:crashWake,phase:"sent"});
+});
+assert.equal(crashStore.snapshot().get(sameTargetKey),true,
+  "commit to send reservation occurred before socket interruption");
+await crashStore.transaction(tx => tx.delete("active_wake"));
+assert.equal(crashStore.snapshot().has("active_wake"),false);
+const absentSlotPlan=planRecovery([{
+  workerId:"android-worker-a",number:82,headRef:"test/reconnect",
+  headSha:crashWake.expected_head_sha,
+}],null);
+assert.equal(absentSlotPlan.state,"recovery_evidence_missing_requires_owner");
+assert.equal(recoverySendFenceKey(absentSlotPlan.wake),sameTargetKey);
+const recoveryAttempt = () => crashStore.transaction(async tx => {
+  const candidate = absentSlotPlan.wake;
+  const status = await inspectRecoverySendAttempt(tx,candidate,false);
+  if(status !== "resume_persisted_wake") return status;
+  secondSends++;
+  return "UNSAFE_SEND";
+});
+const concurrent=await Promise.all(Array.from({length:12},recoveryAttempt));
+assert.deepEqual(concurrent,Array(12).fill("previously_sent"),
+  "12 concurrent reconnects must all deny on committed prior send marker");
+assert.equal(secondSends,0,"no second WebSocket send was authorized");
+const crossTargetStates=[
+  {...expectedRecoveryWake,worker_id:"other-worker"},
+  {...expectedRecoveryWake,repo:"jan2xo/bke-demo-app"},
+  {...expectedRecoveryWake,pr_number:83},
+  {...expectedRecoveryWake,expected_head_sha:"f".repeat(40)},
+];
+for(const changed of crossTargetStates) {
+  assert.notEqual(recoverySendFenceKey(changed),sameTargetKey);
+  assert.equal(await crashStore.transaction(tx =>
+    inspectRecoverySendAttempt(tx,changed,false)), "missing_evidence",
+    "a wrong-scope request without its own persisted state cannot synthesize");
+}
+assert.equal(await crashStore.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,true)),"previously_sent",
+  "even a queued wake cannot override an existing send attempt");
+const noMarker=durableStorage();
+assert.equal(await noMarker.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,false)),
+  "missing_evidence","missing pre-upgrade evidence cannot prove safe recovery");
+const invalidMarker=durableStorage([[sameTargetKey,{unsafe:"corrupt"}]]);
+assert.equal(await invalidMarker.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,false)),
+  "previously_sent","corrupt present marker still denies rather than healing it");
+const uncertain=durableStorage();
+uncertain.failAfterCommit();
+await assert.rejects(uncertain.transaction(async tx => {
+  await persistRecoverySendAttempt(tx,crashWake);
+  await tx.put("active_wake",{wake:crashWake,phase:"sent"});
+}),/STORAGE_POSTCOMMIT_UNCERTAIN/);
+assert.equal(await uncertain.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,false)),"previously_sent",
+  "a committed send reservation survives post-commit transport uncertainty");
+const rolledBack=durableStorage();
+rolledBack.failBeforeCommit();
+await assert.rejects(rolledBack.transaction(async tx => {
+  await persistRecoverySendAttempt(tx,crashWake);
+  await tx.put("active_wake",{wake:crashWake,phase:"sent"});
+}),/STORAGE_PRECOMMIT_UNCERTAIN/);
+assert.equal(await rolledBack.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,false)),"missing_evidence",
+  "a failed/absent reservation still must not grant synthetic delivery authority");
+await assert.rejects(inspectRecoverySendAttempt({
+  get:async()=>{throw Error("STORAGE_READ_UNCERTAIN");},
+},expectedRecoveryWake,false),/STORAGE_READ_UNCERTAIN/,
+  "read outage must propagate to the outer 503 instead of meaning absence");
+const persistedQueued = durableStorage([["active_wake",{
+  wake:expectedRecoveryWake,phase:"queued",
+}]]);
+assert.equal(await persistedQueued.transaction(tx =>
+  inspectRecoverySendAttempt(tx,expectedRecoveryWake,true)),
+  "resume_persisted_wake",
+  "a genuine queued wake with no prior send remains eligible for one reservation");
+let queuedSends=0;
+await Promise.all(Array.from({length:8},()=>persistedQueued.transaction(async tx=>{
+  const current=await tx.get("active_wake");
+  const s=await inspectRecoverySendAttempt(tx,expectedRecoveryWake,
+    current?.phase==="queued");
+  if(s!=="resume_persisted_wake") return s;
+  await persistRecoverySendAttempt(tx,expectedRecoveryWake);
+  await tx.put("active_wake",{wake:expectedRecoveryWake,phase:"sent"});
+  queuedSends++;
+  return "sent";
+})));
+assert.equal(queuedSends,1,
+  "eight concurrently recovering a persisted queued wake reserve at most one send");
+console.log("Reconnect crash / duplicate-prompt transaction harness: PASS");

@@ -116,14 +116,16 @@ assert runtime.count('await tx.put(RECENT_DELIVERIES_KEY, recentNext);') == 1
 # attempted PR/head when a prior WebSocket send reservation was committed.
 # Only the sender sets the target fence, atomically with marking SENT.
 assert "recoverySendFenceKey" in protocol
-assert "recoverySendFenceKey(active.wake)" in runtime
-assert "await tx.put(sendFenceKey, true)" in runtime
-assert "recoverySendFenceKey(wake)" in runtime
-assert "await tx.get(targetFenceKey)" in runtime
+assert "persistRecoverySendAttempt" in protocol
+assert "inspectRecoverySendAttempt" in protocol
+assert "persistRecoverySendAttempt(tx, active.wake)" in runtime
+assert "inspectRecoverySendAttempt(tx, plan.wake, false)" in runtime
+assert "inspectRecoverySendAttempt(tx, wake, true)" in runtime
 assert '"recovery_target_previously_sent_requires_owner"' in runtime
-assert runtime.index("await tx.put(sendFenceKey, true)") < runtime.index(
-    'phase: "sent",', runtime.index("await tx.put(sendFenceKey, true)")
+assert runtime.index("await persistRecoverySendAttempt(tx, active.wake)") < runtime.index(
+    'phase: "sent",', runtime.index("await persistRecoverySendAttempt(tx, active.wake)")
 )
+assert '"recovery_evidence_missing_requires_owner"' in runtime
 
 # A cleared active wake may temporarily coexist with a queued wake
 # between completed ACK and promotion; another webhook must not overtake.
