@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest } from "../src/protocol.js";
+import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath } from "../src/protocol.js";
 
 const realisticIssuePayload = [
   { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/82" } },
@@ -293,3 +293,28 @@ assert.equal(sameIdentity.deliveryId, "existing-delivery");
 assert.equal(
   planRecovery([assignment], foreignActive, null, 1).archivedCount, 1,
   "identity conflict preserves archive count for owner adjudication");
+
+const checkpointWake = {
+  protocol: 1, type: "wake", worker_id: "android-worker-a",
+  repo: "jan2xo/bke-worker", pr_number: 145,
+  expected_head_sha: "0123456789abcdef0123456789abcdef01234567",
+  reason: "github_pull_request_opened", delivery_id: "checkpoint-bke-145",
+};
+assert.equal(relayCheckpointIssuePath(checkpointWake),
+  "/repos/jan2xo/bke-worker/issues/145/comments",
+  "control-repo checkpoint stays on its exact PR");
+assert.equal(relayCheckpointIssuePath({
+  ...checkpointWake, repo: "jan2xo/bke-demo-app",
+}), "/repos/jan2xo/bke-demo-app/issues/145/comments",
+"same-number demo PR checkpoint MUST NOT write to the control PR");
+assert.equal(relayCheckpointIssuePath({
+  ...checkpointWake, repo: "jan2xo/unknown",
+}), null, "nonallowlisted repository is never a checkpoint target");
+assert.equal(relayCheckpointIssuePath({
+  ...checkpointWake, pr_number: 0,
+}), null, "nonpositive PR number cannot produce a checkpoint target");
+assert.equal(relayCheckpointIssuePath({
+  ...checkpointWake, worker_id: "invalid/worker",
+}), null, "invalid worker identity cannot produce a checkpoint target");
+assert.equal(relayCheckpointIssuePath(null), null,
+  "absent/malformed wake cannot become a GitHub write target");

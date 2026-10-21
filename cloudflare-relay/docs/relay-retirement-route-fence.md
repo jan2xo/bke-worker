@@ -711,3 +711,28 @@ inventory and authoritative owner gate remain independent blockers to
 G0 retirement acceptance. The added tests extend the existing
 reconnect-recovery contract only, not the previously safety-denied
 activated-retirement Workerd test-file.
+
+## Repository-qualified GitHub checkpoint destination (PR #145)
+
+`postRelayCheckpoint()` previously always wrote a relay status comment
+to `jan2xo/bke-worker` using the incoming PR number, even if the
+signed, routed GitHub wake came from the separately allowlisted
+`jan2xo/bke-demo-app`. Reusing PR number 145 in both repositories
+could put a demo wake's status inside BKE Worker PR #145, contaminating
+the **wrong task ledger**. This was an observable cross-repository
+write path independent of recovery ownership checks.
+
+The checkpoint destination is now derived from the *fully validated*
+wake's exact allowlisted `repo` and positive `pr_number`; invalid
+targets cause no outbound GitHub request. The GitHub App installation's
+existing provider permissions still control whether a destination can
+be written. Failure to write an authorized destination does **not**
+fall back to an unrelated repository, mint a new credential, or
+change delivery behavior. No new endpoint, provider scope, GitHub
+installation permission or production activation is added.
+
+The existing reconnect-recovery contract asserts exact control and
+demo path selection plus malformed/unapproved rejection. No new
+activated-G0 adversarial test was created or substituted. This repairs
+ledger integrity, not GitHub cross-repository assignment exclusivity,
+historical displaced prompts, trusted owner consent, or live retirement.

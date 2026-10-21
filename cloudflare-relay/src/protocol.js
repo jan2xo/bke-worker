@@ -604,3 +604,12 @@ export function inspectSupersessionEvidence(existing, workerId, deliveryId = nul
     count: checked.length,
   };
 }
+
+/** Keep GitHub checkpoints in the validated wake's source repository.
+ * Never redirect a demo-repo event into a same-number control-repo PR.
+ * The GitHub App installation token remains provider-permission scoped.
+ */
+export function relayCheckpointIssuePath(wake) {
+  if (!validateWake(wake, wake?.worker_id)) return null;
+  return `/repos/${wake.repo}/issues/${wake.pr_number}/comments`;
+}

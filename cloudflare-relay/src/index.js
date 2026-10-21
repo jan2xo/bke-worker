@@ -15,6 +15,7 @@ import {
   relayBearerMatches,
   isValidWorkerId,
   routeGitHubPullRequest,
+  relayCheckpointIssuePath,
   validateAck,
   validateRegister,
   validateRecoveryRequest,
@@ -65,6 +66,10 @@ function parseJson(text) {
 }
 
 async function postRelayCheckpoint(env, wake, relayState) {
+  // GitHub assignment and checkpoint identity are repository-qualified.
+  // A demo PR number must never write into a same-number control PR.
+  const path = relayCheckpointIssuePath(wake);
+  if (!path) return;
   try {
     const minted = await mintInstallationToken(env);
     const body = [
@@ -75,7 +80,7 @@ async function postRelayCheckpoint(env, wake, relayState) {
     ].join(" • ");
 
     await fetch(
-      `https://api.github.com/repos/${CONTROL_REPOSITORY}/issues/${wake.pr_number}/comments`,
+      `https://api.github.com${path}`,
       {
         method: "POST",
         headers: {
