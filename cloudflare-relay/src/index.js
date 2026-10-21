@@ -996,10 +996,16 @@ export class WorkerSession extends DurableObject {
         const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
         if (fence !== undefined || epoch !== undefined) return "retired";
         const storedWorkerId = await tx.get(WORKER_ID_KEY);
+        const registeredConnectionId = await tx.get(ACTIVE_CONNECTION_KEY);
+        const ackAttachment = socket.deserializeAttachment();
         const current = await tx.get(ACTIVE_WAKE_KEY);
         if (storedWorkerId !== ackWorkerId ||
+            !ackAttachment?.registered ||
+            !registeredConnectionId ||
+            ackAttachment.connectionId !== registeredConnectionId ||
             current?.wake?.worker_id !== ackWorkerId ||
-            current?.wake?.delivery_id !== ack.delivery_id)
+            current?.wake?.delivery_id !== ack.delivery_id ||
+            !["sent", "accepted", "deferred"].includes(current.phase))
           return "conflict";
 
         if (ack.state === "deferred" || ack.state === "accepted") {
@@ -1069,15 +1075,27 @@ export class WorkerSession extends DurableObject {
   }
 
   async clearConnectionIfAuthoritative(socket) {
-    if (await this.persistentlyRetired()) return;
+    // A disconnect may race a later socket registration. A pre-read followed
+    // by an unguarded delete could erase the NEW connection's authority.
+    // Compare-and-delete in the same transaction as retire/register/ACK.
     const attachment = socket.deserializeAttachment() || {};
-    if (this.quarantined(attachment.workerId)) return;
-    const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
-    if (this.quarantined(attachment.workerId) ||
-        (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         await this.quarantinedBoundWorker(attachment.workerId))) return;
-    if (attachment.connectionId === activeConnectionId) {
-      await this.ctx.storage.delete(ACTIVE_CONNECTION_KEY);
+    if (!attachment.registered ||
+        typeof attachment.connectionId !== "string" ||
+        !isValidWorkerId(attachment.workerId) ||
+        this.quarantined(attachment.workerId)) return;
+    try {
+      await this.ctx.storage.transaction(async tx => {
+        const fence = await tx.get(RETIREMENT_FENCE_KEY);
+        const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+        if (fence !== undefined || epoch !== undefined) return;
+        const persistedWorkerId = await tx.get(WORKER_ID_KEY);
+        const activeConnectionId = await tx.get(ACTIVE_CONNECTION_KEY);
+        if (persistedWorkerId !== attachment.workerId ||
+            activeConnectionId !== attachment.connectionId) return;
+        await tx.delete(ACTIVE_CONNECTION_KEY);
+      });
+    } catch {
+      // Outcome could be committed or uncertain. Never retry stale cleanup.
     }
   }
 }
