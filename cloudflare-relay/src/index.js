@@ -554,13 +554,13 @@ export class WorkerSession extends DurableObject {
         }
 
         const samePrActive = active && active.wake.pr_number === wake.pr_number;
-        const suppress = samePrActive && active.phase !== "queued" &&
+        const selfSynchronizeSuppression = samePrActive && active.phase !== "queued" &&
           active.wake.expected_head_sha !== wake.expected_head_sha &&
           wake.reason === "github_pull_request_self_synchronize";
         const recentNext = recent.filter(id => id !== wake.delivery_id)
           .concat(wake.delivery_id).slice(-RECENT_DELIVERY_LIMIT);
         await tx.put(RECENT_DELIVERIES_KEY, recentNext);
-        if (suppress) {
+        if (selfSynchronizeSuppression) {
           return {status: 202, body: {
             state: "self_synchronize_suppressed",
             delivery_id: wake.delivery_id,
@@ -576,20 +576,21 @@ export class WorkerSession extends DurableObject {
           }};
         }
 
-        const supersedesStale = samePrActive &&
+        const supersedesStaleHead = samePrActive &&
           active.wake.expected_head_sha !== wake.expected_head_sha &&
           wake.reason === "github_pull_request_synchronize";
-        const labeledRecovery = samePrActive &&
+        const explicitReassignmentRecovery = samePrActive &&
           wake.reason === "github_pull_request_labeled";
 
-        if (crossPrRecovery || supersedesStale || labeledRecovery) {
+        const supersedesAmbiguousWake =
+          supersedesStaleHead || explicitReassignmentRecovery;
+        if (crossPrRecovery || supersedesAmbiguousWake) {
           await tx.delete(QUEUED_WAKE_KEY);
           await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
+          const statePrefix = explicitReassignmentRecovery ? "recovered" : "superseded";
           return {status: 202, sendDeliveryId: wake.delivery_id,
-            sentState: crossPrRecovery ? "cross_pr_recovered_sent" :
-              labeledRecovery ? "recovered_sent" : "superseded_sent",
-            queuedState: crossPrRecovery ? "cross_pr_recovered_queued" :
-              labeledRecovery ? "recovered_queued" : "superseded_queued",
+            sentState: crossPrRecovery ? "cross_pr_recovered_sent" : statePrefix + "_sent",
+            queuedState: crossPrRecovery ? "cross_pr_recovered_queued" : statePrefix + "_queued",
             body: {delivery_id: wake.delivery_id,
               ...(crossPrRecovery ? {superseded_pr: active.wake.pr_number} : {}),
               superseded_delivery_id: active.wake.delivery_id,
