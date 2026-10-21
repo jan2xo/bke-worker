@@ -495,3 +495,125 @@ The previously safety-denied enabled-G0 adversarial test-file creation
 was not retried or bypassed. Real Workerd concurrency, trusted owner
 authority, one-use private nonce, same-DO witness, full deployment-version
 barrier and independent security review remain required.
+
+
+## Owner-to-WorkerSession retirement authority: exact dependency contract (PR #145)
+
+Status: **DESIGNED / NOT IMPLEMENTED / NO AUTHORIZATION GRANTED**.
+This section describes the *minimum trusted integration* to be proven in a
+separate review. It is not a public route, runnable issuer, or owner consent.
+The current `G0-05` HMAC verifier is purpose-bound to
+`read_retirement_witness_v1` and intentionally returns
+`COMMAND_SIGNATURE_VERIFIED_ONLY`. It cannot be upgraded by interpreting
+a successful MAC as an authenticated owner, permission to read, or authority
+to persist `retirement_fence_v1`. The dormant G0-07 writer also grants NONE.
+
+### Concrete principals and order of operations
+
+1. **Human-owned Admin origin, before any privileged DO read.** A separately
+   secured Command Center control plane must enforce real Cloudflare Access
+   policy and independently verify the Access application JWT cryptographic
+   signature, pinned issuer, application AUD, expiry/not-before, human
+   principal type and explicit Admin authorization. Reject missing/invalid
+   claims, wrong Access application, non-human service-token identity, or
+   provider outage. The owner must explicitly confirm **this specific
+   retirement action** and its named effects *after* viewing a trusted,
+   redacted pending-delivery scope; browser-supplied `owner_authenticated`,
+   consent booleans and copied JWT payload JSON have no authority.
+   Human OAuth/MFA/CAPTCHA remains manual.
+2. **Server-only GitHub authority preflight.** Using the private GitHub App
+   broker, resolve the exact repository ID, OPEN PR number, HEAD SHA,
+   single worker assignment label, and absence of competing assignments.
+   Discover the exact WorkerSession namespace/generation and target worker ID
+   from trusted configuration, not from a caller-chosen DO URL/ID. A GitHub
+   comment or webhook payload alone is insufficient; both can outlive an
+   assignment. Missing or conflicting evidence returns BLOCKED.
+3. **Distinct private command issue.** After owner consent and GitHub proof,
+   a dedicated, nonpublic issuer may produce an audience- and
+   purpose-restricted short-lived retirement decision containing action
+   `retire_preproduction_worker_v1`, exact worker/repo/PR/head, DO generation,
+   owner decision identifier, a cryptographically random one-use nonce,
+   expiry, and the expected **full delivery set**. The issuer must own its
+   signing key and provenance; neither a device, PR, browser, nor generic
+   relay bearer may mint this command. The existing *inspection* HMAC
+   purpose/key is not retirement authority and must not be reused.
+4. **Private transport is NOT identity.** Use an explicitly declared
+   narrowly scoped internal service binding only after the issuer is
+   authenticated. Cloudflare documents that Access `ctx.access` is **not
+   propagated** over service bindings; downstream cannot infer Admin identity
+   from the transport or accept a self-asserted `trusted` property. An
+   independently authenticated, scope-bound issuer assertion and a
+   receiver-side authorization check are both needed. Never expose a
+   public WorkerSession `/retire` endpoint, or put secrets/JWTs in PR logs.
+5. **Real same-DO authoritative witness and CAS.** In the *existing*
+   `WorkerSession` for the derived `v2:<worker_id>`, inspect persisted
+   `worker_id`, exact active/queued delivery IDs, phases, recent IDs,
+   `active_connection_id` and registered live WebSocket attachments.
+   Readbacks must explicitly distinguish `UNKNOWN` from a proven worker
+   ACK: no historical ACK timestamp or remote ChatGPT cancellation can
+   be invented from an empty key. For retirement, perform only a short
+   **same-DO storage transaction**: compare target and expected full
+   delivery/connection state, validate previous epoch/fence, CAS a one-use
+   nonce or consumed decision, and atomically persist an immutable monotonic
+   `retirement_fence_v1` plus `retirement_epoch_v1` or return BLOCKED.
+   Never put slow GitHub/Access/network I/O inside `storage.transaction()`
+   or `blockConcurrencyWhile()`. A GitHub preflight and DO CAS are not
+   a globally atomic distributed transaction: scope freshness,
+   intervening-drift rejection and uncertainty handling require independent
+   proof. Repeated or possibly committed transactions must not auto-retry.
+6. **Socket/prompt and deployment barrier.** After a proven fence+epoch
+   readback, deny subsequent register, send, dispatch, recover, ACK,
+   promotion, and old-socket cleanup; close registered sockets without
+   claiming that this cancels a prompt **already delivered to ChatGPT**.
+   All still-serving deployment generations must be proven to honor the
+   persisted fence before cutover. Any old script, unreadable old socket,
+   uncertain ACK, missing full delivery set, or ambiguous commit remains
+   **BLOCKED / owner adjudication required**, not silently `cancelled`.
+7. **Release is a separate step.** Only after the prior steps have
+   independently passed may a *separately authorized* operation revoke the
+   precise worker credentials and reconcile the GitHub assignment label.
+   If that external step fails, preserve the DO fence and record the partial
+   failure in GitHub; never erase/reissue a wake or reuse `android-worker-a`
+   automatically. Identity reuse/re-enrollment needs its own certified plan.
+
+### Current concrete blocking evidence (2026-10-21)
+
+- [BKE Command Center #30](https://github.com/jan2xo/bke-command-center/issues/30)
+  still lists verified Admin owner identity, private credential issuer and
+  real pairing/revocation proof as pending; it grants **no** G0 retirement
+  consent, issuer, or service-binding implementation.
+- [BKE Worker #135](https://github.com/jan2xo/bke-worker/issues/135)
+  explicitly declares PR #90 / `android-worker-a` with two known pending
+  delivery IDs and **no authoritative cancellation**. The actual DO may
+  contain queued/sent work. No signed owner decision or independent current
+  DO inspection has been supplied.
+- `WorkerSession.dispatch()` still deliberately supports
+  `github_pull_request_synchronize`,
+  `github_pull_request_labeled`, and explicitly marked cross-PR
+  supersession, replacing a persisted ambiguous active delivery in normal
+  v1 routing. The new `recover()` preservation behavior does **not**
+  guarantee preservation against that *separate* dispatch path. This
+  needs an independently tested cutover policy: do not simply remove
+  established v1 supersession behavior or declare old sent work cancelled.
+- The earlier dedicated activated-interlock negative Workerd test-file
+  creation was safety-denied. **Do not retry, rename, or relocate it.**
+  Ordinary 181-test green and local default-OFF smoke are not this proof;
+  a separately permitted independent evidence path must be resolved
+  before security ACCEPT.
+
+### Security acceptance / current stop condition
+
+Required: independently verified human Access identity and per-action
+consent, fresh exact GitHub ownership, private issuer and one-use nonce,
+same-DO live socket/wake proof with honest unknowns, crash-uncertain CAS,
+old-deployment barrier, previously-issued-prompt adjudication, negative
+real-Workerd evidence, and independent exact-head security ACCEPT.
+**No one of these can be replaced by a passing HMAC, a source-only
+candidate witness, green baseline CI, an environment switch, or a GitHub
+label removal.** Until proven, no G0 code may be enabled/deployed or
+merged for retirement authority.
+
+Reference platform contracts:
+- https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/
+- https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/
+- https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/
