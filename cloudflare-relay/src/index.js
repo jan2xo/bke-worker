@@ -371,6 +371,28 @@ export class WorkerSession extends DurableObject {
     return mustStopWorkerRoute(this.env, workerId);
   }
 
+  // An on-switch check against only a wake payload or socket attachment is
+  // insufficient: the actual DO might persist a DIFFERENT worker identity.
+  // Preserve all existing default-OFF v1 behavior and IO. With quarantine
+  // explicitly enabled, fail closed when the stored identity cannot be read,
+  // when it is ambiguous, or when it disagrees with the candidate identity.
+  async quarantinedBoundWorker(workerId) {
+    if (this.quarantined(workerId)) return true;
+    let enabled;
+    try {
+      enabled = this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED;
+    } catch {
+      return true;
+    }
+    if (enabled !== "true") return false;
+    try {
+      const persisted = await this.ctx.storage.get(WORKER_ID_KEY);
+      return persisted !== workerId || this.quarantined(persisted);
+    } catch {
+      return true;
+    }
+  }
+
   async fetch(request) {
     const workerId = request.headers.get("x-bke-worker-id") || "";
     if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
@@ -712,12 +734,14 @@ export class WorkerSession extends DurableObject {
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (this.quarantined(active?.wake?.worker_id)) return false;
     if (!active || active.phase !== "queued") return false;
+    if (await this.quarantinedBoundWorker(active.wake.worker_id)) return false;
 
     const socket = await this.authoritativeSocket();
     if (!socket) return false;
     // Don't send after the authoritative-socket lookup suspended the call.
     if (this.quarantined(active.wake.worker_id) ||
-        this.quarantined(socket.deserializeAttachment()?.workerId)) return false;
+        this.quarantined(socket.deserializeAttachment()?.workerId) ||
+        await this.quarantinedBoundWorker(socket.deserializeAttachment()?.workerId)) return false;
 
     socket.send(JSON.stringify(active.wake));
     await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
@@ -832,6 +856,7 @@ export class WorkerSession extends DurableObject {
     const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
     if (this.quarantined(queued?.worker_id)) return;
     if (!queued) return;
+    if (await this.quarantinedBoundWorker(queued.worker_id)) return;
 
     await this.ctx.storage.delete(QUEUED_WAKE_KEY);
     await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
