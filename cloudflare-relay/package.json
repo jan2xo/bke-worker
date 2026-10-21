@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check src/relay-retirement-fence-policy.js && node --check src/relay-socket-membership-witness.js && node --check src/relay-retirement-witness.js && node --check src/protocol.js && node --check src/github-app.js && node --check src/admin-assignment-inventory.js && node --check src/admin-broker.js && node --check src/index.js && node scripts/validate-config.mjs && bash -n scripts/create-preproduction-worker.sh scripts/configure-github-webhook.sh scripts/configure-github-app-actuator.sh && npm test",
+    "check": "node --check src/relay-retirement-inspection-consistency.js && node --check src/relay-retirement-fence-policy.js && node --check src/relay-socket-membership-witness.js && node --check src/relay-retirement-witness.js && node --check src/protocol.js && node --check src/github-app.js && node --check src/admin-assignment-inventory.js && node --check src/admin-broker.js && node --check src/index.js && node scripts/validate-config.mjs && bash -n scripts/create-preproduction-worker.sh scripts/configure-github-webhook.sh scripts/configure-github-app-actuator.sh && npm test",
     "runtime-smoke": "node tests/runtime-smoke.mjs",
     "reconnect-recovery-test": "node tests/reconnect-recovery.test.mjs"
   }
