@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath, recoverySendFenceKey, persistRecoverySendAttempt, inspectRecoverySendAttempt } from "../src/protocol.js";
+import { normalizeRecoveryAssignments, planRecovery, routeGitHubPullRequest, relayCheckpointIssuePath, recoverySendFenceKey, persistRecoverySendAttempt, inspectRecoverySendAttempt, inspectUnassignedRelayHistory } from "../src/protocol.js";
 
 const realisticIssuePayload = [
   { number: 82, state: "open", labels: [{ name: "bke-worker:android-worker-a" }], pull_request: { url: "https://api.github.com/repos/jan2xo/bke-worker/pulls/82" } },
@@ -468,6 +468,10 @@ function durableStorage(initial = []) {
         const next = new Map(persisted);
         const tx = {
           get: async key => next.get(key),
+          list: async ({prefix,limit}) => new Map(
+            [...next].filter(([key])=>key.startsWith(prefix))
+              .sort(([a],[b])=>a.localeCompare(b)).slice(0,limit)
+          ),
           put: async (key,value) => { next.set(key,value); },
           delete: async key => { next.delete(key); },
         };
@@ -590,3 +594,38 @@ await Promise.all(Array.from({length:8},()=>persistedQueued.transaction(async tx
 assert.equal(queuedSends,1,
   "eight concurrently recovering a persisted queued wake reserve at most one send");
 console.log("Reconnect crash / duplicate-prompt transaction harness: PASS");
+
+
+// An empty active slot and no GitHub labels are NOT evidence that an old
+// worker identity is clean: recent IDs, completed delivery receipts, send
+// reservations, ACK/registration records or old socket IDs may survive.
+assert.equal(await noMarker.transaction(inspectUnassignedRelayHistory),
+  "not_observed", "fresh simulated worker may wait but NOT retire");
+for (const [key,value] of [
+  ["recent_deliveries",["completed-before-upgrade"]],
+  ["relay_observation_v1",{last_ack:{state:"completed"}}],
+  ["active_connection_id","old-websocket-generation"],
+  [sameTargetKey,true],
+  ["durable_delivery_v1:completed-old-webhook","ack_observed_completed"],
+]) {
+  const existingHistory=durableStorage([[key,value]]);
+  assert.equal(await existingHistory.transaction(inspectUnassignedRelayHistory),
+    "observed", "unassigned worker with "+key+" cannot appear clean");
+}
+const malformedHistory=durableStorage([["recent_deliveries",["invalid delivery id"]]]);
+assert.equal(await malformedHistory.transaction(inspectUnassignedRelayHistory),
+  "unknown","corrupt existing recent IDs must never be inferred absent");
+assert.equal(await inspectUnassignedRelayHistory({get:async()=>undefined}),
+  "unknown","missing list capability denies false clean history");
+assert.equal(await inspectUnassignedRelayHistory({
+  get:async()=>undefined,list:async()=>[],
+}),"unknown","malformed storage listing cannot prove absence");
+await assert.rejects(inspectUnassignedRelayHistory({
+  get:async()=>undefined,list:async()=>{throw new Error("HISTORY_READ_UNCERTAIN");},
+}),/HISTORY_READ_UNCERTAIN/,"storage outage must propagate");
+const historyWithNoActive=durableStorage([[sameTargetKey,true]]);
+const concurrentHistoryReads=await Promise.all(Array.from({length:12},()=>
+  historyWithNoActive.transaction(inspectUnassignedRelayHistory)));
+assert.deepEqual(concurrentHistoryReads,Array(12).fill("observed"),
+  "concurrent no-assignment recoveries must all see prior send history");
+console.log("Unassigned relay history / identity-quarantine inspection: PASS");

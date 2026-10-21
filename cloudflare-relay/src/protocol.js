@@ -785,3 +785,32 @@ export async function inspectRecoverySendAttempt(tx, wake, hasPersistedWake) {
   if (value !== undefined) return "previously_sent";
   return hasPersistedWake ? "resume_persisted_wake" : "missing_evidence";
 }
+
+
+/**
+ * Negative-only history scan for a worker with no currently assigned PR or
+ * pending wake. No absence result grants retirement or credential release.
+ * Read only a bounded single key under each transport-evidence prefix.
+ */
+export async function inspectUnassignedRelayHistory(tx) {
+  if (!tx || typeof tx.get !== "function" || typeof tx.list !== "function")
+    return "unknown";
+  const recent = await tx.get("recent_deliveries");
+  if (recent !== undefined) {
+    if (!Array.isArray(recent) || recent.length > 64 ||
+        recent.some(id => !isValidDeliveryId(id))) return "unknown";
+    if (recent.length > 0) return "observed";
+  }
+  // This is intentionally conservative: a past socket or relay observation
+  // is NOT proof of a ChatGPT turn, but is also not proof of cancellation.
+  if (await tx.get("relay_observation_v1") !== undefined) return "observed";
+  if (await tx.get("active_connection_id") !== undefined) return "observed";
+  for (const prefix of ["recovery_target_sent_v1:", "durable_delivery_v1:"]) {
+    const rows = await tx.list({prefix, limit:1});
+    if (!(rows instanceof Map) || rows.size > 1 ||
+        [...rows.keys()].some(k => typeof k !== "string" || !k.startsWith(prefix)))
+      return "unknown";
+    if (rows.size > 0) return "observed";
+  }
+  return "not_observed";
+}

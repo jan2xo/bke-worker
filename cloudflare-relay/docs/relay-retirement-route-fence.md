@@ -1185,3 +1185,42 @@ authenticated owner retirement remain NOT RUN/BLOCKED. Older
 pre-upgrade delivery histories cannot be repaired by the new marker
 or a green Node harness; they require owner reconciliation. No
 activation, deployment, secrets, PR #90 wake/label or credential action.
+
+
+## Unassigned relay identity is not historically clean (PR #145)
+
+GitHub assignment inventory showing zero labeled PRs and both active/queued
+wake slots empty previously returned HTTP 200 `waiting_for_assignment`
+without consulting the more durable delivery evidence. A normally
+completed wake's `durable_delivery_v1:` receipt or a prior
+`recovery_target_sent_v1:` WebSocket send reservation can outlive
+both wake slots and the GitHub worker label. That response could
+mislead a consumer into concluding an orphaned worker identity was
+safe for re-enrollment or release.
+
+The ordinary `recover()` transaction now calls the pure
+`inspectUnassignedRelayHistory(tx)` negative-only helper **in the
+same Durable Object storage transaction**. It treats any validated
+nonempty `recent_deliveries` list, any `relay_observation_v1`
+or `active_connection_id` record, or *any* delivery/send-reservation
+key as historical uncertainty, returning HTTP 409
+`unassigned_history_requires_owner` and making no mutation.
+The prefix scans use Cloudflare SQLite Durable Object
+`tx.list({prefix,limit:1})` and do not retrieve large histories.
+Malformed recent IDs, unsupported/corrupt storage listing and storage
+read exceptions fail closed (423/503) rather than inferring absence.
+When none of these records is observed, the existing
+`waiting_for_assignment` reply remains compatible, but explicitly
+**never grants retirement, credential release, label removal or proof
+that a pre-upgrade ChatGPT turn did not happen**.
+
+The existing `reconnect-recovery.test.mjs` uses the same production
+inspection function inside its deterministic serialized transaction
+adapter, including 12 concurrent reads, legacy recent-only state,
+terminal delivery receipt, prior socket, relay observation, missing
+capabilities, corrupt keys and storage outage. Python contract checks
+the source path. Existing normal local Workerd smoke covers unaffected
+default-OFF routing compatibility but does NOT inject an authenticated
+G0 retirement, activated-mode adversarial tests or a real old #90 DO.
+Those remain NOT RUN/blocked, and no dedicated denied test file was
+reintroduced.

@@ -12,6 +12,7 @@ import {
   recoverySendFenceKey,
   persistRecoverySendAttempt,
   inspectRecoverySendAttempt,
+  inspectUnassignedRelayHistory,
   retainDisplacedWakes,
   inspectSupersessionEvidence,
   classifyUnmatchedRelayAck,
@@ -828,6 +829,17 @@ export class WorkerSession extends DurableObject {
           evidence.count,
         );
         if (plan.state === "waiting_for_assignment") {
+          // Empty wake slots are NOT clean evidence. Prior send reservations,
+          // completed deliveries, relay observations or sockets can survive
+          // after GitHub assignment labels and active/queued slots disappear.
+          const history = await inspectUnassignedRelayHistory(tx);
+          if (history === "observed") return {status: 409, body: {
+            state: "unassigned_history_requires_owner", worker_id: workerId,
+          }};
+          if (history !== "not_observed")
+            return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
+          // A new unassigned worker may wait, but this status NEVER grants
+          // identity reuse, task cancellation, credential or label release.
           return {status: 200, body: {
             state: "waiting_for_assignment", worker_id: workerId,
           }};

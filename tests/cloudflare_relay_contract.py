@@ -127,6 +127,18 @@ assert runtime.index("await persistRecoverySendAttempt(tx, active.wake)") < runt
 )
 assert '"recovery_evidence_missing_requires_owner"' in runtime
 
+# No-assignment recovery must inspect bounded SAME-DO historical markers
+# before reporting a waiting identity, and cannot equate that with release.
+assert "inspectUnassignedRelayHistory" in protocol
+assert "inspectUnassignedRelayHistory(tx)" in runtime
+assert '"unassigned_history_requires_owner"' in runtime
+assert 'tx.list({prefix, limit:1})' in protocol
+recover_body = runtime.split("  async recover(request, workerId) {",1)[1].split(
+    "  async recentDeliveries()",1)[0]
+assert recover_body.index("inspectUnassignedRelayHistory(tx)") < recover_body.index(
+    'state: "waiting_for_assignment"'
+)
+
 # A cleared active wake may temporarily coexist with a queued wake
 # between completed ACK and promotion; another webhook must not overtake.
 dispatch_scope = runtime.split("  async dispatch(request, workerId) {", 1)[1].split(
