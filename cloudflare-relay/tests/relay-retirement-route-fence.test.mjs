@@ -185,6 +185,66 @@ test('malformed, undefined and fabricated transaction results fail closed',async
   }
 });
 
+test('forged SAME-operation retired result without callback is rejected',async()=>{
+  let invoked=false;
+  const storage={
+    async transaction(_callback){
+      // Previously passed because operation matched the requested operation.
+      assert.equal(invoked,false);
+      return Object.freeze({
+        state:'RETIRED_BLOCKED', code:'WORKER_RETIRED', operation:'dispatch',
+      });
+    },
+  };
+  deny(await inspect(storage,input('dispatch')),'TRANSACTION_RESULT_INVALID');
+  assert.equal(invoked,false);
+});
+
+test('adapter cannot replace callback-observed BLOCKED with forged retired state',async()=>{
+  const storage={
+    async transaction(callback){
+      const observed=await callback({
+        async get(key){
+          if (key==='worker_id') return target.worker_id;
+          return undefined; // no persisted fence or epoch
+        },
+      });
+      assert.equal(observed.code,'FENCE_ABSENT_UNVERIFIED');
+      return {state:'RETIRED_BLOCKED',code:'WORKER_RETIRED',operation:'dispatch'};
+    },
+  };
+  deny(await inspect(storage,input('dispatch')),'TRANSACTION_RESULT_INVALID');
+});
+
+test('adapter must preserve the exact callback result, not return its forged clone',async()=>{
+  const full=stored();
+  const storage={
+    async transaction(callback){
+      const observed=await callback({async get(key){return full[key];}});
+      assert.equal(observed.state,'RETIRED_BLOCKED');
+      return {...observed}; // identical values do not establish provenance
+    },
+  };
+  deny(await inspect(storage,input('dispatch')),'TRANSACTION_RESULT_INVALID');
+});
+
+test('adapter calling inspection callback twice cannot claim an observed fence',async()=>{
+  const full=stored();
+  let calls=0;
+  const storage={
+    async transaction(callback){
+      const tx={async get(key){return full[key];}};
+      await callback(tx);
+      calls++;
+      const second=await callback(tx);
+      calls++;
+      return second;
+    },
+  };
+  deny(await inspect(storage,input('dispatch')),'TRANSACTION_RESULT_INVALID');
+  assert.equal(calls,2);
+});
+
 test('request snapshot precedes asynchronous reads and forbids mutable target swapping',async()=>{
   let unblock;
   let reached;
