@@ -626,3 +626,30 @@ for token in (
     "preferences.edit().putString(KEY_PEER_PROFILE_BINDING_ID, created).commit()",
 ):
     assert token in relay_store, token
+
+
+# Native peer attestation lifecycle: snapshots and timestamp freshness must fail closed.
+for token in (
+    "createNativePeerAttestation(challenge: ByteArray)",
+    "Looper.myLooper() != Looper.getMainLooper()",
+    "workerPort !== port",
+    "activeBridgeBindingId != bridgeId",
+    "chatRecoveryGeneration != recoveryGeneration",
+    "nativePortRecoveryGeneration != nativePortGeneration",
+    "readinessWatchGeneration != readinessGeneration",
+    "lastObservedTargetAtMs != observedAt",
+    "TARGET_OBSERVATION_MAX_AGE_MS = 10_000L",
+    "java.time.Instant.parse(message.optString",
+    "age !in 0..TARGET_OBSERVATION_MAX_AGE_MS",
+    "lastObservedTargetAtMs = observedAt",
+):
+    assert token in service, token
+
+for token in (
+    "initialAttestationChallengeBase64Url",
+    "INITIAL_ATTESTATION_CHALLENGE_KEY",
+    "PEER_INITIAL_ATTESTATION_CHALLENGE_UNRECORDED",
+    "PEER_INITIAL_ATTESTATION_CHALLENGE_STORE_FAILED",
+    "setAttestationChallenge(challenge.copyOf())",
+):
+    assert token in peer_attestor, token
