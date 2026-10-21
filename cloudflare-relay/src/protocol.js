@@ -565,20 +565,37 @@ export function retainDisplacedWakes(existing, displaced, workerId) {
   const entries = existing === undefined ? [] : existing;
   if (entries.length > maxEntries) return null;
   const result = [];
-  const seen = new Set();
-  for (const entry of [...entries, ...displaced]) {
+  const byDeliveryId = new Map();
+  // Existing evidence is immutable history, NOT an input that may be
+  // silently normalized. Even identical duplicate stored records mean
+  // its provenance is ambiguous and require owner reconciliation.
+  for (const entry of entries) {
     if (!exactKeys(entry, ["wake", "phase"]) ||
-        !phases.has(entry.phase) || !validateWake(entry.wake, workerId)) return null;
+        !phases.has(entry.phase) || !validateWake(entry.wake, workerId))
+      return null;
     const id = entry.wake.delivery_id;
-    if (seen.has(id)) {
-      // Idempotence is allowed only for a byte-for-byte matching witness.
-      const earlier = result.find(item => item.wake.delivery_id === id);
+    if (byDeliveryId.has(id)) return null;
+    const copy = {wake: {...entry.wake}, phase: entry.phase};
+    byDeliveryId.set(id, copy);
+    result.push(copy);
+  }
+  // A genuine repeated displacement request may be idempotent only when
+  // it matches the single validated historical witness byte-for-byte.
+  // This does NOT repair corrupted historical storage.
+  for (const entry of displaced) {
+    if (!exactKeys(entry, ["wake", "phase"]) ||
+        !phases.has(entry.phase) || !validateWake(entry.wake, workerId))
+      return null;
+    const id = entry.wake.delivery_id;
+    const earlier = byDeliveryId.get(id);
+    if (earlier) {
       if (JSON.stringify(earlier) !== JSON.stringify(entry)) return null;
       continue;
     }
     if (result.length >= maxEntries) return null;
-    seen.add(id);
-    result.push({wake: {...entry.wake}, phase: entry.phase});
+    const copy = {wake: {...entry.wake}, phase: entry.phase};
+    byDeliveryId.set(id, copy);
+    result.push(copy);
   }
   return result;
 }

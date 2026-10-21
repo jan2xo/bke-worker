@@ -214,6 +214,26 @@ assert.deepEqual(retained?.map(x => [x.wake.delivery_id, x.phase]), [
 assert.equal(retainDisplacedWakes(retained, [
   {wake: {...priorWake}, phase: "sent"},
 ], "android-worker-a")?.length, 2, "identical source wake is idempotent");
+assert.equal(retainDisplacedWakes(undefined, [
+  {wake: priorWake, phase: "sent"}, {wake: {...priorWake}, phase: "sent"},
+], "android-worker-a")?.length, 1,
+"repeating one new displacement is idempotent before durable persistence");
+const corruptPersistedDuplicate = [
+  {wake: priorWake, phase: "sent"}, {wake: {...priorWake}, phase: "sent"},
+];
+assert.equal(retainDisplacedWakes(corruptPersistedDuplicate, [],
+  "android-worker-a"), null,
+  "previously stored identical duplicate is corrupt, not a clean state");
+assert.equal(retainDisplacedWakes(corruptPersistedDuplicate, [
+  {wake: queuedWake, phase: "queued"},
+], "android-worker-a"), null,
+  "appending a new wake cannot silently normalize a duplicate persisted archive");
+assert.equal(retainDisplacedWakes(corruptPersistedDuplicate, [
+  {wake: {...priorWake}, phase: "sent"},
+], "android-worker-a"), null,
+  "an otherwise idempotent retry cannot repair already-corrupt persistent history");
+assert.equal(inspectSupersessionEvidence(corruptPersistedDuplicate, "android-worker-a").state,
+  "invalid", "archive read path and append path reject the same duplicate history");
 assert.equal(retainDisplacedWakes(retained, [
   {wake: {...priorWake, expected_head_sha: "a".repeat(40)}, phase: "sent"},
 ], "android-worker-a"), null, "same delivery ID with different head fails closed");

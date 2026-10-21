@@ -901,3 +901,31 @@ late ACK, and verifies subsequent current-wake/queue operation.
 This is ordinary default-OFF WebSocket regression, NOT the previously
 denied dedicated activated-retirement adversarial Workerd suite.
 No new route, deployment, owner authorization or credentials.
+
+
+## Reject duplicate records in already-persisted supersession history (PR #145)
+
+The append-only `supersession_evidence_v1` ledger is reconciliation
+evidence, not a repairable cache. Previously,
+`retainDisplacedWakes(existing, displaced, workerId)` permitted
+**identical duplicate entries in `existing`** and silently returned a
+deduplicated array. The read-only `inspectSupersessionEvidence()`
+correctly rejected such storage, but a normal dispatch or recovery
+append could *rewrite/normalize it* without independent owner
+adjudication. That conflicted with the fail-closed historical-evidence
+contract and could hide an earlier uncertain write.
+
+Append now first validates **every existing record**, refuses any
+previously persisted duplicate delivery ID even if the two records
+are byte-identical, and only then processes new displacements.
+Repeated identical new displacements remain idempotent when the
+historical record is valid; conflicting heads/phases, malformed
+records, and the 64-entry capacity continue to fail closed.
+A conflict returns through the existing `SUPERSESSION_EVIDENCE_CONFLICT`
+path before the incoming delivery is recorded or the wake replaced.
+
+The pre-existing reconnect-recovery test now proves existing-archive
+duplicate rejection for inspection, empty append, new append, and
+idempotent retry, alongside normal new-displacement idempotence.
+No new G0 activation, retirement authorization, public route, owner
+credential, dedicated denied adversarial test file or deployment.
