@@ -506,142 +506,131 @@ export class WorkerSession extends DurableObject {
       return json({ error: "WAKE_INVALID" }, 400);
     }
 
-    const recent = await this.recentDeliveries();
-    if (this.quarantined(workerId) || await this.persistentlyRetired())
-      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
-    if (recent.includes(wake.delivery_id)) {
-      return json({ state: "duplicate", delivery_id: wake.delivery_id }, 200);
-    }
+    // A dispatch must not record a new delivery ID and then mutate wake
+    // state from independent stale reads. This *short*, local DO transaction
+    // shares the marker keys with the future authenticated retirement CAS.
+    // No socket sends or external GitHub/network I/O happen in the tx.
+    let decision;
+    try {
+      decision = await this.ctx.storage.transaction(async tx => {
+        const fence = await tx.get(RETIREMENT_FENCE_KEY);
+        const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+        const persistedWorker = await tx.get(WORKER_ID_KEY);
+        if (fence !== undefined || epoch !== undefined ||
+            persistedWorker !== workerId || this.quarantined(workerId)) {
+          return { status: 423, body: {error: QUARANTINE_DENIAL_CODE} };
+        }
 
-    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
-        (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         (active !== undefined && active !== null &&
-           active.wake?.worker_id !== workerId ||
-          await this.quarantinedBoundWorker(workerId))))
-      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
-    const crossPrRecovery = active &&
-      active.wake.pr_number !== wake.pr_number &&
-      wake.reason === "github_pull_request_cross_pr_recovery";
-    const continuationWake = wake.reason === "github_pull_request_continuation";
-    if (active && active.wake.pr_number !== wake.pr_number && !crossPrRecovery) {
-      return json(
-        {
-          error: "WORKER_WAKE_IN_FLIGHT",
-          active_pr: active.wake.pr_number,
-          incoming_pr: wake.pr_number,
-        },
-        409,
-      );
-    }
-    if (!active && wake.reason === "github_pull_request_cross_pr_recovery") {
-      return json({ error: "CROSS_PR_RECOVERY_NOT_REQUIRED" }, 409);
-    }
+        const recent = (await tx.get(RECENT_DELIVERIES_KEY)) || [];
+        const active = await tx.get(ACTIVE_WAKE_KEY);
+        if (!Array.isArray(recent) ||
+            recent.length > RECENT_DELIVERY_LIMIT ||
+            recent.some(id => typeof id !== "string") ||
+            (active !== undefined && (!active || !active.wake ||
+              !validateWake(active.wake, workerId) ||
+              !["queued","sent","accepted","deferred","recovery_required"]
+                .includes(active.phase)))) {
+          return { status: 423, body: {error: QUARANTINE_DENIAL_CODE} };
+        }
+        if (recent.includes(wake.delivery_id)) {
+          return {status: 200, body: {
+            state: "duplicate", delivery_id: wake.delivery_id,
+          }};
+        }
 
-    const samePrActive = active &&
-      active.wake.pr_number === wake.pr_number;
-    const selfSynchronizeSuppression = samePrActive &&
-      active.phase !== "queued" &&
-      active.wake.expected_head_sha !== wake.expected_head_sha &&
-      wake.reason === "github_pull_request_self_synchronize";
+        const crossPrRecovery = active &&
+          active.wake.pr_number !== wake.pr_number &&
+          wake.reason === "github_pull_request_cross_pr_recovery";
+        const continuationWake = wake.reason === "github_pull_request_continuation";
+        if (active && active.wake.pr_number !== wake.pr_number && !crossPrRecovery) {
+          return {status: 409, body: {
+            error: "WORKER_WAKE_IN_FLIGHT",
+            active_pr: active.wake.pr_number,
+            incoming_pr: wake.pr_number,
+          }};
+        }
+        if (!active && wake.reason === "github_pull_request_cross_pr_recovery") {
+          return {status: 409, body: {error: "CROSS_PR_RECOVERY_NOT_REQUIRED"}};
+        }
 
-    if (!(await this.rememberDelivery(recent, wake.delivery_id, workerId)) ||
-        this.quarantined(workerId) || await this.persistentlyRetired()) {
-      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
-    }
+        const samePrActive = active && active.wake.pr_number === wake.pr_number;
+        const suppress = samePrActive && active.phase !== "queued" &&
+          active.wake.expected_head_sha !== wake.expected_head_sha &&
+          wake.reason === "github_pull_request_self_synchronize";
+        const recentNext = recent.filter(id => id !== wake.delivery_id)
+          .concat(wake.delivery_id).slice(-RECENT_DELIVERY_LIMIT);
+        await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+        if (suppress) {
+          return {status: 202, body: {
+            state: "self_synchronize_suppressed",
+            delivery_id: wake.delivery_id,
+            active_delivery_id: active.wake.delivery_id,
+          }};
+        }
 
-    if (selfSynchronizeSuppression) {
-      return json({
-        state: "self_synchronize_suppressed",
-        delivery_id: wake.delivery_id,
-        active_delivery_id: active.wake.delivery_id,
-      }, 202);
-    }
+        if (continuationWake && active && active.phase !== "queued") {
+          return {status: 202, body: {
+            state: "continuation_blocked_uncertain",
+            delivery_id: wake.delivery_id,
+            active_delivery_id: active.wake.delivery_id,
+          }};
+        }
 
-    const supersedesStaleHead = samePrActive &&
-      active.wake.expected_head_sha !== wake.expected_head_sha &&
-      wake.reason === "github_pull_request_synchronize";
-    const explicitReassignmentRecovery = samePrActive &&
-      wake.reason === "github_pull_request_labeled";
-    const supersedesAmbiguousWake =
-      supersedesStaleHead || explicitReassignmentRecovery;
+        const supersedesStale = samePrActive &&
+          active.wake.expected_head_sha !== wake.expected_head_sha &&
+          wake.reason === "github_pull_request_synchronize";
+        const labeledRecovery = samePrActive &&
+          wake.reason === "github_pull_request_labeled";
 
-    if (continuationWake) {
-      if (active && active.wake.pr_number !== wake.pr_number) {
-        return json({
-          error: "CONTINUATION_PR_MISMATCH",
-          active_pr: active.wake.pr_number,
-          incoming_pr: wake.pr_number,
-        }, 409);
-      }
-      if (active && active.phase !== "queued") {
-        return json({
-          state: "continuation_blocked_uncertain",
-          delivery_id: wake.delivery_id,
+        if (crossPrRecovery || supersedesStale || labeledRecovery) {
+          await tx.delete(QUEUED_WAKE_KEY);
+          await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
+          return {status: 202, sendDeliveryId: wake.delivery_id,
+            sentState: crossPrRecovery ? "cross_pr_recovered_sent" :
+              labeledRecovery ? "recovered_sent" : "superseded_sent",
+            queuedState: crossPrRecovery ? "cross_pr_recovered_queued" :
+              labeledRecovery ? "recovered_queued" : "superseded_queued",
+            body: {delivery_id: wake.delivery_id,
+              ...(crossPrRecovery ? {superseded_pr: active.wake.pr_number} : {}),
+              superseded_delivery_id: active.wake.delivery_id,
+            }};
+        }
+        if (active?.phase === "queued") {
+          await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
+          return {status: 202, body: {
+            state: "coalesced_queued", delivery_id: wake.delivery_id,
+          }};
+        }
+        if (!active) {
+          await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
+          return {status: 202, sendDeliveryId: wake.delivery_id,
+            sentState: "sent", queuedState: "queued",
+            body: {delivery_id: wake.delivery_id}};
+        }
+
+        await tx.put(QUEUED_WAKE_KEY, wake);
+        return {status: 202, body: {
+          state: "queued_behind_active", delivery_id: wake.delivery_id,
           active_delivery_id: active.wake.delivery_id,
-        }, 202);
-      }
-    }
-
-    if (crossPrRecovery) {
-      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake,
-        phase: "queued",
+        }};
       });
-      const sent = await this.sendActiveIfSafe();
-      return json({
-        state: sent ? "cross_pr_recovered_sent" : "cross_pr_recovered_queued",
-        delivery_id: wake.delivery_id,
-        superseded_pr: active.wake.pr_number,
-        superseded_delivery_id: active.wake.delivery_id,
-      }, 202);
+    } catch {
+      // A commit can happen before the adapter reports failure.
+      // Never auto-retry a dispatch after uncertain transaction outcome.
+      return json({error: "DISPATCH_OUTCOME_UNCERTAIN"}, 503);
     }
-
-    if (supersedesAmbiguousWake) {
-      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake,
-        phase: "queued",
-      });
-      const sent = await this.sendActiveIfSafe();
-      const statePrefix = explicitReassignmentRecovery ? "recovered" : "superseded";
-      return json({
-        state: sent ? `${statePrefix}_sent` : `${statePrefix}_queued`,
-        delivery_id: wake.delivery_id,
-        superseded_delivery_id: active.wake.delivery_id,
-      }, 202);
+    if (!decision || !Number.isInteger(decision.status) ||
+        !decision.body || typeof decision.body !== "object") {
+      return json({error: "DISPATCH_OUTCOME_UNCERTAIN"}, 503);
     }
-
-    if (active?.phase === "queued") {
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake,
-        phase: "queued",
-      });
+    if (decision.sendDeliveryId) {
+      const sent = await this.sendActiveIfSafe(decision.sendDeliveryId);
       return json({
-        state: "coalesced_queued",
-        delivery_id: wake.delivery_id,
-      }, 202);
+        state: sent ? decision.sentState : decision.queuedState,
+        ...decision.body,
+      }, decision.status);
     }
-
-    if (!active) {
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake,
-        phase: "queued",
-      });
-      const sent = await this.sendActiveIfSafe();
-      return json({
-        state: sent ? "sent" : "queued",
-        delivery_id: wake.delivery_id,
-      }, 202);
-    }
-
-    await this.ctx.storage.put(QUEUED_WAKE_KEY, wake);
-    return json({
-      state: "queued_behind_active",
-      delivery_id: wake.delivery_id,
-      active_delivery_id: active.wake.delivery_id,
-    }, 202);
+    return json(decision.body, decision.status);
   }
 
   async recover(request, workerId) {
