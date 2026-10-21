@@ -122,7 +122,7 @@ test('invalid / untrusted ctx provider blocks without touching storage writes',a
   }
 });
 
-test('storage error refuses prior to signature verification and hides exceptions',async()=>{
+test('storage error after successful signature verification remains redacted',async()=>{
   const r=await call(await signedCommand(),{deps:makeData(state,{failKey:'worker_id'})});
   assert.equal(r.code,'SAME_DO_IDENTITY_READ_FAILED');deny(r);
 });
@@ -153,7 +153,82 @@ test('signed caller target cannot override actual persisted worker/PR/head',asyn
     {expected_head_sha:'f'.repeat(40)},{repo:'jan2xo/bke-demo-app'}];
   for(const change of mismatches){
     const r=await call(await signedCommand(change));
-    assert.equal(r.code,'SAME_DO_SIGNATURE_OR_SCOPE_DENIED');deny(r);
+    assert.equal(r.code,'SAME_DO_PERSISTED_TARGET_MISMATCH');deny(r);
+  }
+});
+
+test('missing, malformed and bad MAC must perform ZERO persisted reads or socket samples',async()=>{
+  const signed=await signedCommand();
+  const cases=[
+    undefined, null, {}, {worker_id:target.worker_id},
+    {...signed,signature:'A'.repeat(43)},
+    {...signed,signature:'not-a-base64url-signature'},
+    {...signed,nonce:'c'.repeat(64)},
+    {...signed,issued_at_ms:NOW+1},
+    {...signed,purpose:'retire_worker'},
+    {...signed,owner_approved:true},
+  ];
+  for(const stored of [structuredClone(state), {worker_id:target.worker_id}, {}]){
+    for(const command of cases){
+      let reads=0,samples=0,writes=0;
+      const deps={
+        storage:{
+          async get(){reads++;return stored.worker_id;},
+          async put(){writes++;throw Error('NO_WRITE');},
+          async delete(){writes++;throw Error('NO_DELETE');},
+          async transaction(){writes++;throw Error('NO_TRANSACTION');},
+        },
+        getWebSockets(){samples++;throw Error('NO_SOCKET_SAMPLE');},
+      };
+      const result=await call(command,{deps});
+      assert.equal(result.code,'SAME_DO_SIGNATURE_OR_SCOPE_DENIED');
+      assert.equal(reads,0,'pre-HMAC storage access');
+      assert.equal(samples,0,'pre-HMAC socket sampling');
+      assert.equal(writes,0,'pre-HMAC storage mutation');
+      deny(result);
+    }
+  }
+});
+
+test('valid MAC with WRONG persisted worker/PR/head denies after comparison and before socket sampling',async()=>{
+  const valid=await signedCommand();
+  for(const stored of [
+    {...state,worker_id:'other-worker',active_wake:{
+      ...state.active_wake,wake:{...wake,worker_id:'other-worker'},
+    },queued_wake:{...wake,worker_id:'other-worker'}},
+    {...state,active_wake:{...state.active_wake,wake:{...wake,pr_number:91}},
+      queued_wake:{...wake,pr_number:91}},
+    {...state,active_wake:{...state.active_wake,
+      wake:{...wake,expected_head_sha:'f'.repeat(40)}},
+      queued_wake:{...wake,expected_head_sha:'f'.repeat(40)}},
+  ]){
+    let samples=0;
+    const deps=makeData(stored);
+    deps.getWebSockets=()=>{samples++;throw Error('MUST_NOT_SAMPLE');};
+    const r=await call(valid,{deps});
+    assert.equal(r.code,'SAME_DO_PERSISTED_TARGET_MISMATCH');
+    assert.ok(deps.stats().reads>0,'authenticated command may read the DO');
+    assert.equal(deps.stats().writes,0);
+    assert.equal(samples,0,'must refuse before G0-04 sampling');
+    deny(r);
+  }
+});
+
+test('crypto errors and wrong HMAC key cannot touch persisted state',async()=>{
+  const cmd=await signedCommand();
+  for(const extra of [
+    {cryptoImpl:{}},
+    {env:{...env,BKE_G0_OWNER_INSPECTION_KEY_B64:
+      Buffer.from(new Uint8Array(32).fill(99)).toString('base64url')}},
+  ]){
+    let reads=0,samples=0;
+    const deps={
+      storage:{get(){reads++;throw Error('DO_PROBE');}},
+      getWebSockets(){samples++;throw Error('SOCKET_PROBE');},
+    };
+    const r=await call(cmd,{deps,...extra});
+    assert.equal(r.code,'SAME_DO_SIGNATURE_OR_SCOPE_DENIED');
+    assert.equal(reads,0);assert.equal(samples,0);deny(r);
   }
 });
 
@@ -208,7 +283,7 @@ test('G0-04 registered socket collisions propagate hard denial',async()=>{
   assert.equal(r.code,'SAME_DO_WITNESS_UNAVAILABLE');deny(r);
 });
 
-test('oversized Unicode persisted wake metadata is rejected before signature check',async()=>{
+test('oversized Unicode persisted wake metadata is rejected after valid signature',async()=>{
   const huge={...state,queued_wake:{...wake,extra:'界'.repeat(24000)}};
   const r=await call(await signedCommand(),{deps:makeData(huge)});
   assert.equal(r.code,'SAME_DO_PERSISTED_TARGET_AMBIGUOUS');deny(r);
