@@ -212,7 +212,7 @@ test('rejects guessed IDs, unordered/duplicate sets, forged authority, invalid r
     {...request,retirement_id:'with spaces'},
     {...request,expected_delivery_ids:[]},
     {...request,expected_delivery_ids:[delivery,delivery]},
-    {...request,expected_delivery_ids:['bad']},
+    {...request,expected_delivery_ids:['bad delivery id']},
     {...request,expected_delivery_ids:[delivery,delivery2,'extra']},
   ]){
     const db=store();
