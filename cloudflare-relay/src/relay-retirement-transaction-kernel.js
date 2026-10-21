@@ -65,6 +65,37 @@ function validateRequest(req) {
     typeof id === 'string' && isValidDeliveryId(id) &&
     sorted[i] === id && (i === 0 || sorted[i-1] !== id));
 }
+// Canonicalize and validate BEFORE the first await. The caller retains its
+// original reference and may change nested target/array values while async
+// DO transaction reads are suspended. Never pass those references onward.
+const TARGET_KEYS = Object.freeze([
+  'worker_id','repo','pr_number','expected_head_sha',
+]);
+function snapshotRequest(request) {
+  try {
+    if (!exact(request,REQUEST_KEYS)) return null;
+    const inputTarget=request.target;
+    const inputIds=request.expected_delivery_ids;
+    if (!exact(inputTarget,TARGET_KEYS) ||
+        !Array.isArray(inputIds) ||
+        inputIds.length < 1 || inputIds.length > 2) return null;
+    const target=Object.freeze({
+      worker_id:inputTarget.worker_id, repo:inputTarget.repo,
+      pr_number:inputTarget.pr_number,
+      expected_head_sha:inputTarget.expected_head_sha,
+    });
+    const expected_delivery_ids=Object.freeze([...inputIds]);
+    const canonical=Object.freeze({
+      target,
+      retirement_id:request.retirement_id,
+      created_at_ms:request.created_at_ms,
+      expected_delivery_ids,
+    });
+    return validateRequest(canonical) ? canonical : null;
+  } catch {
+    return null; // throwing getter/proxy must not enter the transaction
+  }
+}
 function makeFence(req) {
   return Object.freeze({
     schema_version:1, status:'retired', ...req.target,
@@ -80,7 +111,8 @@ async function inTransaction(tx,req) {
   // Any missing half, mismatch, attempted downgrade, or stale deletion blocks.
   const storedFence = await tx.get(RETIREMENT_FENCE_KEY);
   const highWater = await tx.get(RETIREMENT_EPOCH_KEY);
-  if (storedFence !== undefined || highWater !== undefined) {
+  const existing = storedFence !== undefined || highWater !== undefined;
+  if (existing) {
     if (!validateRetiredFenceRecord(storedFence) ||
         !validEpoch(highWater) || storedFence.epoch !== highWater) {
       return blocked('FENCE_EPOCH_INCONSISTENT');
@@ -92,11 +124,12 @@ async function inTransaction(tx,req) {
         storedFence.created_at_ms !== req.created_at_ms) {
       return blocked('EXISTING_FENCE_DECISION_CONFLICT');
     }
-    return {state:'EXISTING',record:storedFence};
   }
 
-  // Existing G0-01 witness checks exact persisted wake, recent delivery IDs
-  // and worker identity within the *same* transaction callback.
+  // G0-01 witness and exact delivery-set matching apply to BOTH first-write
+  // and existing-fence observations. A matching retirement ID alone is not
+  // a successful delivery-set CAS after the persisted wake changes.
+  // All checks happen inside the same injected transaction callback.
   const witness = await readRelayRetirementWitness(tx,req.target);
   if (witness.state !== 'OBSERVED_ONLY')
     return blocked('PERSISTED_WAKE_OR_IDENTITY_UNTRUSTED');
@@ -111,6 +144,7 @@ async function inTransaction(tx,req) {
   if (distinct.length !== req.expected_delivery_ids.length ||
       distinct.some((id,i)=>id !== req.expected_delivery_ids[i]))
     return blocked('DELIVERY_SET_MISMATCH');
+  if (existing) return {state:'EXISTING',record:storedFence};
 
   const record=makeFence(req);
   if (!validateRetiredFenceRecord(record))
@@ -132,13 +166,16 @@ async function inTransaction(tx,req) {
  * this function CANNOT prove durable retirement or allow assignment release.
  */
 export async function stageRetirementFenceCandidate(storage,request) {
-  if (!validateRequest(request)) return blocked('REQUEST_INVALID');
+  // Snapshot all caller-owned fields synchronously, including nested objects
+  // and arrays, before crossing any async/transaction boundary.
+  const canonical=snapshotRequest(request);
+  if (!canonical) return blocked('REQUEST_INVALID');
   if (!storage || typeof storage.transaction !== 'function' ||
       typeof storage.get !== 'function')
     return blocked('TRANSACTION_UNAVAILABLE');
   let outcome;
   try {
-    outcome=await storage.transaction(tx=>inTransaction(tx,request));
+    outcome=await storage.transaction(tx=>inTransaction(tx,canonical));
   } catch {
     return blocked('TRANSACTION_OUTCOME_UNCERTAIN');
   }
