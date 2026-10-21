@@ -102,6 +102,16 @@ for token in (
 
     assert token in runtime, token
 
+# Every accepted/suppressed webhook ID must survive recent-cache rollover,
+# including normally completed wakes not represented in the supersession
+# archive. All successful dispatch decisions use one atomic receipt writer.
+assert 'DURABLE_DELIVERY_KEY_PREFIX = "durable_delivery_v1:"' in runtime
+assert '"DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER"' in runtime
+assert 'await tx.get(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id)' in runtime
+assert 'await tx.put(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id, true)' in runtime
+assert runtime.count('await recordNewDelivery();') == 6
+assert runtime.count('await tx.put(RECENT_DELIVERIES_KEY, recentNext);') == 1
+
 # A cleared active wake may temporarily coexist with a queued wake
 # between completed ACK and promotion; another webhook must not overtake.
 dispatch_scope = runtime.split("  async dispatch(request, workerId) {", 1)[1].split(

@@ -444,6 +444,20 @@ try {
 
   await new Promise((resolve) => setTimeout(resolve, 100));
 
+  // wake2 was completed and is NOT a displaced wake. Its original delivery
+  // ID has been evicted by 66 suppressions; it must still be permanently
+  // denied rather than accepted as fresh work.
+  const completedReplay = await postWebhook({
+    deliveryId: "cloudflare-smoke-002",
+    action: "synchronize",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    sender: "external-user",
+    headRepoOwner: "jan2xo",
+  });
+  assert.equal(completedReplay.status, 409);
+  assert.equal(completedReplay.body.relay.error,
+    "DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER");
+
   const duplicate = await postWebhook({
     deliveryId: "cloudflare-smoke-001",
     action: "opened",

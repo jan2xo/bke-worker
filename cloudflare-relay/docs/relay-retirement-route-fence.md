@@ -1006,3 +1006,48 @@ existing Node and Workerd smoke remain required compatibility
 proof. No owner authority, Cloudflare deployment/live DO operation,
 new public endpoint, credential or prohibited activated-G0 test
 file was introduced.
+
+
+## Permanent per-delivery webhook replay receipt (PR #145)
+
+The 64-entry `recent_deliveries` cache provides bounded idempotence,
+and `supersession_evidence_v1` tracks **displaced** wakes. Neither
+records a wake that was normally `completed` or `rejected` after its
+active slot is cleared. Once 64 subsequent delivery IDs evict that
+wake, a repeated old GitHub webhook (same original delivery ID) could
+previously re-enter dispatch, possibly sending a **second ChatGPT
+prompt**. This is independent of the superseded-delivery replay fence.
+
+Normal `WorkerSession.dispatch()` now checks a durable DO-local
+`durable_delivery_v1:<delivery_id>` receipt in the same storage
+transaction as the recent cache, slots, archive, and retirement
+markers. While a delivery remains recent, its duplicate preserves
+the v1 `200 duplicate` compatibility behavior. Once evicted, a
+receipt's presence returns `DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER`
+(409) **without new delivery state or prompt send**. Previously
+archived IDs still return the existing
+`ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER` (409).
+
+For all six **successful** dispatch decision branches, a single
+`recordNewDelivery()` helper writes the durable receipt together
+with the 64-item recent cache *inside the original DO transaction*.
+If any decision is rejected or the storage commit outcome is
+uncertain, it is not treated as a proven fresh delivery; no automatic
+retry or replay authority is created. Receipts contain no token,
+prompt, socket, profile or secret. They are non-authoritative
+webhook-transport deduplication evidence, **not** a parallel GitHub
+task ledger.
+
+**Retention:** receipts intentionally have no TTL or automatic
+eviction, because expiry would recreate the original replay hole.
+This consumes DO storage per distinct delivered/suppressed webhook
+and therefore needs owner-managed capacity monitoring and eventual
+identity rotation; deleting receipts without authoritative retirement
+and full historical reconciliation is forbidden. Receipts **cannot
+retroactively prove** that old pre-upgrade deliveries are safe.
+Existing runtime smoke now replays an evicted *completed* wake
+that was not archived and requires 409; it also retains the older
+archived-replay 409 proof and ordinary same-repo continuation.
+These are default-OFF relay regressions, not activated-G0
+adversarial retirement/credential tests. No deployment or live DO
+operation was performed.

@@ -29,6 +29,9 @@ const RECENT_DELIVERY_LIMIT = 64;
 const ACTIVE_WAKE_KEY = "active_wake";
 const QUEUED_WAKE_KEY = "queued_wake";
 const RECENT_DELIVERIES_KEY = "recent_deliveries";
+// Durable, per-delivery replay barrier independent of the 64-item
+// compatibility cache. Must never be TTL-evicted or silently compacted.
+const DURABLE_DELIVERY_KEY_PREFIX = "durable_delivery_v1:";
 const SUPERSESSION_EVIDENCE_KEY = "supersession_evidence_v1";
 const RELAY_OBSERVATION_KEY = "relay_observation_v1";
 const WORKER_ID_KEY = "worker_id";
@@ -591,6 +594,14 @@ export class WorkerSession extends DurableObject {
           return {status: 409, body: {
             error: "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER",
           }};
+        // Completed/rejected/previously suppressed deliveries can outlive
+        // BOTH the rolling cache and displaced-wake archive. Only a
+        // permanent receipt can prevent their old webhook ID from rearming.
+        // The presence of *any* stored value fails closed, even if damaged.
+        if (await tx.get(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id) !== undefined)
+          return {status: 409, body: {
+            error: "DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER",
+          }};
         if (active?.wake?.delivery_id === wake.delivery_id ||
             queued?.delivery_id === wake.delivery_id)
           return {status: 409, body: {
@@ -618,8 +629,15 @@ export class WorkerSession extends DurableObject {
           wake.reason === "github_pull_request_self_synchronize";
         const recentNext = recent.filter(id => id !== wake.delivery_id)
           .concat(wake.delivery_id).slice(-RECENT_DELIVERY_LIMIT);
-        if (selfSynchronizeSuppression) {
+        // A successful dispatch decision and its replay receipt are one
+        // SAME-DO transaction. Rejected/conflicting events call neither.
+        // The journal is delivery transport evidence, not a task database.
+        const recordNewDelivery = async () => {
+          await tx.put(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id, true);
           await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+        };
+        if (selfSynchronizeSuppression) {
+          await recordNewDelivery();
           return {status: 202, body: {
             state: "self_synchronize_suppressed",
             delivery_id: wake.delivery_id,
@@ -628,7 +646,7 @@ export class WorkerSession extends DurableObject {
         }
 
         if (continuationWake && active && active.phase !== "queued") {
-          await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+          await recordNewDelivery();
           return {status: 202, body: {
             state: "continuation_blocked_uncertain",
             delivery_id: wake.delivery_id,
@@ -650,7 +668,7 @@ export class WorkerSession extends DurableObject {
             {wake: active.wake, phase: active.phase},
             ...(oldQueued === undefined ? [] : [{wake: oldQueued, phase: "queued"}]),
           ]))) return {status: 409, body: {error: "SUPERSESSION_EVIDENCE_CONFLICT"}};
-          await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+          await recordNewDelivery();
           await tx.delete(QUEUED_WAKE_KEY);
           await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
           const statePrefix = explicitReassignmentRecovery ? "recovered" : "superseded";
@@ -666,7 +684,7 @@ export class WorkerSession extends DurableObject {
           if (!(await preserveDisplacedWakes(tx, workerId, [
             {wake: active.wake, phase: "queued"},
           ]))) return {status: 409, body: {error: "SUPERSESSION_EVIDENCE_CONFLICT"}};
-          await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+          await recordNewDelivery();
           await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
           return {status: 202, body: {
             state: "coalesced_queued", delivery_id: wake.delivery_id,
@@ -683,7 +701,7 @@ export class WorkerSession extends DurableObject {
           }};
         }
         if (!active) {
-          await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+          await recordNewDelivery();
           await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
           return {status: 202, sendDeliveryId: wake.delivery_id,
             sentState: "sent", queuedState: "queued",
@@ -695,7 +713,7 @@ export class WorkerSession extends DurableObject {
             !(await preserveDisplacedWakes(tx, workerId, [
               {wake: oldQueued, phase: "queued"},
             ]))) return {status: 409, body: {error: "SUPERSESSION_EVIDENCE_CONFLICT"}};
-        await tx.put(RECENT_DELIVERIES_KEY, recentNext);
+        await recordNewDelivery();
         await tx.put(QUEUED_WAKE_KEY, wake);
         return {status: 202, body: {
           state: "queued_behind_active", delivery_id: wake.delivery_id,
