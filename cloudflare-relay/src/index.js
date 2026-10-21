@@ -1131,8 +1131,12 @@ export class WorkerSession extends DurableObject {
           // The stored historical ID is only a *reason to ignore* an
           // out-of-date ACK. Never record it as another observed completed
           // ACK, change active_wake, promote or send a wake.
-          if (stale === "stale_recent" || stale === "stale_archived")
+          // Preserve the canonical v1 literal dedupe seam for the relay
+          // contract. Historical archive validation has already completed
+          // above, so this is only an idempotent stale-ACK observation.
+          if (stale === "stale_recent" && recent.includes(ack.delivery_id))
             return "ignored_stale";
+          if (stale === "stale_archived") return "ignored_stale";
           return "conflict";
         }
         if (!["sent", "accepted", "deferred"].includes(current.phase))
