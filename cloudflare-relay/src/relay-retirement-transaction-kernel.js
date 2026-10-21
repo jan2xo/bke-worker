@@ -173,12 +173,27 @@ export async function stageRetirementFenceCandidate(storage,request) {
   if (!storage || typeof storage.transaction !== 'function' ||
       typeof storage.get !== 'function')
     return blocked('TRANSACTION_UNAVAILABLE');
+  // Never accept a transaction adapter's fabricated return as proof its
+  // callback actually inspected/wrote this DO. A callback may be skipped,
+  // invoked repeatedly, or its result replaced. This mirrors G0-08's
+  // callback-provenance invariant, while still granting NO owner authority.
   let outcome;
+  let callbackCalls=0;
+  let completedResult;
   try {
-    outcome=await storage.transaction(tx=>inTransaction(tx,canonical));
+    outcome=await storage.transaction(async tx=>{
+      callbackCalls++;
+      const result=await inTransaction(tx,canonical);
+      completedResult=result;
+      return result;
+    });
   } catch {
+    // The storage adapter could throw AFTER commit. Do not infer rollback.
     return blocked('TRANSACTION_OUTCOME_UNCERTAIN');
   }
+  if (callbackCalls!==1 || completedResult===undefined ||
+      outcome!==completedResult)
+    return blocked('TRANSACTION_RESULT_INVALID');
   if (!outcome || outcome.state === 'BLOCKED') {
     return outcome?.state === 'BLOCKED' ? outcome : blocked('TRANSACTION_RESULT_INVALID');
   }

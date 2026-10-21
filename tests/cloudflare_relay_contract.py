@@ -102,6 +102,58 @@ for token in (
 
     assert token in runtime, token
 
+# Every accepted/suppressed webhook ID must survive recent-cache rollover,
+# including normally completed wakes not represented in the supersession
+# archive. All successful dispatch decisions use one atomic receipt writer.
+assert 'DURABLE_DELIVERY_KEY_PREFIX = "durable_delivery_v1:"' in runtime
+assert '"DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER"' in runtime
+assert 'await tx.get(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id)' in runtime
+assert 'await tx.put(DURABLE_DELIVERY_KEY_PREFIX + wake.delivery_id, true)' in runtime
+assert runtime.count('await recordNewDelivery();') == 6
+assert runtime.count('await tx.put(RECENT_DELIVERIES_KEY, recentNext);') == 1
+
+# Reconnect recovery must not synthesize a second wake for an already
+# attempted PR/head when a prior WebSocket send reservation was committed.
+# Only the sender sets the target fence, atomically with marking SENT.
+assert "recoverySendFenceKey" in protocol
+assert "persistRecoverySendAttempt" in protocol
+assert "inspectRecoverySendAttempt" in protocol
+assert "persistRecoverySendAttempt(tx, active.wake)" in runtime
+assert "inspectRecoverySendAttempt(tx, plan.wake, false)" in runtime
+assert "inspectRecoverySendAttempt(tx, wake, true)" in runtime
+assert '"recovery_target_previously_sent_requires_owner"' in runtime
+assert runtime.index("await persistRecoverySendAttempt(tx, active.wake)") < runtime.index(
+    'phase: "sent",', runtime.index("await persistRecoverySendAttempt(tx, active.wake)")
+)
+assert '"recovery_evidence_missing_requires_owner"' in runtime
+
+# No-assignment recovery must inspect bounded SAME-DO historical markers
+# before reporting a waiting identity, and cannot equate that with release.
+assert "inspectUnassignedRelayHistory" in protocol
+assert "inspectUnassignedRelayHistory(tx)" in runtime
+assert '"unassigned_history_requires_owner"' in runtime
+assert 'tx.list({prefix, limit:1})' in protocol
+recover_body = runtime.split("  async recover(request, workerId) {",1)[1].split(
+    "  async recentDeliveries()",1)[0]
+assert recover_body.index("inspectUnassignedRelayHistory(tx)") < recover_body.index(
+    'state: "waiting_for_assignment"'
+)
+
+# A cleared active wake may temporarily coexist with a queued wake
+# between completed ACK and promotion; another webhook must not overtake.
+dispatch_scope = runtime.split("  async dispatch(request, workerId) {", 1)[1].split(
+    "  async recover(request, workerId) {", 1
+)[0]
+assert 'if (!active && queued) {' in dispatch_scope
+assert '"QUEUED_DELIVERY_PENDING_PROMOTION"' in dispatch_scope
+assert dispatch_scope.index('if (!active && queued) {') < dispatch_scope.index(
+    'if (!active) {'
+)
+assert dispatch_scope.index('if (!active && queued) {') < dispatch_scope.index(
+    'await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"})',
+    dispatch_scope.index('if (!active && queued) {')
+)
+
 for token in (
     'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
     'CONTROL_REPOSITORY_ID = "1354026486"',

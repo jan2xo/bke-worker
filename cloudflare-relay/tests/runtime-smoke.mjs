@@ -79,7 +79,7 @@ class RawWebSocket {
     this.waiters = [];
   }
 
-  async connect(pathname) {
+  async connect(pathname, bearerToken = relayToken) {
     const key = randomBytes(16).toString("base64");
     const expectedAccept = createHash("sha1")
       .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
@@ -102,7 +102,7 @@ class RawWebSocket {
             "Connection: Upgrade",
             `Sec-WebSocket-Key: ${key}`,
             "Sec-WebSocket-Version: 13",
-            `Authorization: Bearer ${relayToken}`,
+            `Authorization: Bearer ${bearerToken}`,
             "",
             "",
           ].join("\r\n"),
@@ -212,27 +212,29 @@ async function postWebhook({
   action,
   sha,
   number = 13,
+  repo = "jan2xo/bke-worker",
   prBody = "",
   priorBody = null,
   addedLabel = null,
   sender = "external-user",
   headRepoOwner = "jan2xo",
+  workerLabelId = workerId,
 }) {
   const body = JSON.stringify({
     action,
     number,
     sender: { login: sender },
-    repository: { full_name: "jan2xo/bke-worker" },
+    repository: { full_name: repo },
     pull_request: {
       number,
       state: "open",
       body: prBody,
-      labels: [{ name: `bke-worker:${workerId}` }],
+      labels: [{ name: `bke-worker:${workerLabelId}` }],
       head: {
         ref: "test/utm-wss-relay-smoke",
         sha,
         repo: {
-          full_name: "jan2xo/bke-worker",
+          full_name: repo,
           owner: { login: headRepoOwner },
         },
       },
@@ -304,6 +306,21 @@ try {
     state: "accepted",
   }));
 
+  // A same-number PR in the other signed, allowlisted repository is NOT
+  // the in-flight control-repo assignment. It must neither coalesce nor
+  // supersede the original delivery, even with a matching PR number.
+  const foreignSameNumber = await postWebhook({
+    repo: "jan2xo/bke-demo-app",
+    deliveryId: "cloudflare-smoke-foreign-001",
+    action: "synchronize",
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+  assert.equal(foreignSameNumber.status, 409);
+  assert.equal(foreignSameNumber.body.relay.error,
+    "WORKER_REPOSITORY_ASSIGNMENT_CONFLICT");
+  assert.equal(foreignSameNumber.body.relay.active_repo, "jan2xo/bke-worker");
+  assert.equal(foreignSameNumber.body.relay.incoming_repo, "jan2xo/bke-demo-app");
+
   // A same-repo synchronize authored by the head repository owner is the worker's
   // own active execution advancement and must not create another visible turn.
   const selfSynchronize = await postWebhook({
@@ -356,6 +373,35 @@ try {
     state: "accepted",
   }));
 
+  // Before rollover the original v1 webhook deduplication remains 200.
+  const stillRecentDuplicate = await postWebhook({
+    deliveryId: "cloudflare-smoke-001",
+    action: "opened",
+    sha: "0123456789abcdef0123456789abcdef01234567",
+  });
+  assert.equal(stillRecentDuplicate.status, 200);
+  assert.equal(stillRecentDuplicate.body.relay.state, "duplicate");
+
+  // Roll over the 64-item recent-ID cache without sending another wake.
+  // The first superseded delivery remains in the durable archive, and its
+  // late ACK must not close the current registered socket after eviction.
+  await new Promise(resolve => setTimeout(resolve, 100));
+  for (let n = 0; n < 66; n++) {
+    const suppressed = await postWebhook({
+      deliveryId: `cloudflare-rollover-${n}`,
+      action: "synchronize",
+      sha: "9999999999999999999999999999999999999999",
+      sender: "jan2xo",
+      headRepoOwner: "jan2xo",
+    });
+    assert.equal(suppressed.status, 202);
+    assert.equal(suppressed.body.relay.state, "self_synchronize_suppressed");
+  }
+  ws.sendText(JSON.stringify({
+    protocol: 1, type: "ack", worker_id: workerId,
+    delivery_id: wake.delivery_id, state: "completed",
+  }));
+
   // Same-head re-evaluation is still serialized behind the active delivery.
   const sameHead = await postWebhook({
     deliveryId: "cloudflare-smoke-003",
@@ -364,6 +410,18 @@ try {
   });
   assert.equal(sameHead.status, 202);
   assert.equal(sameHead.body.relay.state, "queued_behind_active");
+
+  // The queued slot must not be overwritten by a foreign repository event.
+  const foreignWhileQueued = await postWebhook({
+    repo: "jan2xo/bke-demo-app",
+    deliveryId: "cloudflare-smoke-foreign-queued-001",
+    action: "opened",
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+  });
+  assert.equal(foreignWhileQueued.status, 409);
+  assert.equal(foreignWhileQueued.body.relay.error,
+    "WORKER_REPOSITORY_ASSIGNMENT_CONFLICT");
+  assert.equal(foreignWhileQueued.body.relay.queued_repo, "jan2xo/bke-worker");
 
   ws.sendText(JSON.stringify({
     protocol: 1,
@@ -387,13 +445,36 @@ try {
 
   await new Promise((resolve) => setTimeout(resolve, 100));
 
+  // wake2 was completed and is NOT a displaced wake. Its original delivery
+  // ID has been evicted by 66 suppressions; it must still be permanently
+  // denied rather than accepted as fresh work.
+  const completedReplay = await postWebhook({
+    deliveryId: "cloudflare-smoke-002",
+    action: "synchronize",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    sender: "external-user",
+    headRepoOwner: "jan2xo",
+  });
+  assert.equal(completedReplay.status, 409);
+  assert.equal(completedReplay.body.relay.error,
+    "DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER");
+
+  // After the 64-ID rollover, a duplicate old terminal ACK for the
+  // normally completed (unarchived) wake cannot close this socket.
+  ws.sendText(JSON.stringify({
+    protocol:1, type:"ack", worker_id:workerId,
+    delivery_id:wake2.delivery_id, state:"completed",
+  }));
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   const duplicate = await postWebhook({
     deliveryId: "cloudflare-smoke-001",
     action: "opened",
     sha: "0123456789abcdef0123456789abcdef01234567",
   });
-  assert.equal(duplicate.status, 200);
-  assert.equal(duplicate.body.relay.state, "duplicate");
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.relay.error,
+    "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER");
 
   const rejected = await postWebhook({
     deliveryId: "cloudflare-smoke-004",
@@ -516,6 +597,55 @@ try {
   });
   assert.equal(blockedCrossPr.status, 409);
   assert.equal(blockedCrossPr.body.relay.error, "WORKER_WAKE_IN_FLIGHT");
+
+  // Multi-worker relay isolation: A's PR #12 stays in-flight while B's
+  // distinct PR #27 is dispatched through a separate authenticated socket
+  // and separate WorkerSession DO identity. This is NOT a live browser or
+  // ChatGPT-target multi-worker certification.
+  const workerB = "test-worker-b";
+  const wsB = new RawWebSocket();
+  try {
+    await wsB.connect(`/relay/${workerB}`,
+      await deriveRelayToken(relayTokenKey, workerB));
+    wsB.sendText(JSON.stringify({
+      protocol: 1, type: "register", worker_id: workerB,
+      session_id: "cloudflare-local-parallel-worker-b",
+    }));
+    const [secondWorkerDispatch, firstWorkerStillBlocked] = await Promise.all([
+      postWebhook({
+        workerLabelId: workerB,
+        deliveryId: "cloudflare-smoke-parallel-b-001",
+        action: "opened",
+        number: 27,
+        sha: "1234567890abcdef1234567890abcdef12345678",
+      }),
+      postWebhook({
+        deliveryId: "cloudflare-smoke-parallel-a-002",
+        action: "opened",
+        number: 13,
+        sha: "fedcba0987654321fedcba0987654321fedcba09",
+      }),
+    ]);
+    assert.equal(secondWorkerDispatch.status, 202,
+      "B must receive its own PR while A is occupied");
+    assert.equal(secondWorkerDispatch.body.worker_id, workerB);
+    assert.equal(firstWorkerStillBlocked.status, 409,
+      "A must still enforce its own in-flight PR assignment");
+    assert.equal(firstWorkerStillBlocked.body.relay.error, "WORKER_WAKE_IN_FLIGHT");
+
+    const bWake = JSON.parse(await wsB.nextText());
+    assert.equal(bWake.worker_id, workerB);
+    assert.equal(bWake.pr_number, 27);
+    assert.equal(bWake.delivery_id, "cloudflare-smoke-parallel-b-001");
+    assert.equal(bWake.expected_head_sha,
+      "1234567890abcdef1234567890abcdef12345678");
+    wsB.sendText(JSON.stringify({
+      protocol: 1, type: "ack", worker_id: workerB,
+      delivery_id: bWake.delivery_id, state: "completed",
+    }));
+  } finally {
+    wsB.close();
+  }
 
   const recoveryHead = "ffffffffffffffffffffffffffffffffffffffff";
   const recoveryMarker = `<!-- BKE-RECOVER-CROSS-PR-WAKE worker=${workerId} pr=13 head=${recoveryHead} -->`;
