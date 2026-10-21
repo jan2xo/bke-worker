@@ -618,3 +618,11 @@ for token in (
 # The app may emit device evidence only for the exact HTTPS ChatGPT origin.
 assert 'uri.host.equals("chatgpt.com", ignoreCase = true)' in service
 assert 'uri.userInfo == null' in service
+
+for token in (
+    "fun getOrCreatePeerProfileBindingId(): String?",
+    "KEY_PEER_PROFILE_BINDING_ID",
+    "UUID.fromString(existing)",
+    "preferences.edit().putString(KEY_PEER_PROFILE_BINDING_ID, created).commit()",
+):
+    assert token in relay_store, token
