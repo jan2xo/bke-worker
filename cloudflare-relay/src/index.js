@@ -981,18 +981,47 @@ export class WorkerSession extends DurableObject {
       return;
     }
 
-    if (ack.state === "deferred" || ack.state === "accepted") {
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake: active.wake,
-        phase: ack.state,
+    // Make ACK mutations share the same storage transaction boundary as
+    // the future retirement tombstone writer. An old ACK must not overwrite
+    // an atomic retirement or clear a newer delivery after an awaited read.
+    // This is still NOT a complete all-route retirement integration.
+    let disposition;
+    try {
+      disposition = await this.ctx.storage.transaction(async tx => {
+        const fence = await tx.get(RETIREMENT_FENCE_KEY);
+        const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+        if (fence !== undefined || epoch !== undefined) return "retired";
+        const storedWorkerId = await tx.get(WORKER_ID_KEY);
+        const current = await tx.get(ACTIVE_WAKE_KEY);
+        if (storedWorkerId !== ackWorkerId ||
+            current?.wake?.worker_id !== ackWorkerId ||
+            current?.wake?.delivery_id !== ack.delivery_id)
+          return "conflict";
+
+        if (ack.state === "deferred" || ack.state === "accepted") {
+          await tx.put(ACTIVE_WAKE_KEY, {
+            wake: current.wake,
+            phase: ack.state,
+          });
+          return "recorded";
+        }
+        if (ack.state === "rejected" || ack.state === "completed") {
+          await tx.delete(ACTIVE_WAKE_KEY);
+          return "cleared";
+        }
+        return "unknown";
       });
+    } catch {
+      // A transaction error is never proof of rollback. Do not retry ACK.
+      socket.close(1011, "ack outcome uncertain");
       return;
     }
-
-    if (ack.state === "rejected" || ack.state === "completed") {
-      await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
-      await this.promoteQueuedWake();
+    if (disposition === "retired" || disposition === "conflict" ||
+        disposition === "unknown") {
+      socket.close(1008, "ack retirement or identity conflict");
+      return;
     }
+    if (disposition === "cleared") await this.promoteQueuedWake();
   }
 
   async promoteQueuedWake() {
