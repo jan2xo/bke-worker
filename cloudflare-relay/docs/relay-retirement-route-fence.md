@@ -380,3 +380,34 @@ release. No new adversarial live-Workerd tests were added; earlier
 creation of the dedicated activated-mode security test file was
 safety-blocked and not bypassed. Existing regression CI cannot
 independently certify real concurrent registration/ACK/close behavior.
+
+
+## Explicit uncertain send outcome after durable reservation (PR #145)
+
+The real `WorkerSession` previously returned `false` when
+`socket.send()` threw **after** storing `active_wake.phase = sent`.
+Both `dispatch()` and `recover()` then reported a `*_queued` state,
+misrepresenting a possibly delivered ChatGPT prompt as safe to queue.
+
+`sendActiveIfSafeOutcome()` now reports three distinct internal
+outcomes: `sent` when the WebSocket send call returned; `not_sent`
+when no reservation was made or accepted; and `uncertain` when the
+storage transaction threw with a possible commit or a send threw after
+a committed reservation. The established boolean entrypoints
+`sendActiveIfSafe()` and `sendActiveIfSafeDelivery()` remain in
+place for existing callers; the dispatch/recover endpoints use the
+richer outcome and return `state: delivery_outcome_uncertain` for
+uncertain sends rather than falsely claiming `queued`.
+
+An `uncertain` response is **never** authorization to replay, rearm,
+release the PR assignment, or override the persisted state. Successful
+return from `socket.send()` is likewise only an attempted transport
+send, not proof of remote ChatGPT delivery/ACK. This does not
+authenticate a retirement owner or implement the monotonic owner
+tombstone/epoch writer.
+
+Dedicated tests covering transaction throw-after-commit, socket send
+failure after durable reservation, concurrent wake replacement,
+partial retirement markers, and the caller's recovery decision remain
+NOT_RUN. The prior security-test-file creation safety denial was not
+bypassed; existing 181-test green alone cannot certify these cases.
