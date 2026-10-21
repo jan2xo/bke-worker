@@ -387,7 +387,13 @@ export class WorkerSession extends DurableObject {
     if (enabled !== "true") return false;
     try {
       const persisted = await this.ctx.storage.get(WORKER_ID_KEY);
-      return persisted !== workerId || this.quarantined(persisted);
+      if (persisted !== workerId || this.quarantined(persisted)) return true;
+      // Persisted retirement is stronger than a deployment-only env flag.
+      // Even one half of a fence/epoch pair means an uncertain quarantine:
+      // never infer permission from a malformed or partially written fence.
+      const fence = await this.ctx.storage.get("retirement_fence_v1");
+      const epoch = await this.ctx.storage.get("retirement_epoch_v1");
+      return fence !== undefined || epoch !== undefined;
     } catch {
       return true;
     }
@@ -422,6 +428,17 @@ export class WorkerSession extends DurableObject {
     const existing = await this.ctx.storage.get(WORKER_ID_KEY);
     // The read can suspend this invocation; deny before a first identity write.
     if (this.quarantined(workerId)) return false;
+    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true") {
+      try {
+        // An unknown/partial durable fence must not be resurrected by a
+        // new identity write, even if the incoming worker ID differs.
+        const fence = await this.ctx.storage.get("retirement_fence_v1");
+        const epoch = await this.ctx.storage.get("retirement_epoch_v1");
+        if (fence !== undefined || epoch !== undefined) return false;
+      } catch {
+        return false;
+      }
+    }
     if (existing === undefined) {
       await this.ctx.storage.put(WORKER_ID_KEY, workerId);
       return true;
