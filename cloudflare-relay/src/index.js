@@ -749,6 +749,55 @@ export class WorkerSession extends DurableObject {
   }
 
   async sendActiveIfSafe() {
+    // Optional source-only PREPRODUCTION quarantine cutover preparation.
+    // The configured legacy identity is always denied by quarantined().
+    // For other workers, keep the short *local* wake reservation and socket
+    // send in one DO event-exclusion window. No GitHub/network I/O here.
+    // An old/suspect wake must never be automatically redelivered after a
+    // crash between socket.send and persisting the phase.
+    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true") {
+      try {
+        return await this.ctx.blockConcurrencyWhile(async () => {
+          const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+          if (!active || active.phase !== "queued" ||
+              this.quarantined(active.wake?.worker_id) ||
+              await this.quarantinedBoundWorker(active.wake?.worker_id)) return false;
+
+          // Reject either half of a durable retirement marker, including
+          // malformed/incomplete state. A missing marker is NOT owner proof
+          // and does not authorize retirement or label release.
+          const fence = await this.ctx.storage.get("retirement_fence_v1");
+          const epoch = await this.ctx.storage.get("retirement_epoch_v1");
+          if (fence !== undefined || epoch !== undefined) return false;
+
+          const socket = await this.authoritativeSocket();
+          if (!socket) return false;
+          const attachment = socket.deserializeAttachment();
+          if (attachment?.workerId !== active.wake.worker_id ||
+              attachment?.registered !== true ||
+              await this.quarantinedBoundWorker(attachment.workerId)) return false;
+
+          // Mark uncertain before the irrecoverable external WebSocket send.
+          // If this write or send fails, leave the delivery blocked, not
+          // queued for automatic replay. Human-led reconciliation is required.
+          await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+            wake: active.wake,
+            phase: "sent",
+          });
+          if (this.quarantined(attachment.workerId)) return false;
+          try {
+            socket.send(JSON.stringify(active.wake));
+          } catch {
+            return false;
+          }
+          return true;
+        });
+      } catch {
+        // A DO write may have committed before throwing. No retry here.
+        return false;
+      }
+    }
+    // Existing default-OFF v1 path below is intentionally unchanged.
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (this.quarantined(active?.wake?.worker_id)) return false;
     if (!active || active.phase !== "queued") return false;
