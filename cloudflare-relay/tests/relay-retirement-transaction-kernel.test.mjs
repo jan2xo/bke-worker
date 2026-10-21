@@ -175,6 +175,13 @@ test('missing wake, malformed worker, or different active and queued target deny
   }
 });
 
+test('well-formed but wrong two-delivery set is denied inside the transaction',async()=>{
+  const db=store();
+  const candidate={...request,expected_delivery_ids:[delivery2,delivery]};
+  assertBlocked(await commit(db,candidate),'DELIVERY_SET_MISMATCH');
+  assert.equal(db.stats().writes,0);
+});
+
 test('registered socket metadata blocks before any fence write',async()=>{
   const db=store({...initial(),active_connection_id:'SECRET_SOCKET_ID'});
   assertBlocked(await commit(db,request),'CONNECTION_ID_PRESENT_SOCKET_UNVERIFIED');
@@ -205,7 +212,6 @@ test('rejects guessed IDs, unordered/duplicate sets, forged authority, invalid r
     {...request,retirement_id:'with spaces'},
     {...request,expected_delivery_ids:[]},
     {...request,expected_delivery_ids:[delivery,delivery]},
-    {...request,expected_delivery_ids:[delivery2,delivery]},
     {...request,expected_delivery_ids:['bad']},
     {...request,expected_delivery_ids:[delivery,delivery2,'extra']},
   ]){
