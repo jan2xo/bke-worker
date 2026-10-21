@@ -113,9 +113,11 @@ uncertainty and possible nondelivery over duplicate ChatGPT prompt delivery.
 It is only a bounded local send ordering seam, **not a complete atomic
 retirement cutover**.
 
-The absent/default-OFF mode keeps the prior v1 wake-send ordering (without
-entering `blockConcurrencyWhile()`), **but now reads persisted fence/epoch
-markers and fails closed** if one exists or a storage read is uncertain.
+The absent/default-OFF mode now shares the transactional pre-send
+reservation and bounded `blockConcurrencyWhile()` path with enabled mode.
+It also reads persisted fence/epoch markers and fails closed if one exists
+or a storage read is uncertain. This deliberately changes v1 ordering to
+avoid duplicate delivery after crash-ambiguous `socket.send()`.
 Neither switch key is declared in Wrangler; this PR does not deploy or
 enable it.
 
@@ -312,3 +314,38 @@ concurrent recovery-vs-retirement, GitHub ownership drift, malformed
 prior wake and failed commit security tests remain NOT_RUN because a
 prior attempt to create the dedicated test file was safety-blocked
 and was not bypassed. Keep source PR draft until independent proof.
+
+
+## Unified transactionally reserved WebSocket send (PR #145)
+
+The send boundary is now **unconditional**. Both normal/default-OFF and
+explicit-quarantine execution use `sendActiveIfSafeDelivery()` behind the
+canonical `sendActiveIfSafe()` entrypoint. A short DO
+`blockConcurrencyWhile()` selects the registered authoritative socket,
+then a same-DO storage transaction reads the persisted worker,
+`active_connection_id`, `active_wake`, and both retirement markers.
+The transaction requires a valid **queued** wake, exact socket/worker/
+connection agreement, and the specified delivery ID when supplied by
+a preceding dispatch/recover/promotion transaction. It persists
+`phase: sent` before any WebSocket send attempt.
+
+Only the wake object actually reserved by the transaction is serialized
+and sent. On a throw/connection failure after the commit, the outcome
+is **uncertain**: no rollback of the sent reservation and no automatic
+redelivery. No GitHub/network I/O occurs inside this local gate.
+
+This removes the previous default-OFF v1 `socket.send`-then-`put`
+crash ambiguity and default-mode unguarded socket/worker mismatch.
+It changes normal runtime event scheduling and write-before-send timing,
+which requires dedicated Workerd testing for pre-commit failure,
+post-commit failure, stale socket replacement, concurrent dispatch,
+partial/tampered tombstones, double-send, and retry suppression.
+The existing default-OFF smoke/181-node test graph does **not**
+certify these adversarial properties.
+
+This is **not** a privileged retirement writer, owner authentication
+flow, nonce/PR-head CAS, old-socket termination proof or authorization
+to deploy. The earlier attempted dedicated test-file creation was
+tool-safety blocked; no route around that restriction was attempted.
+The PR remains DRAFT/UNMERGED until independent enabled-mode security
+proof and explicit separate owner action scope are complete.
