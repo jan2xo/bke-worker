@@ -55,3 +55,36 @@ The guard is inserted before the first `ensureIdentity()` write and across the a
 - A trustworthy finish still requires Admin-authenticated private DO inspection, one-use authorization, atomic monotonic persisted fence+epoch, enforced cutover on all paths, old socket/delivery readback, explicit credential/assignment reconciliation, and a separate operator-approved real-world acceptance.
 
 Track PR #145 and parent Issue #135 as **SOURCE IN PROGRESS / LIVE RETIREMENT BLOCKED**. Historical PR #90 and `android-worker-a` remain untouched.
+
+
+## G0-07 transaction-writer result provenance (PR #145)
+
+Independent source audit found that `stageRetirementFenceCandidate()` previously
+trusted the value returned by an injected `storage.transaction()` adapter.
+Unlike the remediated G0-08 read-only observer, it did not establish that its
+callback had actually been invoked. A forged `STAGED`/`EXISTING` return
+could therefore reach the post-transaction shape readback without a verified
+callback, even though it **never granted retirement/assignment authority**.
+
+The unimported G0-07 writer now requires **exactly one completed transaction
+callback and the adapter returning the identical callback result object**
+before inspecting its staged/existing outcome. Zero, duplicate, incomplete
+or replaced callback results deny with `TRANSACTION_RESULT_INVALID`.
+An exception may occur after a commit and continues to mean
+`TRANSACTION_OUTCOME_UNCERTAIN`—not rollback.
+
+This closes a **narrow injected-adapter result-provenance failure mode**; it
+does NOT prove a real Cloudflare transaction, a one-shot owner nonce,
+trusted GitHub scope, same-DO provenance, a successful live readback,
+or a serialized all-path cutover. This writer remains **unimported** from
+`WorkerSession`. Real/cloud tests remain required. The attempted
+separate enabled-quarantine security-test file was previously denied by a
+tool safety check and was not retried or bypassed; no such evidence is
+claimed by this documentation change.
+
+Required independent adversarial coverage before any merge or activation
+must include callback skipped with forged positive return; twice invoked;
+callback `BLOCKED` replaced with forged positive; cloned result; thrown
+transaction after stage/commit; existing-fence readback forgery; interrupted
+owner action; and real DO socket/delivery races. Do not treat ordinary
+default-OFF smoke or source-only doubles as operational G0 retirement.
