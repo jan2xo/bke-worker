@@ -723,18 +723,25 @@ export function nextRelayObservation(existing, workerId, atMs, kind, ack = null,
  * completed, cancelled or authorized. Caller must check current socket
  * authority and retirement keys inside the SAME DO transaction first.
  */
-export function classifyUnmatchedRelayAck(recent, archive, workerId, deliveryId) {
+export function classifyUnmatchedRelayAck(recent, archive, workerId, deliveryId, receipt = undefined) {
   if (!isValidWorkerId(workerId) || !isValidDeliveryId(deliveryId) ||
       !Array.isArray(recent) || recent.length > 64 ||
-      recent.some(id => !isValidDeliveryId(id))) return "invalid";
+      recent.some(id => !isValidDeliveryId(id)) ||
+      ![undefined, true, "ack_observed_completed", "ack_observed_rejected"]
+        .includes(receipt)) return "invalid";
   const prior = inspectSupersessionEvidence(archive, workerId, deliveryId);
   if (prior.state === "invalid") return "invalid";
   if (recent.includes(deliveryId)) return "stale_recent";
   if (prior.state === "archived_replay") {
-    // A queued-only supersession is not proof that a wake was ever sent.
-    // Ignoring a made-up ACK for such a wake would conceal a bad peer.
+    // A queued-only archive is not proof that a wake was ever sent.
+    // Contradictory historical evidence cannot be silently reconciled.
     const entry = archive.find(item => item.wake.delivery_id === deliveryId);
     return entry.phase === "queued" ? "unknown" : "stale_archived";
   }
+  // The boolean dispatch receipt may describe a suppressed or queued wake;
+  // only a terminal ACK recorded under active same-DO socket authority is
+  // sufficient to disregard a duplicate late terminal observation.
+  if (receipt === "ack_observed_completed" || receipt === "ack_observed_rejected")
+    return "stale_terminal";
   return "unknown";
 }

@@ -1153,8 +1153,9 @@ export class WorkerSession extends DurableObject {
         if (!current || current.wake.delivery_id !== ack.delivery_id) {
           const recent = (await tx.get(RECENT_DELIVERIES_KEY)) ?? [];
           const archive = await tx.get(SUPERSESSION_EVIDENCE_KEY);
+          const receipt = await tx.get(DURABLE_DELIVERY_KEY_PREFIX + ack.delivery_id);
           const stale = classifyUnmatchedRelayAck(
-            recent, archive, ackWorkerId, ack.delivery_id,
+            recent, archive, ackWorkerId, ack.delivery_id, receipt,
           );
           // The stored historical ID is only a *reason to ignore* an
           // out-of-date ACK. Never record it as another observed completed
@@ -1164,7 +1165,8 @@ export class WorkerSession extends DurableObject {
           // above, so this is only an idempotent stale-ACK observation.
           if (stale === "stale_recent" && recent.includes(ack.delivery_id))
             return "ignored_stale";
-          if (stale === "stale_archived") return "ignored_stale";
+          if (stale === "stale_archived" || stale === "stale_terminal")
+            return "ignored_stale";
           return "conflict";
         }
         if (!["sent", "accepted", "deferred"].includes(current.phase))
@@ -1184,6 +1186,15 @@ export class WorkerSession extends DurableObject {
           return "recorded";
         }
         if (ack.state === "rejected" || ack.state === "completed") {
+          const receiptKey = DURABLE_DELIVERY_KEY_PREFIX + ack.delivery_id;
+          const receipt = await tx.get(receiptKey);
+          // Pre-upgrade delivery lacks a durable receipt; never invent one.
+          if (receipt !== undefined && receipt !== true) return "conflict";
+          if (receipt === true) {
+            await tx.put(receiptKey, ack.state === "completed"
+              ? "ack_observed_completed" : "ack_observed_rejected");
+          }
+          // Both observations commit atomically or both roll back.
           await tx.delete(ACTIVE_WAKE_KEY);
           return "cleared";
         }

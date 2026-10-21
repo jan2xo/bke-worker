@@ -459,6 +459,14 @@ try {
   assert.equal(completedReplay.body.relay.error,
     "DURABLE_DELIVERY_REPLAY_REQUIRES_OWNER");
 
+  // After the 64-ID rollover, a duplicate old terminal ACK for the
+  // normally completed (unarchived) wake cannot close this socket.
+  ws.sendText(JSON.stringify({
+    protocol:1, type:"ack", worker_id:workerId,
+    delivery_id:wake2.delivery_id, state:"completed",
+  }));
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   const duplicate = await postWebhook({
     deliveryId: "cloudflare-smoke-001",
     action: "opened",

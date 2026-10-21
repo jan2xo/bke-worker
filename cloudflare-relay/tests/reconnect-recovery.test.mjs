@@ -402,3 +402,22 @@ assert.equal(planRecovery(
     ...sameRepoForeignQueued, pr_number: assignment.number,
   },
 ).state, "recovered", "ordinary same-PR queued recovery remains compatible");
+
+
+// The boolean dispatch receipt may be queued/suppressed, but only an
+// already-observed terminal ACK can preserve the socket after rollover.
+for (const terminal of ["ack_observed_completed", "ack_observed_rejected"]) {
+  assert.equal(classifyUnmatchedRelayAck([], undefined, "android-worker-a",
+    "old-terminal-delivery", terminal), "stale_terminal");
+}
+assert.equal(classifyUnmatchedRelayAck([], undefined, "android-worker-a",
+  "old-terminal-delivery", true), "unknown",
+  "plain accepted dispatch receipt is not a sent or completed ACK");
+assert.equal(classifyUnmatchedRelayAck([], undefined, "android-worker-a",
+  "old-terminal-delivery", "CORRUPT"), "invalid");
+assert.equal(classifyUnmatchedRelayAck([], [
+  {wake:{...priorWake,delivery_id:"old-terminal-delivery"},phase:"queued"},
+], "android-worker-a", "old-terminal-delivery", "ack_observed_completed"), "unknown",
+  "queued-only archive evidence defeats contradictory terminal receipt");
+assert.equal(classifyUnmatchedRelayAck([], undefined, "android-worker-a",
+  "never-issued", undefined), "unknown");

@@ -1075,3 +1075,32 @@ ChatGPT targets, owner onboarding, or complete parallel autonomous
 execution. The local test uses synthetic worker IDs and nonproduction
 webhooks; no Cloudflare deployment, live wake, assignment label
 mutation, or forbidden activated G0 retirement test file is involved.
+
+
+## Preserve current socket after late terminal ACK cache rollover (PR #145)
+
+A normally completed or rejected wake has no displaced-wake archive
+record. After 64 newer webhook IDs, the existing durable dispatch
+receipt prevents its webhook from re-arming, but the ACK path could
+still close the registered socket on an otherwise legitimate duplicate
+late ACK. The same-DO matched ACK transaction now upgrades an existing
+boolean `durable_delivery_v1:<id>` receipt to
+`ack_observed_completed` or `ack_observed_rejected` while clearing
+the active wake. The marker proves only the relay observed a terminal
+peer ACK under registered socket authority, **not** actual ChatGPT
+completion or cancellation. Pre-upgrade missing receipts are not
+backfilled; corrupt receipts deny.
+
+Unmatched ACK classification consults that durable marker only AFTER
+checking the current worker/socket authority and validating archived
+delivery state. It may ignore a terminal-recorded stale ACK after
+rollover, but never an unknown ID, a mere boolean queued/suppressed
+receipt, or contradictory queued-only archived history. Ignored ACKs
+do not mutate storage, complete tasks or promote queues.
+
+The existing recovery contract tests the discriminator. Existing
+normal local Workerd smoke replays a normally completed wake's
+terminal ACK after its cache eviction and requires the registered
+socket to continue. No new G0 activation, live DO actions,
+credential/assignment edits, prohibited dedicated activated-G0 test
+file, or deployment.
