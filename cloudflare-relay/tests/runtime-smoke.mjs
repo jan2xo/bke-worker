@@ -212,6 +212,7 @@ async function postWebhook({
   action,
   sha,
   number = 13,
+  repo = "jan2xo/bke-worker",
   prBody = "",
   priorBody = null,
   addedLabel = null,
@@ -222,7 +223,7 @@ async function postWebhook({
     action,
     number,
     sender: { login: sender },
-    repository: { full_name: "jan2xo/bke-worker" },
+    repository: { full_name: repo },
     pull_request: {
       number,
       state: "open",
@@ -232,7 +233,7 @@ async function postWebhook({
         ref: "test/utm-wss-relay-smoke",
         sha,
         repo: {
-          full_name: "jan2xo/bke-worker",
+          full_name: repo,
           owner: { login: headRepoOwner },
         },
       },
@@ -304,6 +305,21 @@ try {
     state: "accepted",
   }));
 
+  // A same-number PR in the other signed, allowlisted repository is NOT
+  // the in-flight control-repo assignment. It must neither coalesce nor
+  // supersede the original delivery, even with a matching PR number.
+  const foreignSameNumber = await postWebhook({
+    repo: "jan2xo/bke-demo-app",
+    deliveryId: "cloudflare-smoke-foreign-001",
+    action: "synchronize",
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+  assert.equal(foreignSameNumber.status, 409);
+  assert.equal(foreignSameNumber.body.relay.error,
+    "WORKER_REPOSITORY_ASSIGNMENT_CONFLICT");
+  assert.equal(foreignSameNumber.body.relay.active_repo, "jan2xo/bke-worker");
+  assert.equal(foreignSameNumber.body.relay.incoming_repo, "jan2xo/bke-demo-app");
+
   // A same-repo synchronize authored by the head repository owner is the worker's
   // own active execution advancement and must not create another visible turn.
   const selfSynchronize = await postWebhook({
@@ -364,6 +380,18 @@ try {
   });
   assert.equal(sameHead.status, 202);
   assert.equal(sameHead.body.relay.state, "queued_behind_active");
+
+  // The queued slot must not be overwritten by a foreign repository event.
+  const foreignWhileQueued = await postWebhook({
+    repo: "jan2xo/bke-demo-app",
+    deliveryId: "cloudflare-smoke-foreign-queued-001",
+    action: "opened",
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+  });
+  assert.equal(foreignWhileQueued.status, 409);
+  assert.equal(foreignWhileQueued.body.relay.error,
+    "WORKER_REPOSITORY_ASSIGNMENT_CONFLICT");
+  assert.equal(foreignWhileQueued.body.relay.queued_repo, "jan2xo/bke-worker");
 
   ws.sendText(JSON.stringify({
     protocol: 1,

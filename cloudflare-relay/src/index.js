@@ -557,6 +557,23 @@ export class WorkerSession extends DurableObject {
                 .includes(active.phase)))) {
           return { status: 423, body: {error: QUARANTINE_DENIAL_CODE} };
         }
+        // GitHub PR numbers are repository-local identities. An in-flight
+        // control-repo PR #13 is NOT demo-repo PR #13. In particular,
+        // "synchronize", "labeled", and same-number queued coalescing
+        // must not silently cross repos in this shared WorkerSession DO.
+        // Reject without modifying recent-delivery IDs, archive or slots.
+        // An explicit future cross-repository handoff needs verified owner
+        // authority, never just a signed per-repo webhook.
+        if ((active && active.wake.repo !== wake.repo) ||
+            (queued && queued.repo !== wake.repo)) {
+          return {status: 409, body: {
+            error: "WORKER_REPOSITORY_ASSIGNMENT_CONFLICT",
+            active_repo: active?.wake?.repo ?? null,
+            queued_repo: queued?.repo ?? null,
+            incoming_repo: wake.repo,
+          }};
+        }
+
         // The 64-item recent-delivery cache is NOT a permanent replay
         // barrier. Previously superseded delivery IDs must never become
         // eligible again when that cache rolls over.

@@ -836,3 +836,36 @@ storage does not prove a real Cloudflare Durable Object. No new route
 or deployment is added. The previously denied activated-G0 Workerd
 adversarial test-file was not recreated or bypassed. Existing G0-01
 source tests cover this ordinary read-only contract only.
+
+
+## Cross-repository dispatch assignment collision (PR #145)
+
+The existing v1 webhook parser accepts signed wake events for both
+`jan2xo/bke-worker` and `jan2xo/bke-demo-app`. GitHub PR numbers
+are only unique **within** their repository. The normal transactional
+`WorkerSession.dispatch()` had been checking the numeric PR but not
+the repository when deciding same-PR synchronize/labeled supersession
+and queued coalescing. Consequently, a demo-app PR #13 could replace
+or queue against an unrelated in-flight bke-worker PR #13 on the same
+worker identity. Earlier recovery identity hardening alone did NOT
+protect this direct dispatch entry point.
+
+The dispatch storage transaction now blocks an incoming event when
+either the persisted active or queued wake belongs to **a different
+repository** from the incoming signed/validated wake. It returns
+`WORKER_REPOSITORY_ASSIGNMENT_CONFLICT` (409) before recording the
+new delivery ID, changing active/queued state, or archiving a wake.
+The entire existing same-repo synchronization, coalescing, deliberate
+same-repo cross-PR recovery and idempotent delivery behavior remains
+unchanged. A cross-repository handoff requires an independent
+owner-authorized explicit process, not an ordinary webhook marker.
+This source-only guard does not claim current GitHub assignment
+exclusivity across all installed repositories.
+
+The existing ordinary `tests/runtime-smoke.mjs` now exercises a
+signed, allowlisted foreign-repo synchronize against an active
+same-number PR and a foreign-repo open event while a control-repo
+queued wake exists. The original same-repo smoke continuation still
+proves compatible delivery. This is NOT a new/repackaged
+activated-G0 retirement security test, nor proof of a live owner
+cutover. No Cloudflare configuration or deployment changed.
