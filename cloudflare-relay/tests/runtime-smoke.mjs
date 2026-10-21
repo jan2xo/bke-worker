@@ -372,6 +372,15 @@ try {
     state: "accepted",
   }));
 
+  // Before rollover the original v1 webhook deduplication remains 200.
+  const stillRecentDuplicate = await postWebhook({
+    deliveryId: "cloudflare-smoke-001",
+    action: "opened",
+    sha: "0123456789abcdef0123456789abcdef01234567",
+  });
+  assert.equal(stillRecentDuplicate.status, 200);
+  assert.equal(stillRecentDuplicate.body.relay.state, "duplicate");
+
   // Roll over the 64-item recent-ID cache without sending another wake.
   // The first superseded delivery remains in the durable archive, and its
   // late ACK must not close the current registered socket after eviction.
@@ -440,8 +449,9 @@ try {
     action: "opened",
     sha: "0123456789abcdef0123456789abcdef01234567",
   });
-  assert.equal(duplicate.status, 200);
-  assert.equal(duplicate.body.relay.state, "duplicate");
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.relay.error,
+    "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER");
 
   const rejected = await postWebhook({
     deliveryId: "cloudflare-smoke-004",
