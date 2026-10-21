@@ -222,3 +222,31 @@ dedicated enabled-retirement, transaction-race or stale-ACK
 adversarial tests because an earlier attempt to create that test file
 was safety-blocked and has not been bypassed. Do not represent normal CI
 success as security acceptance.
+
+
+## Same-DO transaction for WebSocket registration (PR #145)
+
+The `register` message now establishes `active_connection_id` only
+inside a `ctx.storage.transaction()` that reads the same DO's
+`retirement_fence_v1`, `retirement_epoch_v1`, and `worker_id`.
+Any marker, identity mismatch or uncertain transaction denies/ closes
+registration. A recheck before marking the socket attachment registered
+also denies detected retirement. This is intended to prevent a
+registration racing a future owner tombstone writer from both winning
+on a stale pre-registration snapshot. The future writer already refuses
+candidate retirement while `active_connection_id` is persisted.
+
+Together with the transactional ACK and queued-promotion changes,
+this addresses **specific durable mutation races** without importing
+the currently untrusted owner writer. It does **not** prove that
+preexisting unregistered sockets are quiescent, that dispatch/recovery
+writes are serialized, that an external ChatGPT prompt was not already
+delivered, or that the owner/HMAC/nonce/PR-head authority is valid.
+No Cloudflare deployment, new route, credential change or owner
+retirement was performed.
+
+There are no dedicated adversarial Workerd tests of these newly
+modified registration, ACK and promotion transactions in PR #145:
+earlier security test-file creation was denied by tool safety checks.
+Until proper independently permitted tests and security review exist,
+the PR remains draft, **NOT_READY_FOR_AUDIT/MERGE/ACTIVATION**.
