@@ -707,6 +707,9 @@ assert service.index("workerSession.setNavigationDelegate(navigationDelegate)") 
 assert "onRecovery = ::handleRelayRecovery" not in service
 assert "onWake = ::handleRelayWake" not in service
 
+assert "reportSequence: reportSequence + 1" in probe
+assert "reportSequence += 1" in probe
+assert "payload.reportSequence = reportSequence" in probe
 # Executable adversarial state-policy checks. This intentionally models only the
 # authorization gate, not Android Keystore or GeckoView runtime behavior.
 import time as _time
