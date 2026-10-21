@@ -202,6 +202,50 @@ test('wrong duplicate or unreadable socket propagates strict G0-02 denial', asyn
   }
 });
 
+test('UTF-8 per-value cap rejects CJK under the UTF-16 length threshold', async () => {
+  const payload = '界'.repeat(22000); // 3 UTF-8 bytes per one UTF-16 code unit
+  const encoded = JSON.stringify([false, payload]);
+  assert.ok(encoded.length < 65536, 'would evade a .length-based cap');
+  assert.ok(new TextEncoder().encode(encoded).byteLength > 65536);
+  const result = await inspect(deps({...state, retirement_fence_v1: payload}), expected);
+  assert.equal(result.code, 'SNAPSHOT_INVALID_OR_OVERSIZED');
+  assertNegative(result);
+});
+
+test('UTF-8 per-value cap rejects astral emoji counted as surrogate pairs', async () => {
+  const payload = '🚀'.repeat(17000); // 4 UTF-8 bytes per two UTF-16 code units
+  const encoded = JSON.stringify([false, payload]);
+  assert.ok(encoded.length < 65536, 'would evade a .length-based cap');
+  assert.ok(new TextEncoder().encode(encoded).byteLength > 65536);
+  const result = await inspect(deps({...state, retirement_fence_v1: payload}), expected);
+  assert.equal(result.code, 'SNAPSHOT_INVALID_OR_OVERSIZED');
+  assertNegative(result);
+});
+
+test('UTF-8 aggregate cap rejects combined Unicode even when each part fits', async () => {
+  // Intentionally malformed wake shapes: capture MUST reject total bytes
+  // before G0-01/02 inspect schemas. Every individual serialized value fits.
+  const payload = '界'.repeat(12000);
+  const stored = {...state, active_wake: payload, queued_wake: payload};
+  const keys = [
+    'worker_id', 'active_wake', 'queued_wake', 'recent_deliveries',
+    'active_connection_id', 'retirement_fence_v1',
+  ];
+  const encoder = new TextEncoder();
+  const parts = keys.map(key => JSON.stringify([
+    stored[key] === undefined, stored[key],
+  ]));
+  for (const part of parts) {
+    assert.ok(encoder.encode(part).byteLength <= 65536, 'per-value bound must fit');
+  }
+  const aggregate = JSON.stringify(parts);
+  assert.ok(aggregate.length < 65536, 'would evade a .length-based aggregate cap');
+  assert.ok(encoder.encode(aggregate).byteLength > 65536);
+  const result = await inspect(deps(stored), expected);
+  assert.equal(result.code, 'SNAPSHOT_INVALID_OR_OVERSIZED');
+  assertNegative(result);
+});
+
 test('storage errors, untrusted providers and oversize reads deny without leaking', async () => {
   const cases=[
     [{storage:{async get(){throw Error('PRIVATE_TOKEN');}},getWebSockets:()=>[]},'INSPECTION_READ_FAILED'],
