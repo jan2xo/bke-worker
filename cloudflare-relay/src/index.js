@@ -688,65 +688,80 @@ export class WorkerSession extends DurableObject {
       }, 409);
     }
 
-    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(workerId) || await this.persistentlyRetired() ||
-        (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         (active !== undefined && active !== null &&
-           active.wake?.worker_id !== workerId ||
-          await this.quarantinedBoundWorker(workerId))))
-      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
-    const plan = planRecovery(
-      assignments.map((assignment) => ({ ...assignment, workerId })),
-      active,
-    );
+    // GitHub recovery preflight is intentionally OUTSIDE the storage tx.
+    // Re-read the same DO state and both retirement markers inside the tx
+    // before any cleanup/reconstruction write. This prevents a retirement
+    // CAS from racing separate delete/put steps in the recovery plan.
+    let decision;
+    try {
+      decision = await this.ctx.storage.transaction(async tx => {
+        const fence = await tx.get(RETIREMENT_FENCE_KEY);
+        const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+        const persistedWorker = await tx.get(WORKER_ID_KEY);
+        const active = await tx.get(ACTIVE_WAKE_KEY);
+        if (fence !== undefined || epoch !== undefined ||
+            persistedWorker !== workerId || this.quarantined(workerId) ||
+            (active !== undefined && (!active || !active.wake ||
+              !validateWake(active.wake, workerId)))) {
+          return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
+        }
 
-    if (plan.state === "waiting_for_assignment") {
-      await this.ctx.storage.delete(ACTIVE_WAKE_KEY);
-      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
-      return json({
-        state: "waiting_for_assignment",
-        worker_id: workerId,
-      }, 200);
-    }
+        const plan = planRecovery(
+          assignments.map(assignment => ({...assignment, workerId})),
+          active,
+        );
+        if (plan.state === "waiting_for_assignment") {
+          await tx.delete(ACTIVE_WAKE_KEY);
+          await tx.delete(QUEUED_WAKE_KEY);
+          return {status: 200, body: {
+            state: "waiting_for_assignment", worker_id: workerId,
+          }};
+        }
 
-    const assignment = plan.assignment;
-    if (plan.state === "preserved_active_assignment") {
-      return json({
-        state: plan.state,
-        worker_id: workerId,
-        assignment,
-        active_phase: plan.activePhase,
-        delivery_id: plan.deliveryId,
-      }, 200);
-    }
+        const assignment = plan.assignment;
+        if (plan.state === "preserved_active_assignment") {
+          return {status: 200, body: {
+            state: plan.state, worker_id: workerId, assignment,
+            active_phase: plan.activePhase, delivery_id: plan.deliveryId,
+          }};
+        }
 
-    const wake = plan.wake;
-    if (plan.state === "head_converged_without_redelivery") {
-      await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-        wake,
-        phase: "recovery_required",
+        const wake = plan.wake;
+        if (!validateWake(wake, workerId)) {
+          return {status: 423, body: {error: QUARANTINE_DENIAL_CODE}};
+        }
+        if (plan.state === "head_converged_without_redelivery") {
+          await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "recovery_required"});
+          await tx.delete(QUEUED_WAKE_KEY);
+          return {status: 200, body: {
+            state: plan.state, worker_id: workerId, assignment,
+            delivery_id: wake.delivery_id,
+          }};
+        }
+
+        await tx.delete(QUEUED_WAKE_KEY);
+        await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});
+        return {status: 200, sendDeliveryId: wake.delivery_id,
+          body: {worker_id: workerId, assignment,
+            delivery_id: wake.delivery_id}};
       });
-      await this.ctx.storage.delete(QUEUED_WAKE_KEY);
-      return json({
-        state: plan.state,
-        worker_id: workerId,
-        assignment,
-        delivery_id: wake.delivery_id,
-      }, 200);
+    } catch {
+      // A DO transaction can commit before reporting an error. No retry.
+      return json({error: "RECOVERY_OUTCOME_UNCERTAIN"}, 503);
     }
 
-    await this.ctx.storage.delete(QUEUED_WAKE_KEY);
-    await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-      wake,
-      phase: "queued",
-    });
-    const sent = await this.sendActiveIfSafe();
-    return json({
-      state: sent ? "recovered_sent" : "recovered_queued",
-      worker_id: workerId,
-      assignment,
-      delivery_id: wake.delivery_id,
-    }, 200);
+    if (!decision || !Number.isInteger(decision.status) ||
+        !decision.body || typeof decision.body !== "object") {
+      return json({error: "RECOVERY_OUTCOME_UNCERTAIN"}, 503);
+    }
+    if (decision.sendDeliveryId) {
+      const sent = await this.sendActiveIfSafeDelivery(decision.sendDeliveryId);
+      return json({
+        state: sent ? "recovered_sent" : "recovered_queued",
+        ...decision.body,
+      }, decision.status);
+    }
+    return json(decision.body, decision.status);
   }
 
   async recentDeliveries() {
