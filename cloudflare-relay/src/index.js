@@ -553,15 +553,19 @@ export class WorkerSession extends DurableObject {
         // The 64-item recent-delivery cache is NOT a permanent replay
         // barrier. Previously superseded delivery IDs must never become
         // eligible again when that cache rolls over.
-        if (evidence.state === "archived_replay")
-          return {status: 409, body: {
-            error: "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER",
-          }};
+        // A still-recent duplicate is already idempotent and must retain
+        // the original v1 200 acknowledgment. No socket send occurs here.
+        // Only when recent rolls over does archived evidence become the
+        // durable replay-denial boundary.
         if (recent.includes(wake.delivery_id)) {
           return {status: 200, body: {
             state: "duplicate", delivery_id: wake.delivery_id,
           }};
         }
+        if (evidence.state === "archived_replay")
+          return {status: 409, body: {
+            error: "ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER",
+          }};
         if (active?.wake?.delivery_id === wake.delivery_id ||
             queued?.delivery_id === wake.delivery_id)
           return {status: 409, body: {

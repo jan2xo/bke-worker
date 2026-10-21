@@ -661,8 +661,10 @@ eviction previously could be mistaken for fresh work and re-enter the
 active/queued dispatch planner. Before any new dispatch state write, the
 same DO transaction now validates the bounded archival ledger and rejects
 an archived ID with `ARCHIVED_DELIVERY_REPLAY_REQUIRES_OWNER` (409),
-including when the recent cache has forgotten it. Corrupt or inconsistent
-archive entries deny; active/queued delivery-ID reuse also denies after
+once the recent cache has forgotten it. While a delivery ID is still
+in the recent cache, the original idempotent v1 response remains
+`200 duplicate` (and sends no wake). Corrupt or inconsistent archive
+entries deny; active/queued delivery-ID reuse also denies after
 recent-cache eviction. This does not claim the old ChatGPT prompt was
 cancelled. Unarchived v1 wake routing remains unchanged.
 
