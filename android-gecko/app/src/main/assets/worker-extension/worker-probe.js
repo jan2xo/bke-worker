@@ -11,6 +11,7 @@
   let lastStableState = "";
   let nativePort = null;
   let reconnectTimer = null;
+  let reportSequence = 0;
 
   function findComposer() {
     return (
@@ -219,6 +220,7 @@
     const payload = {
       type: "worker_status",
       protocolVersion: PROTOCOL_VERSION,
+      reportSequence: reportSequence + 1,
       observedAt: new Date().toISOString(),
       pageUrl: location.href,
       composerAvailable: Boolean(findComposer()),
@@ -234,6 +236,8 @@
     if (!force && stableState === lastStableState) {
       return;
     }
+    reportSequence += 1;
+    payload.reportSequence = reportSequence;
     lastStableState = stableState;
     postNative(payload);
   }
