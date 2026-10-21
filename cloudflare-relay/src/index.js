@@ -1,5 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { inspectSameDurableObjectCandidate } from "./relay-owner-same-do-inspection.js";
+import { mustStopWorkerRoute, QUARANTINE_DENIAL_CODE } from "./relay-runtime-quarantine-interlock.js";
 import { fulfillCommandCenterAdminRead, fulfillCommandCenterAdminCatalog, fulfillCommandCenterAdminAssignments } from "./admin-broker.js";
 import {
   mintInstallationToken,
@@ -365,8 +366,14 @@ export class WorkerSession extends DurableObject {
     });
   }
 
+  // A deployment-owner-controlled, default-OFF stop for old worker identity.
+  quarantined(workerId) {
+    return mustStopWorkerRoute(this.env, workerId);
+  }
+
   async fetch(request) {
     const workerId = request.headers.get("x-bke-worker-id") || "";
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     if (!isValidWorkerId(workerId)) {
       return json({ error: "WORKER_ID_INVALID" }, 400);
     }
@@ -388,6 +395,8 @@ export class WorkerSession extends DurableObject {
   }
 
   async ensureIdentity(workerId) {
+    // First-write seam: do not create/reuse a quarantined identity.
+    if (this.quarantined(workerId)) return false;
     const existing = await this.ctx.storage.get(WORKER_ID_KEY);
     if (existing === undefined) {
       await this.ctx.storage.put(WORKER_ID_KEY, workerId);
@@ -397,6 +406,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async connect(request, workerId) {
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const token = this.env.BKE_WORKER_RELAY_TOKEN_KEY;
     if (!token || !(await relayBearerMatches(request.headers.get("Authorization") || "", token, workerId))) {
       return json({ error: "RELAY_UNAUTHORIZED" }, 401);
@@ -425,6 +435,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async dispatch(request, workerId) {
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const wake = parseJson(await request.text());
     if (!validateWake(wake, workerId)) {
       return json({ error: "WAKE_INVALID" }, 400);
@@ -461,7 +472,7 @@ export class WorkerSession extends DurableObject {
       active.wake.expected_head_sha !== wake.expected_head_sha &&
       wake.reason === "github_pull_request_self_synchronize";
 
-    await this.rememberDelivery(recent, wake.delivery_id);
+    await this.rememberDelivery(recent, wake.delivery_id, workerId);
 
     if (selfSynchronizeSuppression) {
       return json({
@@ -558,6 +569,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async recover(request, workerId) {
+    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const value = parseJson(await request.text());
     if (!validateRecoveryRequest(value, workerId)) {
       return json({ error: "RECOVERY_REQUEST_INVALID" }, 400);
@@ -663,7 +675,8 @@ export class WorkerSession extends DurableObject {
     return (await this.ctx.storage.get(RECENT_DELIVERIES_KEY)) || [];
   }
 
-  async rememberDelivery(recent, deliveryId) {
+  async rememberDelivery(recent, deliveryId, workerId) {
+    if (this.quarantined(workerId)) return;
     const next = recent
       .filter((item) => item !== deliveryId)
       .concat(deliveryId)
@@ -684,6 +697,7 @@ export class WorkerSession extends DurableObject {
 
   async sendActiveIfSafe() {
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
+    if (this.quarantined(active?.wake?.worker_id)) return false;
     if (!active || active.phase !== "queued") return false;
 
     const socket = await this.authoritativeSocket();
@@ -705,6 +719,10 @@ export class WorkerSession extends DurableObject {
 
     const attachment = socket.deserializeAttachment() || {};
     const workerId = attachment.workerId || "";
+    if (this.quarantined(workerId)) {
+      socket.close(1008, "worker quarantined");
+      return;
+    }
     const parsed = parseJson(message);
 
     if (!attachment.registered) {
@@ -754,6 +772,10 @@ export class WorkerSession extends DurableObject {
   }
 
   async handleAck(ack, socket) {
+    if (this.quarantined(socket.deserializeAttachment()?.workerId)) {
+      socket.close(1008, "worker quarantined");
+      return;
+    }
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (!active || active.wake.delivery_id !== ack.delivery_id) {
       const recent = await this.recentDeliveries();
@@ -780,6 +802,7 @@ export class WorkerSession extends DurableObject {
 
   async promoteQueuedWake() {
     const queued = await this.ctx.storage.get(QUEUED_WAKE_KEY);
+    if (this.quarantined(queued?.worker_id)) return;
     if (!queued) return;
 
     await this.ctx.storage.delete(QUEUED_WAKE_KEY);
@@ -791,6 +814,7 @@ export class WorkerSession extends DurableObject {
   }
 
   async webSocketClose(socket) {
+    if (this.quarantined(socket.deserializeAttachment()?.workerId)) return;
     await this.clearConnectionIfAuthoritative(socket);
     // Deliberately retain durable wake state. A wake in sent/deferred/accepted
     // state is never automatically redelivered after a disconnect because
@@ -798,11 +822,13 @@ export class WorkerSession extends DurableObject {
   }
 
   async webSocketError(socket) {
+    if (this.quarantined(socket.deserializeAttachment()?.workerId)) return;
     await this.clearConnectionIfAuthoritative(socket);
   }
 
   async clearConnectionIfAuthoritative(socket) {
     const attachment = socket.deserializeAttachment() || {};
+    if (this.quarantined(attachment.workerId)) return;
     const activeConnectionId = await this.ctx.storage.get(ACTIVE_CONNECTION_KEY);
     if (attachment.connectionId === activeConnectionId) {
       await this.ctx.storage.delete(ACTIVE_CONNECTION_KEY);
