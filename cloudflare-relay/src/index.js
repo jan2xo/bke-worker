@@ -625,9 +625,10 @@ export class WorkerSession extends DurableObject {
       return json({error: "DISPATCH_OUTCOME_UNCERTAIN"}, 503);
     }
     if (decision.sendDeliveryId) {
-      const sent = await this.sendActiveIfSafeDelivery(decision.sendDeliveryId);
+      const outcome = await this.sendActiveIfSafeOutcome(decision.sendDeliveryId);
       return json({
-        state: sent ? decision.sentState : decision.queuedState,
+        state: outcome === "uncertain" ? "delivery_outcome_uncertain" :
+          outcome === "sent" ? decision.sentState : decision.queuedState,
         ...decision.body,
       }, decision.status);
     }
@@ -755,9 +756,10 @@ export class WorkerSession extends DurableObject {
       return json({error: "RECOVERY_OUTCOME_UNCERTAIN"}, 503);
     }
     if (decision.sendDeliveryId) {
-      const sent = await this.sendActiveIfSafeDelivery(decision.sendDeliveryId);
+      const outcome = await this.sendActiveIfSafeOutcome(decision.sendDeliveryId);
       return json({
-        state: sent ? "recovered_sent" : "recovered_queued",
+        state: outcome === "uncertain" ? "delivery_outcome_uncertain" :
+          outcome === "sent" ? "recovered_sent" : "recovered_queued",
         ...decision.body,
       }, decision.status);
     }
@@ -797,6 +799,15 @@ export class WorkerSession extends DurableObject {
   }
 
   async sendActiveIfSafeDelivery(expectedDeliveryId = null) {
+    // Internal compatibility: callers expecting a boolean keep that contract.
+    return (await this.sendActiveIfSafeOutcome(expectedDeliveryId)) === "sent";
+  }
+
+  async sendActiveIfSafeOutcome(expectedDeliveryId = null) {
+    // "not_sent" means no reservation was proven; "uncertain" means the
+    // transaction or WebSocket send could already have had an effect.
+    // Only report a confirmed socket.send() attempt as "sent".
+    let reservationAttempted = false;
     // All wake sends, including default-OFF v1, require a durable reservation
     // BEFORE the irreversible WebSocket side effect. Keep the short local
     // storage transaction and socket.send inside the DO event-exclusion gate:
@@ -804,14 +815,15 @@ export class WorkerSession extends DurableObject {
     try {
       return await this.ctx.blockConcurrencyWhile(async () => {
         const socket = await this.authoritativeSocket();
-        if (!socket) return false;
+        if (!socket) return "not_sent";
         const attachment = socket.deserializeAttachment();
         if (attachment?.registered !== true ||
             !isValidWorkerId(attachment?.workerId) ||
-            typeof attachment.connectionId !== "string") return false;
+            typeof attachment.connectionId !== "string") return "not_sent";
 
         // The retirement writer must use the exact same marker keys and
         // a DO storage transaction, not a separate in-memory flag.
+        reservationAttempted = true;
         const reserved = await this.ctx.storage.transaction(async tx => {
           const fence = await tx.get(RETIREMENT_FENCE_KEY);
           const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
@@ -835,20 +847,21 @@ export class WorkerSession extends DurableObject {
           });
           return active.wake;
         });
-        if (!reserved) return false;
+        if (!reserved) return "not_sent";
 
         try {
           socket.send(JSON.stringify(reserved));
         } catch {
-          // The transaction might already be committed. Never roll back the
-          // reservation or automatically retry an ambiguous ChatGPT send.
-          return false;
+          // Reservation committed, send may have crossed the boundary.
+          // Never report "queued" or retry an ambiguous ChatGPT prompt.
+          return "uncertain";
         }
-        return true;
+        return "sent";
       });
     } catch {
-      // A storage failure may also occur after commit; fail closed.
-      return false;
+      // If the storage transaction threw, it may have committed first.
+      // Conservative uncertainty blocks any automatic delivery retry.
+      return reservationAttempted ? "uncertain" : "not_sent";
     }
   }
 
