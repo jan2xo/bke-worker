@@ -118,8 +118,21 @@ export async function inspectDormantRetirementRouteFence(storage,input) {
   if (!storage || typeof storage.transaction !== 'function')
     return blocked('TRANSACTION_UNAVAILABLE');
   try {
-    const result=await storage.transaction(tx=>
-      inspectInsideTransaction(tx,expected));
+    // An injected adapter's return value is NOT proof that its callback ran.
+    // Require exactly one completed invocation and the identical immutable
+    // inspection result object. A skipped, duplicated, or replaced callback
+    // outcome cannot invent a stored retirement-fence observation.
+    let callbackCalls=0;
+    let inspectedResult;
+    const result=await storage.transaction(async tx=>{
+      callbackCalls++;
+      const observed=await inspectInsideTransaction(tx,expected);
+      inspectedResult=observed;
+      return observed;
+    });
+    if (callbackCalls!==1 || inspectedResult===undefined ||
+        result!==inspectedResult)
+      return blocked('TRANSACTION_RESULT_INVALID');
     if (!result || (result.state!=='BLOCKED' &&
                       result.state!=='RETIRED_BLOCKED'))
       return blocked('TRANSACTION_RESULT_INVALID');
