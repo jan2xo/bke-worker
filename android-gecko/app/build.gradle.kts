@@ -92,4 +92,5 @@ android {
 dependencies {
     implementation("org.mozilla.geckoview:geckoview-arm64-v8a:154.0.20260824154132")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
 }
