@@ -9,7 +9,7 @@ import {
 
 const OBSERVED_KEYS = Object.freeze([
   'worker_id', 'active_wake', 'queued_wake', 'recent_deliveries',
-  'active_connection_id', RETIREMENT_FENCE_KEY,
+  'active_connection_id', 'relay_observation_v1', RETIREMENT_FENCE_KEY,
 ]);
 const MAX_SNAPSHOT_BYTES = 65536;
 // UTF-16 string.length is not an encoded-byte count (e.g., emoji and CJK).

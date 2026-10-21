@@ -613,3 +613,68 @@ export function relayCheckpointIssuePath(wake) {
   if (!validateWake(wake, wake?.worker_id)) return null;
   return `/repos/${wake.repo}/issues/${wake.pr_number}/comments`;
 }
+
+
+// Durable last-observation schema, strictly scoped to the relay's own
+// registered-socket admission and ACK transaction. No consumer may interpret
+// an ACK as ChatGPT work completion, remote cancellation or owner authority.
+const RELAY_OBSERVATION_KEYS = ["schema_version","worker_id","last_registration","last_ack"];
+const ACK_OBSERVATION_KEYS = [
+  "observed_at_ms","delivery_id","state","repo","pr_number","expected_head_sha",
+];
+const validObservedTime = value => Number.isSafeInteger(value) && value > 0;
+export function validateRelayObservation(record, workerId) {
+  if (!isValidWorkerId(workerId) ||
+      !exactKeys(record, RELAY_OBSERVATION_KEYS) ||
+      record.schema_version !== 1 || record.worker_id !== workerId) return false;
+  const registration = record.last_registration;
+  if (registration !== null &&
+      (!exactKeys(registration, ["observed_at_ms"]) ||
+       !validObservedTime(registration.observed_at_ms))) return false;
+  const ack = record.last_ack;
+  if (ack !== null && (
+      !exactKeys(ack, ACK_OBSERVATION_KEYS) ||
+      !validObservedTime(ack.observed_at_ms) ||
+      !isValidDeliveryId(ack.delivery_id) ||
+      !ACK_STATES.has(ack.state) ||
+      !CONTROL_REPOSITORIES.has(ack.repo) ||
+      !Number.isSafeInteger(ack.pr_number) || ack.pr_number < 1 ||
+      typeof ack.expected_head_sha !== "string" ||
+      !SHA.test(ack.expected_head_sha))) return false;
+  return true;
+}
+
+/**
+ * Calculate one bounded observational update BEFORE making any storage
+ * mutation. Timestamps reflect relay processing, not remote ChatGPT action.
+ * The caller must write this record in the SAME DO transaction as admission
+ * or the corresponding accepted ACK phase transition/clear.
+ */
+export function nextRelayObservation(existing, workerId, atMs, kind, ack = null, wake = null) {
+  if (!isValidWorkerId(workerId) || !validObservedTime(atMs)) return null;
+  const previous = existing === undefined ?
+    {schema_version:1, worker_id:workerId, last_registration:null, last_ack:null} : existing;
+  if (!validateRelayObservation(previous, workerId)) return null;
+  if (kind === "registration") {
+    if (ack !== null || wake !== null ||
+        (previous.last_registration &&
+         atMs < previous.last_registration.observed_at_ms)) return null;
+    return {
+      schema_version:1,worker_id:workerId,
+      last_registration:{observed_at_ms:atMs},
+      last_ack:previous.last_ack === null ? null : {...previous.last_ack},
+    };
+  }
+  if (kind !== "ack" || !validateAck(ack,workerId) ||
+      !validateWake(wake,workerId) || ack.delivery_id !== wake.delivery_id ||
+      (previous.last_ack && atMs < previous.last_ack.observed_at_ms)) return null;
+  return {
+    schema_version:1,worker_id:workerId,
+    last_registration:previous.last_registration === null ? null : {...previous.last_registration},
+    last_ack:{
+      observed_at_ms:atMs,delivery_id:ack.delivery_id,state:ack.state,
+      repo:wake.repo,pr_number:wake.pr_number,
+      expected_head_sha:wake.expected_head_sha,
+    },
+  };
+}

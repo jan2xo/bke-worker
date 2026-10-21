@@ -1,7 +1,7 @@
 // Source-only internal witness for a future privileged operator retirement gate.
 // Does NOT authenticate Admin, cancel a wake, or grant dispatch/retirement authority.
 // Never import into a public HTTP/WebSocket/browser/device route.
-import {CONTROL_REPOSITORIES, isValidDeliveryId, isValidWorkerId, validateWake} from './protocol.js';
+import {CONTROL_REPOSITORIES, isValidDeliveryId, isValidWorkerId, validateWake, validateRelayObservation} from './protocol.js';
 const HEAD = /^[0-9a-f]{40}$/u;
 const PHASES = new Set(['queued', 'sent', 'deferred', 'accepted', 'recovery_required']);
 const MAX_RECENT = 64;
@@ -34,13 +34,14 @@ export async function readRelayRetirementWitness(storage, expected) {
   }
   if (!storage || typeof storage.get !== 'function') return blocked('STORAGE_NOT_TRUSTED');
 
-  let identity, active, queued, registered, recent;
+  let identity, active, queued, registered, recent, observation;
   try {
     identity = await storage.get('worker_id');
     active = await storage.get('active_wake');
     queued = await storage.get('queued_wake');
     registered = await storage.get('active_connection_id');
     recent = await storage.get('recent_deliveries');
+    observation = await storage.get('relay_observation_v1');
     // Normal v1 dispatch can supersede earlier deliveries while preserving
     // their context in a separate internal ledger. Do not call the remaining
     // active+queued pair a COMPLETE retirement witness if such history exists.
@@ -50,6 +51,10 @@ export async function readRelayRetirementWitness(storage, expected) {
     return blocked('STORAGE_READ_FAILED');
   }
   if (identity !== expected.worker_id) return blocked('IDENTITY_MISMATCH_OR_MISSING');
+  if (observation !== undefined &&
+      !validateRelayObservation(observation, expected.worker_id)) {
+    return blocked('RELAY_OBSERVATION_MALFORMED');
+  }
   if (registered !== undefined && (typeof registered !== 'string' || !registered)) {
     return blocked('CONNECTION_METADATA_MALFORMED');
   }
@@ -92,6 +97,16 @@ export async function readRelayRetirementWitness(storage, expected) {
     // ctx.getWebSockets() membership/identity check, which this helper cannot perform.
     active_connection_id_present: registered !== undefined,
     recent_delivery_count: recent?.length ?? 0,
+    // A DO-local timestamp proves neither remote execution nor ChatGPT
+    // cancellation. No connection ID, session ID or profile data is returned.
+    registration_admitted_at_ms: observation?.last_registration?.observed_at_ms ?? null,
+    last_ack_observed: observation?.last_ack ? Object.freeze({
+      ...observation.last_ack,
+      matches_expected_target:
+        observation.last_ack.repo === expected.repo &&
+        observation.last_ack.pr_number === expected.pr_number &&
+        observation.last_ack.expected_head_sha === expected.expected_head_sha,
+    }) : null,
     snapshot_atomic: false,
     delivery_ack_proven: false,
     delivery_fenced: false,

@@ -736,3 +736,43 @@ demo path selection plus malformed/unapproved rejection. No new
 activated-G0 adversarial test was created or substituted. This repairs
 ledger integrity, not GitHub cross-repository assignment exclusivity,
 historical displaced prompts, trusted owner consent, or live retirement.
+
+
+## Same-DO relay observation evidence (PR #145)
+
+Before this change, `WorkerSession` persisted active/queued wake phases
+but did **not** preserve even the last registered-socket ACK or the
+time a connection was admitted. A cleared `active_wake` could therefore
+be wrongly interpreted as proof that earlier worker output was completed
+or cancelled. It was not such proof.
+
+The live *source* now writes a bounded `relay_observation_v1` record in
+the **same DO transaction** as successful connection-ID admission or a
+matched registered-socket ACK phase transition/clear. That record
+contains the bound worker ID, timestamp of latest admitted registration,
+and latest ACK's delivery ID, repo, PR, expected head, ACK state and
+relay-observation timestamp. No socket connection ID, session ID,
+authentication material, browser profile data, full wire message or
+ChatGPT output enters the record. Corrupt/foreign existing observations
+fail closed before a new registration/ACK mutation. Time rollback also
+denies. Older historic observations cannot be reconstructed.
+
+The existing **dormant, unexposed** G0-01 witness returns these
+allowlisted observation fields and explicitly indicates whether the
+latest ACK's repo/PR/head matches the requested scope. An ACK labelled
+`completed` means only that the relay accepted a matching worker
+WebSocket ACK. It is **not** independently authenticated evidence
+of a ChatGPT prompt completing, cancellation, or a human decision.
+`delivery_ack_proven=false`, `can_retire=false`, `authority=NONE`,
+and `snapshot_atomic=false` remain unchanged. G0-04's two-pass
+sample now fingerprints the observation key too, without asserting
+atomicity of sampled live sockets.
+
+Regression proof is scoped to ordinary relay operation and the already
+existing `relay-retirement-witness.test.mjs`. The previously denied
+activated-retirement Workerd adversarial test-file was not recreated,
+renamed or otherwise bypassed. A real owner-authenticated private
+read channel, cross-repo GitHub ownership, full delivery-history
+adjudication, one-use issuer, retirement CAS and mixed-version
+certification remain **BLOCKED**. No live DO was inspected, no config
+switch was enabled, and no Cloudflare deployment was performed.

@@ -16,6 +16,7 @@ import {
   isValidWorkerId,
   routeGitHubPullRequest,
   relayCheckpointIssuePath,
+  nextRelayObservation,
   validateAck,
   validateRegister,
   validateRecoveryRequest,
@@ -28,6 +29,7 @@ const ACTIVE_WAKE_KEY = "active_wake";
 const QUEUED_WAKE_KEY = "queued_wake";
 const RECENT_DELIVERIES_KEY = "recent_deliveries";
 const SUPERSESSION_EVIDENCE_KEY = "supersession_evidence_v1";
+const RELAY_OBSERVATION_KEY = "relay_observation_v1";
 const WORKER_ID_KEY = "worker_id";
 const ACTIVE_CONNECTION_KEY = "active_connection_id";
 const RETIREMENT_FENCE_KEY = "retirement_fence_v1";
@@ -991,6 +993,14 @@ export class WorkerSession extends DurableObject {
               if (fence !== undefined || epoch !== undefined ||
                   persistedWorker !== workerId || this.quarantined(workerId))
                 return false;
+              const observation = nextRelayObservation(
+                await tx.get(RELAY_OBSERVATION_KEY), workerId, Date.now(),
+                "registration",
+              );
+              if (!observation) return false;
+              // The evidence records transaction admission, NOT that socket
+              // attachment, remote prompt handling or ChatGPT login succeeded.
+              await tx.put(RELAY_OBSERVATION_KEY, observation);
               await tx.put(ACTIVE_CONNECTION_KEY, connectionId);
               return true;
             });
@@ -1113,6 +1123,15 @@ export class WorkerSession extends DurableObject {
             !["sent", "accepted", "deferred"].includes(current.phase))
           return "conflict";
 
+        // A matched registered-socket ACK is only a relay observation.
+        // Keep its minimal timestamp/scope in the SAME transaction as the
+        // phase change or removal; never store socket/session/profile secrets.
+        const observation = nextRelayObservation(
+          await tx.get(RELAY_OBSERVATION_KEY), ackWorkerId, Date.now(),
+          "ack", ack, current.wake,
+        );
+        if (!observation) return "conflict";
+        await tx.put(RELAY_OBSERVATION_KEY, observation);
         if (ack.state === "deferred" || ack.state === "accepted") {
           await tx.put(ACTIVE_WAKE_KEY, {
             wake: current.wake,

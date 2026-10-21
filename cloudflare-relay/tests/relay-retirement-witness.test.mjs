@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readRelayRetirementWitness as witness} from '../src/relay-retirement-witness.js';
+import {nextRelayObservation, validateRelayObservation} from '../src/protocol.js';
 const worker_id = 'android-worker-a';
 const expected_head_sha = 'd80f5272e90677558fb1311a94772c8991f03b8f';
 const pr_number = 90;
@@ -132,5 +133,66 @@ test('each recognized phase remains observed-only and never cleared', async () =
     assert.equal(result.active.phase, phase);
     assert.equal(result.can_retire, false);
     assert.equal(result.delivery_fenced, false);
+  }
+});
+
+
+test('registered-socket admission and matched ACK produce bounded relay-only observation', async () => {
+  const admitted = nextRelayObservation(undefined, worker_id, 1000, 'registration');
+  assert.equal(validateRelayObservation(admitted, worker_id), true);
+  assert.equal(admitted.last_registration.observed_at_ms, 1000);
+  assert.equal(admitted.last_ack, null);
+  const ack = {protocol:1,type:'ack',worker_id,delivery_id:delivery,state:'accepted'};
+  const observed = nextRelayObservation(admitted, worker_id, 1010, 'ack', ack, wake);
+  assert.equal(observed.last_ack.state, 'accepted');
+  assert.equal(observed.last_ack.delivery_id, delivery);
+  assert.equal(Object.hasOwn(observed.last_ack,'connectionId'), false);
+  assert.equal(Object.hasOwn(observed.last_ack,'sessionId'), false);
+  const result = await witness(storage({...state,relay_observation_v1:observed}),context);
+  assert.equal(result.state,'OBSERVED_ONLY');
+  assert.equal(result.registration_admitted_at_ms,1000);
+  assert.equal(result.last_ack_observed.observed_at_ms,1010);
+  assert.equal(result.last_ack_observed.matches_expected_target,true);
+  assert.equal(result.delivery_ack_proven,false, 'relay ACK does not prove ChatGPT delivery');
+  assert.equal(result.can_retire,false);
+  assert.equal(JSON.stringify(result).includes('sessionId'), false);
+});
+test('completed ACK remains a relay observation after active wake is cleared', async () => {
+  const ack={protocol:1,type:'ack',worker_id,delivery_id:delivery,state:'completed'};
+  const observed=nextRelayObservation(undefined,worker_id,1234,'ack',ack,wake);
+  const result=await witness(storage({
+    worker_id,relay_observation_v1:observed,
+  }),context);
+  assert.equal(result.active,null);
+  assert.equal(result.last_ack_observed.state,'completed');
+  assert.equal(result.last_ack_observed.delivery_id,delivery);
+  assert.equal(result.can_retire,false);
+  assert.equal(result.delivery_ack_proven,false);
+});
+test('old PR ACK is marked out-of-context, never silently accepted for owner scope',async()=>{
+  const ack={protocol:1,type:'ack',worker_id,delivery_id:delivery,state:'deferred'};
+  const observed=nextRelayObservation(undefined,worker_id,2000,'ack',ack,wake);
+  const other={...context,pr_number:91};
+  const result=await witness(storage({worker_id,relay_observation_v1:observed}),other);
+  assert.equal(result.state,'OBSERVED_ONLY');
+  assert.equal(result.last_ack_observed.matches_expected_target,false);
+  assert.equal(result.can_retire,false);
+});
+test('observation corruption, wrong worker and time rollback fail closed',async()=>{
+  const initial=nextRelayObservation(undefined,worker_id,3000,'registration');
+  assert.equal(nextRelayObservation(initial,worker_id,2999,'registration'),null);
+  assert.equal(nextRelayObservation(initial,'other-worker',3100,'registration'),null);
+  assert.equal(nextRelayObservation(initial,worker_id,3100,'ack',
+    {protocol:1,type:'ack',worker_id,delivery_id:'not-same',state:'accepted'},wake),null);
+  assert.equal(nextRelayObservation(initial,worker_id,NaN,'registration'),null);
+  assert.equal(nextRelayObservation(initial,worker_id,3200,'registration',{unsafe:true}),null);
+  for(const corrupted of [
+    {...initial,worker_id:'other-worker'},
+    {...initial,secret:'NEVER_LEAK'},
+    {...initial,last_registration:{observed_at_ms:'invalid'}},
+    {...initial,last_ack:{observed_at_ms:3000,delivery_id:delivery,state:'completed'}},
+  ]){
+    assert.equal((await witness(storage({...state,relay_observation_v1:corrupted}),context)).code,
+      'RELAY_OBSERVATION_MALFORMED');
   }
 });
