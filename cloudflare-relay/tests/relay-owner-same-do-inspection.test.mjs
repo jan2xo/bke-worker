@@ -191,7 +191,7 @@ test('race on active wake phase across candidate read is fail-closed',async()=>{
   const data=structuredClone(state);
   let seen=0;
   const deps=makeData(data,{mutate:(key)=>{
-    if(key==='active_wake' && ++seen===4) data.active_wake.phase='sent';
+    if(key==='active_wake' && ++seen===5) data.active_wake.phase='sent';
   }});
   const r=await call(await signedCommand(),{deps});
   assert.equal(r.code,'SAME_DO_IDENTITY_CHANGED');deny(r);
