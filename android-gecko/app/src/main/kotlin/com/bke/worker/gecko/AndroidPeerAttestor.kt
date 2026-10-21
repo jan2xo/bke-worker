@@ -32,6 +32,7 @@ data class AndroidPeerAttestationEvidence(
     val bridgeId: String,
     val targetOrigin: String,
     val challengeBase64Url: String,
+    val initialAttestationChallengeBase64Url: String,
     val publicKeyBase64Url: String,
     val attestationChainBase64Url: List<String>,
     val signatureBase64Url: String,
@@ -45,6 +46,7 @@ class AndroidPeerAttestor(context: Context) {
         private const val KEYSTORE = "AndroidKeyStore"
         private const val KEY_ALIAS = "bke.worker.gecko.peer.identity.v1"
         private const val CHALLENGE_BYTES = 32
+        private const val INITIAL_ATTESTATION_CHALLENGE_KEY = "bke.worker.gecko.peer.initial_attestation_challenge.v1"
         private val WORKER_ID = Regex("^[a-z0-9][a-z0-9-]{0,62}$")
         private val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
     }
@@ -73,6 +75,12 @@ class AndroidPeerAttestor(context: Context) {
 
         return runCatching {
             val keyPair = loadOrCreateKeyPair(challenge)
+            val prefs = appContext.getSharedPreferences("bke.worker.peer.identity.v1", Context.MODE_PRIVATE)
+            val initialChallenge = prefs.getString(INITIAL_ATTESTATION_CHALLENGE_KEY, null)
+                ?: error("PEER_INITIAL_ATTESTATION_CHALLENGE_UNRECORDED")
+            check(decode(initialChallenge).size == CHALLENGE_BYTES) {
+                "PEER_INITIAL_ATTESTATION_CHALLENGE_INVALID"
+            }
             val privateKey = privateKey() ?: error("PEER_PRIVATE_KEY_UNAVAILABLE")
             val keyInfo = KeyFactory.getInstance(privateKey.algorithm, KEYSTORE)
                 .getKeySpec(privateKey, KeyInfo::class.java)
@@ -106,6 +114,7 @@ class AndroidPeerAttestor(context: Context) {
                 bridgeId = bridgeId,
                 targetOrigin = targetOrigin,
                 challengeBase64Url = encode(challenge),
+                initialAttestationChallengeBase64Url = initialChallenge,
                 publicKeyBase64Url = encode(publicKey.encoded),
                 attestationChainBase64Url = chain,
                 signatureBase64Url = encode(signature),
@@ -127,6 +136,10 @@ class AndroidPeerAttestor(context: Context) {
             "PEER_KEYSTORE_IDENTITY_INCONSISTENT"
         }
 
+        val prefs = appContext.getSharedPreferences("bke.worker.peer.identity.v1", Context.MODE_PRIVATE)
+        check(prefs.getString(INITIAL_ATTESTATION_CHALLENGE_KEY, null) == null) {
+            "PEER_INITIAL_ATTESTATION_CHALLENGE_UNRECORDED"
+        }
         val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
@@ -138,8 +151,16 @@ class AndroidPeerAttestor(context: Context) {
             .setUserAuthenticationRequired(false)
             .build()
         generator.initialize(spec)
-        return generator.generateKeyPair()
+        val pair = generator.generateKeyPair()
+        val saved = prefs.edit()
+            .putString(INITIAL_ATTESTATION_CHALLENGE_KEY, encode(challenge))
+            .commit()
+        check(saved) { "PEER_INITIAL_ATTESTATION_CHALLENGE_STORE_FAILED" }
+        return pair
     }
+
+    private fun decode(value: String): ByteArray =
+        Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
     private fun privateKey(): PrivateKey? =
         keyStore().getKey(KEY_ALIAS, null) as? PrivateKey
