@@ -41,7 +41,7 @@ Before any real G0-07 writer or G0-08 observer may gate active runtime, the oper
 
 ## G0 runtime interlock integration status — PR #145 (not retirement)
 
-A separate **default-OFF operator configuration emergency-stop** is now imported by `WorkerSession` from `relay-runtime-quarantine-interlock.js`. The keys `BKE_G0_RUNTIME_QUARANTINE_ENABLED` and `BKE_G0_RUNTIME_QUARANTINE_WORKER_ID` are deliberately absent from `wrangler.toml`. Nothing was activated or deployed by the source change. An absent / literal `false` switch preserves existing v1 behavior; an intentionally set literal `true` denies the configured old worker identity, while malformed activation or identity denies all attempted operations.
+A separate **default-OFF operator configuration emergency-stop** is now imported by `WorkerSession` from `relay-runtime-quarantine-interlock.js`. The keys `BKE_G0_RUNTIME_QUARANTINE_ENABLED` and `BKE_G0_RUNTIME_QUARANTINE_WORKER_ID` are deliberately absent from `wrangler.toml`. Nothing was activated or deployed by the source change. An absent / literal `false` switch retains normal v1 routing when no persistent retirement marker exists, **but now performs explicit negative-only storage reads**; a committed marker blocks routing regardless of later flag changes. A literal `true` also denies the configured old worker identity; malformed activation or identity denies all attempted operations.
 
 The guard is inserted before the first `ensureIdentity()` write and across the actual `connect`, `dispatch`, `recover`, `rememberDelivery`, `sendActiveIfSafe`, WebSocket register/message, ACK, wake promotion and socket cleanup paths. Several asynchronous steps also recheck the flag just before writes or socket sending. These checks are best-effort protection against accidentally routing a known retired identity **only after an independently authorized deployment owner configures the stop**. They do **not** prove a linearizable retirement cutover.
 
@@ -113,8 +113,9 @@ uncertainty and possible nondelivery over duplicate ChatGPT prompt delivery.
 It is only a bounded local send ordering seam, **not a complete atomic
 retirement cutover**.
 
-The absent/default-OFF mode still runs the prior v1 implementation without
-entering `blockConcurrencyWhile()` or reading any fence/epoch storage keys.
+The absent/default-OFF mode keeps the prior v1 wake-send ordering (without
+entering `blockConcurrencyWhile()`), **but now reads persisted fence/epoch
+markers and fails closed** if one exists or a storage read is uncertain.
 Neither switch key is declared in Wrangler; this PR does not deploy or
 enable it.
 
@@ -149,3 +150,38 @@ or previously delivered ChatGPT prompt. Runtime feature remains
 undeclared in Wrangler and OFF. Real Cloudflare and adversarial concurrency
 tests plus owner/nonce/head authority and live retirement transaction are
 mandatory before activation or PR merge.
+
+
+## Permanent negative tombstone enforcement independent of env config (PR #145)
+
+The runtime now calls `WorkerSession.persistentlyRetired()` before the
+first `ensureIdentity()` write and at the relay fetch/dispatch/recover,
+send, WebSocket, ACK and relevant post-await side-effect boundaries.
+It reads the actual bound DO's `retirement_fence_v1` and
+`retirement_epoch_v1` keys and **denies if EITHER key is present**, whether
+complete, partial, malformed or for a conflicting worker. Failed reads deny
+as uncertain. This is intentionally independent of
+`BKE_G0_RUNTIME_QUARANTINE_ENABLED`: disabling a temporary env switch must
+not permit a previously retired identity to resume routing.
+
+This change adds storage reads even when the temporary quarantine switch is
+absent. Normal v1 *routing decisions* should remain unchanged with two
+absent keys, but timing/IO behavior is NOT bit-for-bit identical and requires
+regression evidence. This is a security-over-performance choice, not a
+deployed feature claim.
+
+**Important incomplete guarantees:** A negative read followed by an
+external call or a nontransactional `put/delete` is not an atomic
+retirement barrier. The future owner-authorized writer and all live
+operations must share a proven serializable cutover boundary to stop
+in-flight writes, registration/ACK and already-connected sockets. A legacy
+deployed version that does not read tombstones can still bypass a new fence
+until it is retired. An externally erased pair cannot be distinguished from
+a never-retired DO unless an independent monotonic source exists. Absence
+of both markers is NOT positive owner permission.
+
+No owner-signed writer is imported, no live DO writes/deploys occurred, and
+no special G0 runtime configuration was provisioned. Dedicated interlock
+adversarial/concurrency tests previously failed a tool safety gate and
+remain NOT_RUN; do not call this work independently certified or ready for
+merge/activation despite ordinary regression CI being green.
