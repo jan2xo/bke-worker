@@ -905,9 +905,28 @@ export class WorkerSession extends DurableObject {
         socket.close(1008, "worker quarantined");
         return;
       }
-      await this.ctx.storage.put(ACTIVE_CONNECTION_KEY, connectionId);
-      if (this.quarantined(workerId)) {
-        socket.close(1008, "worker quarantined");
+      // Serialize registration with the same retirement marker keys.
+      // A future owner retirement transaction must not be able to commit
+      // from the same pre-registration snapshot while this connection wins.
+      let admitted = false;
+      try {
+        admitted = await this.ctx.storage.transaction(async tx => {
+          const fence = await tx.get(RETIREMENT_FENCE_KEY);
+          const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+          const persistedWorker = await tx.get(WORKER_ID_KEY);
+          if (fence !== undefined || epoch !== undefined ||
+              persistedWorker !== workerId || this.quarantined(workerId))
+            return false;
+          await tx.put(ACTIVE_CONNECTION_KEY, connectionId);
+          return true;
+        });
+      } catch {
+        socket.close(1011, "registration outcome uncertain");
+        return;
+      }
+      if (!admitted || this.quarantined(workerId) ||
+          await this.persistentlyRetired()) {
+        socket.close(1008, "worker quarantined or retired");
         return;
       }
 
