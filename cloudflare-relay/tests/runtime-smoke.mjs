@@ -79,7 +79,7 @@ class RawWebSocket {
     this.waiters = [];
   }
 
-  async connect(pathname) {
+  async connect(pathname, bearerToken = relayToken) {
     const key = randomBytes(16).toString("base64");
     const expectedAccept = createHash("sha1")
       .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
@@ -102,7 +102,7 @@ class RawWebSocket {
             "Connection: Upgrade",
             `Sec-WebSocket-Key: ${key}`,
             "Sec-WebSocket-Version: 13",
-            `Authorization: Bearer ${relayToken}`,
+            `Authorization: Bearer ${bearerToken}`,
             "",
             "",
           ].join("\r\n"),
@@ -218,6 +218,7 @@ async function postWebhook({
   addedLabel = null,
   sender = "external-user",
   headRepoOwner = "jan2xo",
+  workerLabelId = workerId,
 }) {
   const body = JSON.stringify({
     action,
@@ -228,7 +229,7 @@ async function postWebhook({
       number,
       state: "open",
       body: prBody,
-      labels: [{ name: `bke-worker:${workerId}` }],
+      labels: [{ name: `bke-worker:${workerLabelId}` }],
       head: {
         ref: "test/utm-wss-relay-smoke",
         sha,
@@ -588,6 +589,55 @@ try {
   });
   assert.equal(blockedCrossPr.status, 409);
   assert.equal(blockedCrossPr.body.relay.error, "WORKER_WAKE_IN_FLIGHT");
+
+  // Multi-worker relay isolation: A's PR #12 stays in-flight while B's
+  // distinct PR #27 is dispatched through a separate authenticated socket
+  // and separate WorkerSession DO identity. This is NOT a live browser or
+  // ChatGPT-target multi-worker certification.
+  const workerB = "test-worker-b";
+  const wsB = new RawWebSocket();
+  try {
+    await wsB.connect(`/relay/${workerB}`,
+      await deriveRelayToken(relayTokenKey, workerB));
+    wsB.sendText(JSON.stringify({
+      protocol: 1, type: "register", worker_id: workerB,
+      session_id: "cloudflare-local-parallel-worker-b",
+    }));
+    const [secondWorkerDispatch, firstWorkerStillBlocked] = await Promise.all([
+      postWebhook({
+        workerLabelId: workerB,
+        deliveryId: "cloudflare-smoke-parallel-b-001",
+        action: "opened",
+        number: 27,
+        sha: "1234567890abcdef1234567890abcdef12345678",
+      }),
+      postWebhook({
+        deliveryId: "cloudflare-smoke-parallel-a-002",
+        action: "opened",
+        number: 13,
+        sha: "fedcba0987654321fedcba0987654321fedcba09",
+      }),
+    ]);
+    assert.equal(secondWorkerDispatch.status, 202,
+      "B must receive its own PR while A is occupied");
+    assert.equal(secondWorkerDispatch.body.worker_id, workerB);
+    assert.equal(firstWorkerStillBlocked.status, 409,
+      "A must still enforce its own in-flight PR assignment");
+    assert.equal(firstWorkerStillBlocked.body.relay.error, "WORKER_WAKE_IN_FLIGHT");
+
+    const bWake = JSON.parse(await wsB.nextText());
+    assert.equal(bWake.worker_id, workerB);
+    assert.equal(bWake.pr_number, 27);
+    assert.equal(bWake.delivery_id, "cloudflare-smoke-parallel-b-001");
+    assert.equal(bWake.expected_head_sha,
+      "1234567890abcdef1234567890abcdef12345678");
+    wsB.sendText(JSON.stringify({
+      protocol: 1, type: "ack", worker_id: workerB,
+      delivery_id: bWake.delivery_id, state: "completed",
+    }));
+  } finally {
+    wsB.close();
+  }
 
   const recoveryHead = "ffffffffffffffffffffffffffffffffffffffff";
   const recoveryMarker = `<!-- BKE-RECOVER-CROSS-PR-WAKE worker=${workerId} pr=13 head=${recoveryHead} -->`;

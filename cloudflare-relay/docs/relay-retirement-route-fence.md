@@ -1051,3 +1051,27 @@ archived-replay 409 proof and ordinary same-repo continuation.
 These are default-OFF relay regressions, not activated-G0
 adversarial retirement/credential tests. No deployment or live DO
 operation was performed.
+
+
+## Two independent worker identities in one local relay smoke (PR #145)
+
+The existing normal `runtime-smoke.mjs` now verifies an actual
+local Workerd overlap across **two distinct WorkerSession DOs**:
+worker A keeps PR #12 in-flight and rejects an attempted PR #13
+without its owner recovery marker while independently authenticated
+worker B receives PR #27 through a different registered WebSocket.
+Both signed GitHub webhook dispatches run concurrently using
+`Promise.all`, and each result is checked against its own worker ID,
+PR, delivery ID, expected head, and in-flight decision.
+
+Worker B has its own HMAC-derived relay bearer token, WebSocket,
+session registration and DO identity. No shared writable browser
+profile, ChatGPT session, computer, auth cookie, or actual user
+assignment is created. The existing worker A cross-PR recovery and
+subsequent delivery still execute after the overlap, verifying
+compatibility. This is **relay-level local concurrency evidence only**,
+not certification of two real Linux/.NET Chromium workers, dedicated
+ChatGPT targets, owner onboarding, or complete parallel autonomous
+execution. The local test uses synthetic worker IDs and nonproduction
+webhooks; no Cloudflare deployment, live wake, assignment label
+mutation, or forbidden activated G0 retirement test file is involved.
