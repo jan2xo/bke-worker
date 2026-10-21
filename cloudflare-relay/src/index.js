@@ -797,88 +797,59 @@ export class WorkerSession extends DurableObject {
   }
 
   async sendActiveIfSafeDelivery(expectedDeliveryId = null) {
-    if (await this.persistentlyRetired()) return false;
-    // Optional source-only PREPRODUCTION quarantine cutover preparation.
-    // The configured legacy identity is always denied by quarantined().
-    // For other workers, keep the short *local* wake reservation and socket
-    // send in one DO event-exclusion window. No GitHub/network I/O here.
-    // An old/suspect wake must never be automatically redelivered after a
-    // crash between socket.send and persisting the phase.
-    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true") {
-      try {
-        return await this.ctx.blockConcurrencyWhile(async () => {
-          const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-          if (!active || active.phase !== "queued" ||
+    // All wake sends, including default-OFF v1, require a durable reservation
+    // BEFORE the irreversible WebSocket side effect. Keep the short local
+    // storage transaction and socket.send inside the DO event-exclusion gate:
+    // no external GitHub, browser, service binding or auth calls here.
+    try {
+      return await this.ctx.blockConcurrencyWhile(async () => {
+        const socket = await this.authoritativeSocket();
+        if (!socket) return false;
+        const attachment = socket.deserializeAttachment();
+        if (attachment?.registered !== true ||
+            !isValidWorkerId(attachment?.workerId) ||
+            typeof attachment.connectionId !== "string") return false;
+
+        // The retirement writer must use the exact same marker keys and
+        // a DO storage transaction, not a separate in-memory flag.
+        const reserved = await this.ctx.storage.transaction(async tx => {
+          const fence = await tx.get(RETIREMENT_FENCE_KEY);
+          const epoch = await tx.get(RETIREMENT_EPOCH_KEY);
+          if (fence !== undefined || epoch !== undefined) return null;
+          const persistedWorker = await tx.get(WORKER_ID_KEY);
+          const activeConnectionId = await tx.get(ACTIVE_CONNECTION_KEY);
+          const active = await tx.get(ACTIVE_WAKE_KEY);
+          if (persistedWorker !== attachment.workerId ||
+              this.quarantined(persistedWorker) ||
+              activeConnectionId !== attachment.connectionId ||
+              !active || active.phase !== "queued" ||
+              !validateWake(active.wake, persistedWorker) ||
               (expectedDeliveryId !== null &&
-               active.wake?.delivery_id !== expectedDeliveryId) ||
-              this.quarantined(active.wake?.worker_id) ||
-              await this.quarantinedBoundWorker(active.wake?.worker_id)) return false;
+               active.wake.delivery_id !== expectedDeliveryId)) return null;
 
-          // Reject either half of a durable retirement marker, including
-          // malformed/incomplete state. A missing marker is NOT owner proof
-          // and does not authorize retirement or label release.
-          const fence = await this.ctx.storage.get("retirement_fence_v1");
-          const epoch = await this.ctx.storage.get("retirement_epoch_v1");
-          if (fence !== undefined || epoch !== undefined) return false;
-
-          const socket = await this.authoritativeSocket();
-          if (!socket) return false;
-          const attachment = socket.deserializeAttachment();
-          if (attachment?.workerId !== active.wake.worker_id ||
-              attachment?.registered !== true ||
-              await this.quarantinedBoundWorker(attachment.workerId)) return false;
-
-          // Mark uncertain before the irrecoverable external WebSocket send.
-          // If this write or send fails, leave the delivery blocked, not
-          // queued for automatic replay. Human-led reconciliation is required.
-          await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
+          // A crash, restart, lost socket or send failure after this commit
+          // leaves a SENT/UNCERTAIN wake. No caller may retry it as queued.
+          await tx.put(ACTIVE_WAKE_KEY, {
             wake: active.wake,
             phase: "sent",
           });
-          if (this.quarantined(attachment.workerId)) return false;
-          try {
-            socket.send(JSON.stringify(active.wake));
-          } catch {
-            return false;
-          }
-          return true;
+          return active.wake;
         });
-      } catch {
-        // A DO write may have committed before throwing. No retry here.
-        return false;
-      }
+        if (!reserved) return false;
+
+        try {
+          socket.send(JSON.stringify(reserved));
+        } catch {
+          // The transaction might already be committed. Never roll back the
+          // reservation or automatically retry an ambiguous ChatGPT send.
+          return false;
+        }
+        return true;
+      });
+    } catch {
+      // A storage failure may also occur after commit; fail closed.
+      return false;
     }
-    // Ordinary v1 ordering is preserved except for the required persistent
-    // retirement-read guard, including one last read before socket.send().
-    const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(active?.wake?.worker_id)) return false;
-    if (!active || active.phase !== "queued" ||
-        (expectedDeliveryId !== null &&
-         active.wake?.delivery_id !== expectedDeliveryId)) return false;
-    // No new await or DO read in default-OFF v1 execution.
-    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-        await this.quarantinedBoundWorker(active.wake.worker_id)) return false;
-
-    const socket = await this.authoritativeSocket();
-    if (!socket) return false;
-    // The queued wake and the authoritative socket MUST belong to one worker
-    // when this private quarantine interlock is explicitly enabled.
-    const socketWorkerId = socket.deserializeAttachment()?.workerId;
-    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-        socketWorkerId !== active.wake.worker_id) return false;
-    // Don't send after the authoritative-socket lookup suspended the call.
-    if (this.quarantined(active.wake.worker_id) ||
-        this.quarantined(socketWorkerId) ||
-        (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         await this.quarantinedBoundWorker(socketWorkerId))) return false;
-
-    if (await this.persistentlyRetired()) return false;
-    socket.send(JSON.stringify(active.wake));
-    await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
-      wake: active.wake,
-      phase: "sent",
-    });
-    return true;
   }
 
   async webSocketMessage(socket, message) {
