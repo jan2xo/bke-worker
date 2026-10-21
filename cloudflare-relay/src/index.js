@@ -479,7 +479,9 @@ export class WorkerSession extends DurableObject {
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     if (this.quarantined(workerId) ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         await this.quarantinedBoundWorker(workerId)))
+         (active !== undefined && active !== null &&
+           active.wake?.worker_id !== workerId ||
+          await this.quarantinedBoundWorker(workerId))))
       return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const crossPrRecovery = active &&
       active.wake.pr_number !== wake.pr_number &&
@@ -659,7 +661,12 @@ export class WorkerSession extends DurableObject {
     }
 
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
-    if (this.quarantined(workerId)) return json({ error: QUARANTINE_DENIAL_CODE }, 423);
+    if (this.quarantined(workerId) ||
+        (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
+         (active !== undefined && active !== null &&
+           active.wake?.worker_id !== workerId ||
+          await this.quarantinedBoundWorker(workerId))))
+      return json({ error: QUARANTINE_DENIAL_CODE }, 423);
     const plan = planRecovery(
       assignments.map((assignment) => ({ ...assignment, workerId })),
       active,
@@ -751,11 +758,16 @@ export class WorkerSession extends DurableObject {
 
     const socket = await this.authoritativeSocket();
     if (!socket) return false;
+    // The queued wake and the authoritative socket MUST belong to one worker
+    // when this private quarantine interlock is explicitly enabled.
+    const socketWorkerId = socket.deserializeAttachment()?.workerId;
+    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
+        socketWorkerId !== active.wake.worker_id) return false;
     // Don't send after the authoritative-socket lookup suspended the call.
     if (this.quarantined(active.wake.worker_id) ||
-        this.quarantined(socket.deserializeAttachment()?.workerId) ||
+        this.quarantined(socketWorkerId) ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
-         await this.quarantinedBoundWorker(socket.deserializeAttachment()?.workerId))) return false;
+         await this.quarantinedBoundWorker(socketWorkerId))) return false;
 
     socket.send(JSON.stringify(active.wake));
     await this.ctx.storage.put(ACTIVE_WAKE_KEY, {
@@ -850,6 +862,12 @@ export class WorkerSession extends DurableObject {
     }
     const active = await this.ctx.storage.get(ACTIVE_WAKE_KEY);
     const ackWorkerId = socket.deserializeAttachment()?.workerId;
+    if (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
+        active !== undefined && active !== null &&
+        active.wake?.worker_id !== ackWorkerId) {
+      socket.close(1008, "worker identity conflict");
+      return;
+    }
     if (this.quarantined(ackWorkerId) ||
         (this.env?.BKE_G0_RUNTIME_QUARANTINE_ENABLED === "true" &&
          await this.quarantinedBoundWorker(ackWorkerId))) {
