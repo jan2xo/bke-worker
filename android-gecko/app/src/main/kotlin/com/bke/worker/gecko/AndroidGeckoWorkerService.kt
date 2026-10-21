@@ -168,7 +168,7 @@ class AndroidGeckoWorkerService : Service() {
     private val attestationExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "bke-peer-attestation").apply { isDaemon = true }
     }
-    private val peerTargetGate = PeerTargetObservationGate()
+    private val peerTargetGate = PeerTargetObservationGate(TARGET_OBSERVATION_MAX_AGE_MS)
 
     @Volatile
     private var activeWorkerId = DEFAULT_WORKER_ID
