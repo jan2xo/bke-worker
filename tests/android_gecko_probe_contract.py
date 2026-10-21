@@ -620,7 +620,7 @@ for token in (
     "current.nativePortGeneration == expected.nativePortGeneration",
     "current.readinessGeneration == expected.readinessGeneration",
     "peerTargetGate.matches(expected.target, System.currentTimeMillis())",
-    "attestationExecutor.shutdownNow()",
+    "attestationExecutor.shutdown()",
     "activeBridgeBindingId = UUID.randomUUID().toString()",
     "activeBridgeBindingId = null",
     "peerTargetGate.resetBridge()",
