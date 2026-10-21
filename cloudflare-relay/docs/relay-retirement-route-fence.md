@@ -982,3 +982,27 @@ Two ordinary protocol tests cover both mismatch directions and
 single-number compatibility. No new route, secret, deployment, live
 Cloudflare operation, denied activated-G0 concurrency test file or
 retirement authority was introduced.
+
+
+## Prevent queued delivery overtaking during ACK-to-promotion gap (PR #145)
+
+`handleAck()` clears a completed active wake in one DO transaction,
+then `promoteQueuedWake()` claims the queued slot in a subsequent
+transaction. Between these operations the active slot can be absent
+while `queued_wake` still exists. Previously an unrelated webhook
+could enter `dispatch()` at this point, create a new active wake and
+leave the earlier queued wake stranded: promotion then observes a new
+active slot and cannot progress the queued PR.
+
+The normal dispatch transaction now rejects `!active && queued`
+with `QUEUED_DELIVERY_PENDING_PROMOTION` (409) before recording
+the incoming delivery ID, writing an active wake, or sending it.
+The queued evidence is preserved. The existing ACK promotion path
+retains the opportunity to promote without being overtaken; a
+persistent gap needs explicit owner reconciliation, not an invented
+handoff. A structural check in the pre-existing Python relay
+contract asserts the guard precedes the unoccupied-active write;
+existing Node and Workerd smoke remain required compatibility
+proof. No owner authority, Cloudflare deployment/live DO operation,
+new public endpoint, credential or prohibited activated-G0 test
+file was introduced.

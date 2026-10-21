@@ -672,6 +672,16 @@ export class WorkerSession extends DurableObject {
             state: "coalesced_queued", delivery_id: wake.delivery_id,
           }};
         }
+        // A completed ACK clears active before promoteQueuedWake() runs.
+        // Do not overtake the older queued delivery in this window.
+        if (!active && queued) {
+          return {status: 409, body: {
+            error: "QUEUED_DELIVERY_PENDING_PROMOTION",
+            queued_delivery_id: queued.delivery_id,
+            queued_pr: queued.pr_number,
+            incoming_pr: wake.pr_number,
+          }};
+        }
         if (!active) {
           await tx.put(RECENT_DELIVERIES_KEY, recentNext);
           await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"});

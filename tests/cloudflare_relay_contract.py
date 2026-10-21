@@ -102,6 +102,21 @@ for token in (
 
     assert token in runtime, token
 
+# A cleared active wake may temporarily coexist with a queued wake
+# between completed ACK and promotion; another webhook must not overtake.
+dispatch_scope = runtime.split("  async dispatch(request, workerId) {", 1)[1].split(
+    "  async recover(request, workerId) {", 1
+)[0]
+assert 'if (!active && queued) {' in dispatch_scope
+assert '"QUEUED_DELIVERY_PENDING_PROMOTION"' in dispatch_scope
+assert dispatch_scope.index('if (!active && queued) {') < dispatch_scope.index(
+    'if (!active) {'
+)
+assert dispatch_scope.index('if (!active && queued) {') < dispatch_scope.index(
+    'await tx.put(ACTIVE_WAKE_KEY, {wake, phase: "queued"})',
+    dispatch_scope.index('if (!active && queued) {')
+)
+
 for token in (
     'CONTROL_REPOSITORY = "jan2xo/bke-worker"',
     'CONTROL_REPOSITORY_ID = "1354026486"',
