@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,mkdir,writeFile,readFile,chmod,rm,symlink} from "node:fs/promises";
+import {mkdtemp,mkdir,writeFile,readFile,chmod,rm,symlink,realpath} from "node:fs/promises";
 import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
 import {join,dirname} from "node:path";
@@ -12,7 +12,10 @@ const H=x=>x.repeat(64),sha=b=>createHash("sha256").update(b).digest("hex");
 const later=()=>Date.now()+3600000;
 const keys=["manifest","launcher","entry","host","framing","policy"];
 async function fixture(t){
- const dir=await mkdtemp(join(tmpdir(),"bke-witness-"));
+ // macOS /var is normally a symlink to /private/var. A positive trust
+ // fixture must use its physical path; production deliberately rejects
+ // symlinked ancestors and that protection must not be relaxed.
+ const dir=await realpath(await mkdtemp(join(tmpdir(),"bke-witness-")));
  t.after(async()=>rm(dir,{recursive:true,force:true}));
  const install=join(dir,"install"),stateDir=join(dir,"state"),chrome=join(dir,"chrome");
  for(const p of [install,stateDir,chrome])await mkdir(p,{mode:0o700});
@@ -57,6 +60,7 @@ const denied=async opts=>assert.rejects(check(opts),e=>
   e instanceof Error&&e.message==="NATIVE_INSTALLATION_UNVERIFIED");
 test("owner-reviewed exact hashes plus installer receipt witness installed bytes only",async t=>{
  const f=await fixture(t);
+ assert.equal(f.dir,await realpath(f.dir),"positive fixture must use a physical canonical path");
  const r=await check(f.opts);
  assert.deepEqual(r,{state:"INSTALLATION_BYTES_VERIFIED",host:HOST,worker_id:"worker-a",
   browser_session_authority:"NONE",device_admission_authority:"NONE",dispatch_authority:"NONE"});
