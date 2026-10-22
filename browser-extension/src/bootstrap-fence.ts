@@ -28,6 +28,7 @@ export type BootstrapState =
 export type BootstrapEvent =
   | "PREPARE"
   | "VERIFY_FENCE_COMMIT"
+  | "AUTHORIZE_FIRST_SUBMISSION"
   | "CONFIRM_NEW_CONVERSATION"
   | "MARK_DELIVERY_UNCERTAIN"
   | "RECOVER_AFTER_RESTART";
@@ -114,6 +115,22 @@ export interface FirstMessageConversationReceipt {
   confirmedAt: string;
 }
 
+export interface SendClaimCommitReceipt {
+  event: "SEND_CLAIM_COMMIT_READ_BACK";
+  claimId: string;
+  commitSha: string;
+  fenceId: string;
+  fenceCommitSha: string;
+  attemptId: string;
+  workerId: string;
+  headSha: string;
+  targetId: string;
+  profileId: string;
+  targetTabId: number;
+  executionId: string;
+  observedAt: string;
+}
+
 export interface GitHubBootstrapObservation {
   repository: string;
   prNumber: number;
@@ -132,6 +149,8 @@ export interface GitHubBootstrapObservation {
   fence?: DurablePreSendFence;
   /** Irreversible durable CAS marker; once present, this fence is consumed. */
   sendClaim?: DurableFirstSendClaim;
+  /** Authenticated-provider adapter's exact post-CAS GET read-back receipt. */
+  sendClaimCommitReceipt?: SendClaimCommitReceipt;
 }
 
 export interface ChatUiObservation {
@@ -187,6 +206,8 @@ export type BootstrapCode =
   | "FENCE_CANDIDATE"
   | "PREPARE_CANDIDATE"
   | "FIRST_SEND_CAS_CANDIDATE"
+  | "FIRST_SUBMISSION_CANDIDATE"
+  | "SEND_CLAIM_READBACK_INVALID"
   | "NEW_CONVERSATION_CANDIDATE"
   | "DELIVERY_UNCERTAIN"
   | "SAFE_TO_REEVALUATE_PREPARE"
@@ -377,6 +398,33 @@ function validSendClaim(input: BootstrapFenceInput): boolean {
     claimedAt <= now + BOOTSTRAP_CLOCK_SKEW_MS;
 }
 
+function validateSendClaimCommitReceipt(input: BootstrapFenceInput): boolean {
+  const { request, github, nowIso } = input;
+  const receipt = github.sendClaimCommitReceipt;
+  const claim = github.sendClaim;
+  const fence = github.fence;
+  if (!receipt || !claim || !fence || typeof receipt !== "object") return false;
+  const now = validIsoUtc(nowIso);
+  const observedAt = validIsoUtc(receipt.observedAt);
+  const claimedAt = validIsoUtc(claim.claimedAt);
+  return receipt.event === "SEND_CLAIM_COMMIT_READ_BACK" &&
+    receipt.claimId === claim.claimId &&
+    receipt.commitSha === claim.commitSha &&
+    receipt.fenceId === fence.fenceId &&
+    receipt.fenceCommitSha === fence.commitSha &&
+    receipt.attemptId === request.attemptId &&
+    receipt.workerId === request.workerId &&
+    receipt.headSha === request.headSha &&
+    receipt.targetId === request.targetId &&
+    receipt.profileId === request.profileId &&
+    receipt.targetTabId === request.targetTabId &&
+    receipt.executionId === request.executionId &&
+    now !== null && observedAt !== null && claimedAt !== null &&
+    observedAt >= claimedAt &&
+    observedAt <= now + BOOTSTRAP_CLOCK_SKEW_MS &&
+    now - observedAt <= BOOTSTRAP_OBSERVATION_MAX_AGE_MS;
+}
+
 /**
  * Evaluate a proposed bootstrap transition from provider observations.
  * This function is pure and cannot authenticate those observations or perform a transition.
@@ -399,8 +447,8 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
       typeof request.headSha !== "string" || !SHA.test(request.headSha) ||
       typeof request.attemptId !== "string" || !ATTEMPT_ID.test(request.attemptId) ||
       typeof request.executionId !== "string" || !ATTEMPT_ID.test(request.executionId) ||
-      !["PREPARE", "VERIFY_FENCE_COMMIT", "CONFIRM_NEW_CONVERSATION",
-        "MARK_DELIVERY_UNCERTAIN", "RECOVER_AFTER_RESTART"].includes(request.event) ||
+      !["PREPARE", "VERIFY_FENCE_COMMIT", "AUTHORIZE_FIRST_SUBMISSION",
+        "CONFIRM_NEW_CONVERSATION", "MARK_DELIVERY_UNCERTAIN", "RECOVER_AFTER_RESTART"].includes(request.event) ||
       typeof request.targetId !== "string" || !IDENTIFIER.test(request.targetId) ||
       typeof request.profileId !== "string" || !IDENTIFIER.test(request.profileId) ||
       !Number.isSafeInteger(request.targetTabId) || request.targetTabId < 0 ||
@@ -456,6 +504,13 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
   // closed unless the canonical attempt state is MAY_HAVE_SENT, where only
   // confirmation may proceed and validSendClaim performs strict validation.
   if (github.sendClaim !== undefined && github.state !== "FENCED_MAY_HAVE_SENT") {
+    // Preserve the terminal quarantine label even if a consumed claim is still
+    // visible in a lagging or contradictory projection. Never turn uncertainty
+    // into a prepare/send candidate, but report the uncertainty as such.
+    if (github.state === "DELIVERY_UNCERTAIN" || github.deliveryKnowledge === "UNCERTAIN" ||
+        github.deliveryKnowledge === "MAY_HAVE_SENT") {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
     return blocked("FENCE_REPLAY_OR_WRONG_EXECUTION", github.state);
   }
 
@@ -491,7 +546,8 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
         github.deliveryKnowledge !== "MAY_HAVE_SENT") {
       return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
     }
-    if (request.event !== "CONFIRM_NEW_CONVERSATION") {
+    if (request.event !== "CONFIRM_NEW_CONVERSATION" &&
+        request.event !== "AUTHORIZE_FIRST_SUBMISSION") {
       return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
     }
   }
@@ -535,6 +591,33 @@ export function evaluateBootstrapFence(input: unknown): BootstrapFenceResult {
     const pageError = landingPageReady(input as BootstrapFenceInput);
     if (pageError) return blocked(pageError, github.state);
     return candidate("FENCED_READY_TO_SEND", "FIRST_SEND_CAS_CANDIDATE");
+  }
+
+  if (request.event === "AUTHORIZE_FIRST_SUBMISSION") {
+    // This is a pre-submit gate. A durable consumed claim is deliberately treated
+    // as MAY_HAVE_SENT so any crash becomes quarantine, never a resend opportunity.
+    // Synthetic coherence is not provider authentication and grants no authority.
+    if (github.state !== "FENCED_MAY_HAVE_SENT" || github.deliveryKnowledge !== "MAY_HAVE_SENT") {
+      return blocked("ATTEMPT_STATE_CONFLICT", github.state);
+    }
+    if (!validFence(input as BootstrapFenceInput) ||
+        !validateFenceCommitReceipt(input as BootstrapFenceInput) ||
+        !validSendClaim(input as BootstrapFenceInput)) {
+      return blocked("DELIVERY_UNCERTAIN", "DELIVERY_UNCERTAIN");
+    }
+    if (!validateSendClaimCommitReceipt(input as BootstrapFenceInput)) {
+      return blocked("SEND_CLAIM_READBACK_INVALID", "DELIVERY_UNCERTAIN");
+    }
+    // The browser must be re-observed after the authenticated claim read-back,
+    // not reuse a pre-CAS or stale snapshot for the irreversible submit boundary.
+    const claimReadAt = validIsoUtc(github.sendClaimCommitReceipt?.observedAt ?? "");
+    const pageObservedAt = validIsoUtc(page.observedAt);
+    if (claimReadAt === null || pageObservedAt === null || pageObservedAt < claimReadAt) {
+      return blocked("OBSERVATION_STALE", github.state);
+    }
+    const pageError = landingPageReady(input as BootstrapFenceInput);
+    if (pageError) return blocked(pageError, github.state);
+    return candidate("FENCED_MAY_HAVE_SENT", "FIRST_SUBMISSION_CANDIDATE");
   }
 
   if (request.event === "CONFIRM_NEW_CONVERSATION") {
