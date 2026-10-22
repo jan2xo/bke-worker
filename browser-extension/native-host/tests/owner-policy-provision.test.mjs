@@ -66,6 +66,17 @@ test("symlinked directory or existing policy symlink is never replaced",async t=
  await assert.rejects(persistOwnerPolicy(policy,{home}),/OWNER_POLICY_ALREADY_EXISTS/);
  assert.equal((await lstat(linkPath)).isSymbolicLink(),true);
 });
+test("programmatic writer cannot bypass anti-placeholder and duplicate pin checks",async t=>{
+ const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-writer-")));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const good=buildReviewedOwnerPolicy(values());
+ const placeholder={...good,public_key_sha256:"a".repeat(64)};
+ const duplicate={...good,resources:{...good.resources,
+   browser_profile_sha256:good.resources.chatgpt_target_sha256}};
+ await assert.rejects(persistOwnerPolicy(placeholder,{home}),/OWNER_POLICY_PINS_UNTRUSTED/);
+ await assert.rejects(persistOwnerPolicy(duplicate,{home}),/OWNER_POLICY_PINS_UNTRUSTED/);
+ await assert.rejects(stat(join(home,".config")),/ENOENT/);
+});
 test("never creates policy or parent directory from invalid binding",async t=>{
  const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-untrusted-")));
  t.after(()=>rm(home,{recursive:true,force:true}));

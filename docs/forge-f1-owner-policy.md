@@ -29,7 +29,7 @@ today there may be no valid independent sources for the four binding pins.
 This provisioning tool does NOT generate or attest them.
 
 The tool validates the exact native-host policy schema, expiry of 1–30
-days, six distinct valid hashes, and a full typed owner acknowledgement.
+days, five distinct valid hashes, and a full typed owner acknowledgement.
 It writes only a 0600, non-overwriting local policy under the user's
 .config/bke-worker/native-host directory, refusing unsafe owners,
 permissions and symlinks. It prints no source pin values.

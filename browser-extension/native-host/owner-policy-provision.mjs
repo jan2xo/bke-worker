@@ -52,6 +52,19 @@ export async function persistOwnerPolicy(policy,{
    typeof home!=="string"||!home.startsWith("/")||resolve(home)!==home||
    !Number.isSafeInteger(now)||!validNativeHostPolicy(policy,now))
    DENY("WRITE_DENIED");
+ // This exported function must not be weaker than the interactive builder.
+ // Re-validate owner-reviewed pin shape and anti-placeholder checks for
+ // direct programmatic callers before touching ANY filesystem path.
+ try{
+   buildReviewedOwnerPolicy({
+     allowed_origin:policy.allowed_origin,worker_id:policy.worker_id,
+     public_key_sha256:policy.public_key_sha256,
+     profile_binding_sha256:policy.profile_binding_sha256,
+     chatgpt_target_sha256:policy.resources.chatgpt_target_sha256,
+     browser_profile_sha256:policy.resources.browser_profile_sha256,
+     bridge_identity_sha256:policy.resources.bridge_identity_sha256,
+   },{now,ttlMs:policy.expires_at_ms-now});
+ }catch{DENY("PINS_UNTRUSTED");}
  let physical;
  try{physical=await realpath(home);}catch{DENY("HOME_UNTRUSTED");}
  if(physical!==home)DENY("HOME_UNTRUSTED");
