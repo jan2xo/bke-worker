@@ -58,8 +58,15 @@ attestation, not real native Chrome proof, and NOT REAL_CHROME_READY by itself.
 
 ## Unfinished F1-03 live gates
 
-The extension manifest still has NO nativeMessaging permission, and the
-service worker has no native controller transport. Installation permission,
+The PR now declares nativeMessaging only in optional_permissions, not as a
+required installation permission. A Chrome extension popup action lets the
+human select the owner-reviewed owner-policy.json with a file picker,
+explicitly request the optional permission through Chrome's own dialog, and
+then perform the existing P-256 challenge/response via native host ONLY after
+the service worker verifies the popup origin, worker ID, extension origin,
+public thumbprint, policy pins/expiry, one chatgpt.com tab and granted
+permission. The service worker never opens the host on startup, from a web
+page, from GitHub tasks, or without the owner popup action. Installation permission,
 actual Chrome-to-Node signed proof, authenticated typed controller, device
 binding, nonce/replay and MV3 suspend/reconnect safety, human Chrome smoke,
 GitHub assignment and first ChatGPT send remain distinct unproved tasks.
@@ -69,3 +76,24 @@ worker labels are authorized by local source-only validation.
 The cheap automatic exact-head PR Guard/Node tests use synthetic inputs and
 disposable homes only. Keep PR #146 in DRAFT until F1-03 Issue #124 scope
 is actually complete and audited; do not treat CI as physical browser proof.
+
+## New owner opt-in Chrome-to-Node key proof (still NOT live-certified)
+
+When independently reviewed, certified and merged, the dedicated owner Chrome
+extension popup provides a local JSON file picker for the policy file created
+by the owner script. Only the owner-selected file is read by the popup; the
+extension never browses the OS filesystem or Chrome private profile. Clicking
+Verify local native host asks Chrome for OPTIONAL nativeMessaging permission
+from within a direct user gesture. Refusing permission is a safe no-op.
+
+If permission is granted, the trusted extension popup sends only the local
+policy to the service worker, which checks identity, worker, 30-day maximum
+expiry, exact source pins, one matching target tab, and then attempts a single
+bounded signed native-host proof using the previously implemented client.
+No command execution, page JavaScript, ChatGPT prompt, server enrollment,
+GitHub worker assignment, autonomous wake, credential, or real ChatGPT send
+is exposed. On error, mismatch, timeout, disconnect or uncertain outcome it
+fails closed. Chrome remains human-authenticated only. The real Chrome-to-Node
+handshake is NOT certified by synthetic source tests and must have a separate
+owner-run Mac proof. No genuine controller session exists yet; further F1-03
+work and eventual final security/merge review remain required.

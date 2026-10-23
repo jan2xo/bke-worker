@@ -8,6 +8,7 @@ const manifest = JSON.parse(
 assert.equal(manifest.manifest_version, 3);
 assert.ok(Number(manifest.minimum_chrome_version) >= 116);
 assert.deepEqual(manifest.permissions, ["storage"]);
+assert.deepEqual(manifest.optional_permissions, ["nativeMessaging"]);
 assert.deepEqual(manifest.host_permissions, ["https://chatgpt.com/*"]);
 assert.equal(manifest.background?.type, "module");
 assert.equal(manifest.background?.service_worker, "dist/service-worker.js");
@@ -20,7 +21,6 @@ for (const forbidden of [
   "debugger",
   "history",
   "identity",
-  "nativeMessaging",
   "webRequest",
 ]) {
   assert.equal(

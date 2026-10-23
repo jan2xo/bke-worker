@@ -8,6 +8,8 @@ import {
   type ChatGptPageStatus,
 } from "./protocol.js";
 import { createDeviceIdentityBridge, createIndexedDbIdentityStore, publicIdentitySummary } from "./device-identity.js";
+import { checkOwnerNativePolicy } from "./native-policy-gate.js";
+import { proveLocalNativeHost } from "./native-proof-client.js";
 
 const CONFIG_KEY = "bridgeConfig";
 const STATUS_KEY = "chatGptStatus";
@@ -18,6 +20,8 @@ const SET_CONFIG_MESSAGE = "bke.config.set";
 const PROBE_MESSAGE = "bke.chatgpt.probe";
 const IDENTITY_STATUS_MESSAGE = "bke.device.identity.status";
 const IDENTITY_INIT_MESSAGE = "bke.device.identity.initialize";
+const NATIVE_PROOF_MESSAGE = "bke.native.local.proof";
+let nativeProofActive = false;
 
 const DEFAULT_CONFIG: BridgeConfig = {
   workerId: "",
@@ -164,6 +168,49 @@ async function deviceIdentityAction(kind: "read" | "initialize") {
   } catch { return { state: "BLOCKED", code: "IDENTITY_UNAVAILABLE" }; }
 }
 
+
+// Runs ONLY after an explicit owner popup click + Chrome optional permission.
+// A local signed possession receipt is never a GitHub claim, controller session,
+// browser/account attestation, ChatGPT send or autonomous wake permission.
+async function nativeProofAction(rawPolicy: unknown) {
+  if (nativeProofActive) return {state:"BLOCKED",code:"NATIVE_PROOF_ALREADY_IN_PROGRESS"};
+  nativeProofActive = true;
+  try {
+    const config = await getConfig();
+    if (!validateConfig(config.workerId, config.controllerUrl).ok)
+      return {state:"BLOCKED",code:"NATIVE_PROOF_WORKER_INVALID"};
+    const bridge = createDeviceIdentityBridge({store:createIndexedDbIdentityStore()});
+    const publicKey = await bridge.read(config.workerId);
+    if (publicKey.state !== "READY")
+      return {state:"BLOCKED",code:"NATIVE_PROOF_DEVICE_KEY_UNAVAILABLE"};
+    const policy = checkOwnerNativePolicy(rawPolicy,{
+      origin:chrome.runtime.getURL(""),
+      workerId:config.workerId,
+      publicKeySha256:publicKey.public_key_sha256,
+      now:Date.now(),
+    });
+    if (policy.state !== "LOCAL_POLICY_MATCH_ONLY") return policy;
+    const permitted = await chrome.permissions.contains({permissions:["nativeMessaging"]});
+    if (permitted !== true)
+      return {state:"BLOCKED",code:"NATIVE_PROOF_PERMISSION_NOT_GRANTED"};
+    const tabs = await chrome.tabs.query({url:["https://chatgpt.com/*"]});
+    if (tabs.length !== 1 || !Number.isInteger(tabs[0]?.id) ||
+        tabs[0]?.incognito === true)
+      return {state:"BLOCKED",code:"NATIVE_PROOF_TARGET_AMBIGUOUS"};
+    return await proveLocalNativeHost({
+      runtime:chrome.runtime,
+      identity:bridge,
+      workerId:config.workerId,
+      resources:policy.resources,
+      profileBindingSha256:policy.profileBindingSha256,
+    });
+  } catch {
+    return {state:"BLOCKED",code:"NATIVE_PROOF_OUTCOME_UNCERTAIN"};
+  } finally {
+    nativeProofActive = false;
+  }
+}
+
 chrome.runtime.onMessage.addListener(
   (
     message: any,
@@ -171,6 +218,16 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (response: unknown) => void,
   ) => {
     const type = message?.type;
+
+    if (type === NATIVE_PROOF_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({state:"BLOCKED",code:"NATIVE_PROOF_SENDER_REJECTED"});
+        return false;
+      }
+      void nativeProofAction(message?.policy).then(sendResponse,
+        () => sendResponse({state:"BLOCKED",code:"NATIVE_PROOF_OUTCOME_UNCERTAIN"}));
+      return true;
+    }
 
     if (type === IDENTITY_STATUS_MESSAGE || type === IDENTITY_INIT_MESSAGE) {
       if (!isTrustedPopup(sender)) {

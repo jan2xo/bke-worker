@@ -19,6 +19,63 @@ const saveButton = document.querySelector<HTMLButtonElement>("#save")!;
 const probeButton = document.querySelector<HTMLButtonElement>("#probe")!;
 const initializeIdentityButton = document.querySelector<HTMLButtonElement>("#initialize-identity")!;
 const feedback = document.querySelector<HTMLElement>("#feedback")!;
+const policyFile = document.querySelector<HTMLInputElement>("#native-policy-file")!;
+const verifyNativeButton = document.querySelector<HTMLButtonElement>("#verify-native-local")!;
+let localOwnerPolicy: unknown = null;
+
+policyFile.addEventListener("change", async () => {
+  localOwnerPolicy = null;
+  const selected = policyFile.files;
+  if (!selected || selected.length !== 1 || selected[0].size < 8 ||
+      selected[0].size > 4096) {
+    feedback.textContent = "Select one owner-reviewed local policy JSON (max 4096 bytes).";
+    return;
+  }
+  try {
+    const parsed: unknown = JSON.parse(await selected[0].text());
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+      throw Error("POLICY_NOT_OBJECT");
+    localOwnerPolicy = parsed;
+    feedback.textContent = "Local policy loaded. Verify its scope before consenting.";
+  } catch {
+    feedback.textContent = "Owner policy unreadable or invalid.";
+  }
+});
+
+verifyNativeButton.addEventListener("click", () => {
+  if (localOwnerPolicy === null) {
+    feedback.textContent = "Select the owner-reviewed local policy first.";
+    return;
+  }
+  verifyNativeButton.disabled = true;
+  feedback.textContent = "Requesting optional local nativeMessaging permission…";
+  // Permission request happens synchronously inside this DIRECT USER CLICK;
+  // it is never made from service-worker startup, a web page, or a task.
+  void chrome.permissions.request({permissions:["nativeMessaging"]})
+    .then(async (granted: boolean) => {
+      if (granted !== true) {
+        feedback.textContent = "Native permission declined. No connection attempted.";
+        return;
+      }
+      const result = await chrome.runtime.sendMessage({
+        type:"bke.native.local.proof",policy:localOwnerPolicy,
+      });
+      feedback.textContent = result?.state === "LOCAL_PROOF_OK" &&
+        result?.admission_authority === "NONE" &&
+        result?.dispatch_authority === "NONE"
+        ? "Local device-key possession verified ONLY. No worker pairing or send permission."
+        : (result?.code ?? "Native proof blocked or uncertain. No retry was performed.");
+    })
+    .catch(() => {
+      feedback.textContent = "Native permission or local proof unavailable.";
+    })
+    .finally(() => {
+      localOwnerPolicy = null;
+      policyFile.value = "";
+      verifyNativeButton.disabled = false;
+    });
+});
+
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 
 function appendStatusLine(label: string, value: string): void {

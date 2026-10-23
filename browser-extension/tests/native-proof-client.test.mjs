@@ -207,14 +207,18 @@ test("mismatched worker/profile, absent host capability or disconnected port fai
   assert.equal((await execute(f,gone)).code,"NATIVE_CLIENT_OUTCOME_UNCERTAIN");
   assert.equal(gone.connected,false);
 });
-test("native client remains unwired from Chrome MV3 service worker, popup and manifest",()=>{
+test("local proof requires user popup and nativeMessaging optional permission only",()=>{
   const sw=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
   const popup=readFileSync(new URL("../src/popup.ts",import.meta.url),"utf8");
   const manifest=JSON.parse(readFileSync(new URL("../manifest.json",import.meta.url),"utf8"));
   assert.deepEqual(manifest.permissions,["storage"]);
-  assert.doesNotMatch(sw,/native-proof-client|connectNative|signNativeProof/);
-  assert.doesNotMatch(popup,/native-proof-client|connectNative|signNativeProof/);
-  assert.doesNotMatch(JSON.stringify(manifest),/nativeMessaging/);
+  assert.deepEqual(manifest.optional_permissions,["nativeMessaging"]);
+  assert.match(sw,/nativeProofAction/);
+  assert.match(sw,/isTrustedPopup\(sender\)/);
+  assert.match(sw,/permissions\.contains/);
+  assert.match(popup,/permissions\.request/);
+  assert.match(popup,/native-policy-file/);
+  assert.doesNotMatch(JSON.stringify(manifest),/cookies|debugger|identity|webRequest/);
 });
 
 // Genuine Node host subprocess with Chrome binary framing, driven through an
