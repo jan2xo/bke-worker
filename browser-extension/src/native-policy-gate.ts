@@ -39,14 +39,16 @@ export function checkOwnerNativePolicy(
     value.worker_id!==expected.workerId||
     value.public_key_sha256!==expected.publicKeySha256)
   return blocked("NATIVE_POLICY_IDENTITY_MISMATCH");
+ const resourceRecord=value.resources;
+ if(!exact(resourceRecord,RESOURCE))
+   return blocked("NATIVE_POLICY_PINS_OR_EXPIRY_INVALID");
  if(!HASH.test(value.profile_binding_sha256 as string)||
-    !exact(value.resources,RESOURCE)||
-    !RESOURCE.every(k=>HASH.test(value.resources[k] as string))||
+    !RESOURCE.every(k=>HASH.test(resourceRecord[k] as string))||
     !Number.isSafeInteger(value.expires_at_ms)||
     (value.expires_at_ms as number)<=expected.now||
     (value.expires_at_ms as number)>expected.now+30*86400000)
   return blocked("NATIVE_POLICY_PINS_OR_EXPIRY_INVALID");
- const resources=value.resources as Pins;
+ const resources=resourceRecord as Pins;
  const hashes=[expected.publicKeySha256,value.profile_binding_sha256,
   ...RESOURCE.map(k=>resources[k as keyof Pins])];
  if(new Set(hashes).size!==hashes.length)

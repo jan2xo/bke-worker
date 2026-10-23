@@ -16,7 +16,13 @@ for token in (
 ):
     assert token in text, token
 manifest_src = (root / "browser-extension/manifest.json").read_text(encoding="utf-8")
-assert "nativeMessaging" not in manifest_src
+# Only an optional nativeMessaging capability can be source-declared.
+# An install-time mandatory grant remains forbidden.
+import json
+manifest=json.loads(manifest_src)
+assert manifest["permissions"]==["storage"]
+assert manifest["optional_permissions"]==["nativeMessaging"]
+assert manifest["host_permissions"]==["https://chatgpt.com/*"]
 assert "wrangler deploy" not in text and "gh workflow run" not in text
 for token in ('remote get-url origin', 'fetch --quiet --no-tags origin',
               'refs/remotes/origin/main', 'worktree is dirty',

@@ -28,7 +28,7 @@ for token in (
     "CHATGPT_AUTHENTICATED_AND_IDLE",
     "THIS_IS_THE_ONLY_F1_EXPERIMENT_PROFILE",
     "PREPARE_USER_LEVEL_CHROME_NATIVE_HOST",
-    "nativeMessagingPermission\":False",
+    "nativeMessagingPermission\":None",
     "NOT_CREATED_NO_SEND_OCCURRED",
     "BKE_F1_CHROME_RUNTIME_SHA256",
     "umask 077",
@@ -49,15 +49,20 @@ for forbidden in (
 ):
     assert forbidden not in script, forbidden
 
-assert '"nativeMessaging"' in script  # deny-list, never permission grant
-assert "nativeMessaging" not in manifest
+# Check optional permission only; the F1-01 script cannot measure the
+# separate human runtime grant, and must never claim one is absent.
+import json
+manifest_contract=json.loads(manifest)
+assert manifest_contract["permissions"]==["storage"]
+assert manifest_contract["optional_permissions"]==["nativeMessaging"]
+assert "permissions.request" not in script
 assert 'extension.permissions[0] !== "storage"' in policy
 assert "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH" in policy
 assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
 assert "PROFILE_PATH_UNSAFE" in policy
 assert "MESSAGE_SEND_NOT_PROVEN_ABSENT" in policy
 assert "SOURCE_SMOKE_PASS" in policy and "REAL_CHROME_READY" in policy
-assert "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN" in policy
+assert "NOT_TESTED_OPTIONAL_NATIVE_PERMISSION_UNVERIFIED" in policy
 assert "linux_chrome_binary_for_launcher" in helper
 assert "ps_line_matches_profile" in helper
 assert "PROFILE_CHAIN_UNSAFE" in helper

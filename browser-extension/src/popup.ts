@@ -25,14 +25,15 @@ let localOwnerPolicy: unknown = null;
 
 policyFile.addEventListener("change", async () => {
   localOwnerPolicy = null;
-  const selected = policyFile.files;
-  if (!selected || selected.length !== 1 || selected[0].size < 8 ||
-      selected[0].size > 4096) {
+  const files = policyFile.files;
+  const selected = files?.[0];
+  if (!selected || files?.length !== 1 || selected.size < 8 ||
+      selected.size > 4096) {
     feedback.textContent = "Select one owner-reviewed local policy JSON (max 4096 bytes).";
     return;
   }
   try {
-    const parsed: unknown = JSON.parse(await selected[0].text());
+    const parsed: unknown = JSON.parse(await selected.text());
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
       throw Error("POLICY_NOT_OBJECT");
     localOwnerPolicy = parsed;
