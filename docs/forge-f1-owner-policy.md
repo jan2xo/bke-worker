@@ -1,58 +1,71 @@
-# F1-03 owner-policy provisioning: first source-only slice
+# F1-03 — owner-attested local Chrome binding and native policy
 
-## Real Mac blocker
-F1-01's owner Mac passed SOURCE_SMOKE, but the native-host installer correctly
-blocked on a missing owner-pinned policy. Never invent the private trust pins.
+## Physical Mac blocker and supported entrypoint
 
-After independent review and merge, from clean current main, run:
+The owner Mac passed source smoke but native-host installation blocked on missing
+owner-policy.json. This PR adds an owner-operated source-only setup preflight.
+
+After full review, certification and merge, from a clean current main checkout:
 
     node scripts/forge-f1-owner-policy.mjs
 
-The program verifies canonical origin, clean current main, and a terminal
-operated by a non-root human. It DOES NOT read browser profile or page data.
+This MUST NOT be run from this unmerged draft or another worker's shared Chrome
+profile. The command checks canonical origin, clean fetched exact current main,
+Node 22+, an interactive non-root Mac owner, exactly one supported official
+Google Chrome installation, executable version and real binary SHA-256.
 
-## Evidence that must already exist
-The tool accepts only independently owner-reviewed exact values:
-- allowed_origin: chrome-extension:// plus the 32 a-p ID from the isolated
-  Chrome chrome://extensions page plus a final slash;
-- worker_id: the same worker shown/configured in the F1 extension popup;
-- public_key_sha256: the actual non-exportable P-256 public thumbprint
-  displayed in that same extension's device-identity popup;
-- profile_binding_sha256, browser_profile_sha256, chatgpt_target_sha256 and
-  bridge_identity_sha256: independently reviewed bindings from a trusted
-  owner/session/controller process — NEVER placeholders, generic URL hashes
-  or random/test strings.
+It reuses scripts/forge_f1_chrome_readiness.py to verify that the private
+~/.bke-worker/f1/chrome-profile directory chain is safe and an actual Chrome
+process uses that exact dedicated user-data-dir. It does not read browser
+profile contents, Preferences, cookies, ChatGPT page text, account identifiers
+or private device keys.
 
-If any owner-reviewed pin is UNKNOWN, Ctrl+C and remain BLOCKED. The
-authenticated, real Chrome-to-Node F1-03 pairing process is still missing;
-today there may be no valid independent sources for the four binding pins.
-This provisioning tool does NOT generate or attest them.
+## Human attestation — LOCAL ONLY
 
-The tool validates the exact native-host policy schema, expiry of 1–30
-days, five distinct valid hashes, and a full typed owner acknowledgement.
-It writes only a 0600, non-overwriting local policy under the user's
-.config/bke-worker/native-host directory, refusing unsafe owners,
-permissions and symlinks. It prints no source pin values.
+In that isolated profile, the owner visually checks one enabled BKE Worker
+Browser Bridge from the canonical source, finds its 32-letter extension ID,
+and reads the worker ID and nonexportable P-256 *public* key SHA-256 from the
+BKE extension popup. If the identity is not created, its creation is a
+separate human-controlled popup action inside this dedicated profile.
 
-OWNER_POLICY_WRITTEN_LOCAL_ONLY is local review of input text, not an
-independent cryptographic/device/browser/session attestation. Its pairing
-and dispatch authority are both NONE. It neither grants nativeMessaging,
-installs a host, enrolls a device, sends ChatGPT messages, changes Github
-ownership/credentials nor deploys production or PREPRODUCTION services.
+The owner must confirm no other worker uses that profile, that exactly one
+chatgpt.com tab is manually authenticated and idle, and that no login/MFA
+or other challenges are pending. All confirmations are explicit typed input.
+The script rechecks the actual Chrome process before policy creation.
+If any condition is unavailable, STOP / Ctrl+C; never paste test hashes.
 
-Once genuine pins and the policy exist, the already tracked human-consented
-F1-01 desktop readiness tool can continue user-level host registration.
-Registration is NOT a live nativeMessaging handshake; the current Chrome
-extension manifest deliberately lacks nativeMessaging. Real F1-03 pairing,
-replay-resistant controller, Chrome-native proof, and owner acceptance are
-separate incomplete acceptance gates.
+The owner-local-bindings.mjs helper generates four domain-separated SHA-256
+local commitments for this owner-attested profile, browser profile, bridge
+identity and target using the owner-supplied public extension ID, worker ID
+and key thumbprint, the verified executable digest and dedicated profile path.
+The Chrome profile path is used in-memory only, never written to policy or
+terminal output. The target commitment proves ONLY the site and owner's
+claim of one idle tab — it does NOT attest the ChatGPT account, specific
+conversation, tab, browser device hardware or exclusive GitHub PR assignment.
+Copying a full browser profile may copy IndexedDB CryptoKey and is not
+prevented by these local hashes.
 
-## Exact-head proof
-Cheap automatic PR Guard + WebExtension/native-host Node tests are the
-minimum source-only graph. Test fixtures use only disposable temp homes and
-synthetic hashes, never the user's installed browser/profile.
+After a second explicit owner approval, the existing secure writer validates
+host schema, bounded 1–30 day validity, distinct nonplaceholder hashes,
+safe private directories, no symlinks, owner-only 0600 file mode, no overwrite
+of prior policies and byte-for-byte readback. Chrome version/key/profile
+changes require operator-led reconciliation; no silent overwrite/rekey.
 
-This is the FIRST F1-03 source slice in the existing Issue #124 intent.
-Keep its PR draft until the full nativeMessaging/controller and real owner
-Mac handshake are implemented, reviewed and certified. Do not mark live F1
-readiness or autonomous sending as successful from this provisioner.
+The only possible success status is OWNER_POLICY_WRITTEN_LOCAL_ONLY with
+OWNER_ATTESTED_LOCAL_COMMITMENTS_ONLY, independence NOT_PROVEN, pairing
+authority NONE and dispatch authority NONE. It is NOT a trusted OS or server
+attestation, not real native Chrome proof, and NOT REAL_CHROME_READY by itself.
+
+## Unfinished F1-03 live gates
+
+The extension manifest still has NO nativeMessaging permission, and the
+service worker has no native controller transport. Installation permission,
+actual Chrome-to-Node signed proof, authenticated typed controller, device
+binding, nonce/replay and MV3 suspend/reconnect safety, human Chrome smoke,
+GitHub assignment and first ChatGPT send remain distinct unproved tasks.
+No profile migration, MFA, cookie access, deployment, credentials or GitHub
+worker labels are authorized by local source-only validation.
+
+The cheap automatic exact-head PR Guard/Node tests use synthetic inputs and
+disposable homes only. Keep PR #146 in DRAFT until F1-03 Issue #124 scope
+is actually complete and audited; do not treat CI as physical browser proof.
