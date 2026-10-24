@@ -203,6 +203,7 @@ async function nativeProofAction(rawPolicy: unknown) {
       workerId:config.workerId,
       resources:policy.resources,
       profileBindingSha256:policy.profileBindingSha256,
+      readOnlyProbe:true,
     });
   } catch {
     return {state:"BLOCKED",code:"NATIVE_PROOF_OUTCOME_UNCERTAIN"};
