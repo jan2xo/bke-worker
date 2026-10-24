@@ -89,6 +89,58 @@ test("genuine P-256 proof yields only a local possession receipt, not device enr
   });
   assert.doesNotMatch(JSON.stringify(ok),/token|signature|installation|paired|access/i);
 });
+test("one-shot post-signature native envelope echoes only scoped read-only proof",async()=>{
+  const f=fixture(),s=await launch(f);
+  s.send({...f.hello,read_only_probe:true});
+  const challenge=await s.response.next();
+  s.send(replyProof(f,challenge));
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  const ping=await s.response.next();
+  assert.equal(ping.type,"LOCAL_READ_ONLY_PING");
+  assert.equal(ping.worker_id,f.policy.worker_id);
+  assert.equal(ping.profile_binding_sha256,f.policy.profile_binding_sha256);
+  s.send(ping);
+  assert.deepEqual(await s.response.next(),{
+    type:"LOCAL_READ_ONLY_PONG",version:1,worker_id:f.policy.worker_id,
+    admission_authority:"NONE",dispatch_authority:"NONE",
+    message_send_authority:"NONE",controller_authentication:"NOT_ESTABLISHED",
+    external_controller_transport:"NOT_CONNECTED",
+  });
+  assert.equal(await s.handle,"LOCAL_READ_ONLY_PONG");
+});
+test("effectful, tampered and extra-key native read-only envelopes fail closed",async()=>{
+  for(const change of [
+    x=>({...x,type:"SEND_CHATGPT_MESSAGE"}),
+    x=>({...x,worker_id:"worker-b"}),
+    x=>({...x,proof_binding_sha256:H("e")}),
+    x=>({...x,command:"please send"}),
+  ]){
+    const f=fixture(),s=await launch(f);
+    s.send({...f.hello,read_only_probe:true});
+    s.send(replyProof(f,await s.response.next()));
+    assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+    s.send(change(await s.response.next()));
+    await assert.rejects(s.handle,/NATIVE_READ_ONLY_ENVELOPE_DENIED/);
+    s.input.destroy();
+  }
+});
+test("probe opt-in cannot bypass signed proof or inject arbitrary HELLO fields",async()=>{
+  const f=fixture();
+  for(const hello of [
+    {...f.hello,read_only_probe:false},
+    {...f.hello,read_only_probe:true,permission:"dispatch"},
+  ]){
+    const s=await launch(f);s.send(hello);
+    await assert.rejects(s.handle,/NATIVE_HELLO_DENIED/);
+    s.input.destroy();
+  }
+  const s=await launch(f);
+  s.send({...f.hello,read_only_probe:true});
+  const proof=replyProof(f,await s.response.next());
+  s.send({...proof,device_signature:"A".repeat(86)});
+  await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
+  s.input.destroy();
+});
 test("all pinned policy fields are required; origin and host expiry cannot be invented by a device",async()=>{
   const f=fixture();
   for(const bad of [
