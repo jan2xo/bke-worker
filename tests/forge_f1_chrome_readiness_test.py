@@ -304,8 +304,14 @@ def test_owner_preflight_pins_interpreter_and_rechecks_unique_generation():
     assert 'exec("/usr/bin/python3",[\n  "-I",python,"--check-process"' in owner
     assert "fresh.digest!==verified.digest" in owner
     assert "last.digest!==verified.digest" in owner
-    pub=(root/"scripts/forge_f1_chrome_publisher.py").read_text()
-    assert module._DARWIN_GOOGLE_REQUIREMENT in pub
+    # Check semantic equality of the two canonical requirements: the Python
+    # publisher module concatenates string literals across source lines.
+    pubpath=root/"scripts/forge_f1_chrome_publisher.py"
+    publisher_spec=importlib.util.spec_from_file_location("bke_f1_publisher_contract",pubpath)
+    assert publisher_spec and publisher_spec.loader
+    publisher=importlib.util.module_from_spec(publisher_spec)
+    publisher_spec.loader.exec_module(publisher)
+    assert module._DARWIN_GOOGLE_REQUIREMENT == publisher.REQUIREMENT
     checker=(root/"scripts/forge_f1_chrome_readiness.py").read_text()
     assert "_darwin_pid_start(pid)" not in checker
     assert "_hash_open_binary(image)" not in checker

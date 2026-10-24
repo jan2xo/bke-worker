@@ -388,8 +388,12 @@ def _darwin_process_probe(executable: str, profile: str) -> Optional[str]:
     if not _darwin_pid_signature_valid(pid):
         return None
     live_cdhash = _darwin_signed_cdhash(pid)
+    # A missing live CodeDirectory is an immediate hard DENY. Do not perform
+    # later disk checks or continue after an uncertain PID proof.
+    if not live_cdhash:
+        return None
     disk_cdhash = _darwin_signed_cdhash(image)
-    if not live_cdhash or disk_cdhash != live_cdhash:
+    if disk_cdhash != live_cdhash:
         return None
     if (_darwin_pid_executable(pid) != image or
         _darwin_pid_unique_generation(pid) != generation or
