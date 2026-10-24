@@ -7,6 +7,7 @@ read browser contents or authorize ChatGPT sends. Physical diagnostic use is
 owner-only AFTER separate exact-head source review.
 """
 from __future__ import annotations
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -38,7 +39,7 @@ def fail(reason: str):
     raise Blocked(reason)
 
 
-def command(argv: list[str], timeout: int = 30) -> str:
+def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None) -> str:
     """No shell, no ambient user Git config or interactive credential prompts."""
     env = {
         "PATH": "/usr/bin:/bin",
@@ -47,10 +48,11 @@ def command(argv: list[str], timeout: int = 30) -> str:
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_ALLOW_PROTOCOL": "https",
     }
     try:
         done = subprocess.run(argv, capture_output=True, text=True,
-                              check=False, timeout=timeout, env=env)
+                              check=False, timeout=timeout, env=env, cwd=cwd)
     except (OSError, subprocess.SubprocessError):
         fail("COMMAND_UNAVAILABLE")
     if done.returncode != 0 or len(done.stdout) > 4096:
@@ -62,12 +64,27 @@ def git(*args: str) -> str:
     return command(["/usr/bin/git", "-C", str(ROOT), *args])
 
 
-def snapshot_source() -> tuple[str, str]:
+def git_config_fingerprint() -> str:
+    """Reject local/worktree/included URL rewrites; detect config drift."""
+    # Global and system Git config are suppressed by command(). Local config
+    # is inspected here, but is NEVER consulted by the HTTPS ls-remote call.
+    settings = git("config", "--list", "--includes", "--null")
+    for entry in settings.split("\0"):
+        key = entry.partition("\n")[0].casefold()
+        if key.startswith("url.") and (
+            key.endswith(".insteadof") or key.endswith(".pushinsteadof")
+        ):
+            fail("LOCAL_URL_REWRITE_FORBIDDEN")
+    return hashlib.sha256(settings.encode("utf-8")).hexdigest()
+
+
+def snapshot_source() -> tuple[str, str, str]:
     """Compare local HEAD with live remote PR ref, never with cached origin/PR."""
     if os.path.realpath(str(ROOT)) != str(ROOT):
         fail("ROOT_UNTRUSTED")
     if git("rev-parse", "--show-toplevel") != str(ROOT):
         fail("REPOSITORY_UNTRUSTED")
+    config_fingerprint = git_config_fingerprint()
     if git("remote", "get-url", "origin") not in ORIGINS:
         fail("ORIGIN_UNTRUSTED")
     if git("branch", "--show-current") != BRANCH:
@@ -77,9 +94,10 @@ def snapshot_source() -> tuple[str, str]:
     head = git("rev-parse", "HEAD")
     if not SHA.fullmatch(head):
         fail("HEAD_INVALID")
-    # Fetch only signed-GitHub TLS advertised refs; never execute PR hooks.
+    # Run OUTSIDE the checkout: repository-local URL rewrites cannot redirect
+    # this explicit canonical GitHub HTTPS ref query. No fetch or hooks.
     remote = command(["/usr/bin/git", "ls-remote", PUBLIC_REPO,
-                      PR_REF, MAIN_REF], timeout=30)
+                      PR_REF, MAIN_REF], timeout=30, cwd="/")
     found = {}
     for line in remote.splitlines():
         columns = line.split()
@@ -93,7 +111,9 @@ def snapshot_source() -> tuple[str, str]:
     if git("merge-base", "--is-ancestor", found[MAIN_REF], "HEAD"):
         # The Git command prints nothing on success.
         fail("MAIN_ANCESTRY_UNCERTAIN")
-    return head, found[MAIN_REF]
+    if git_config_fingerprint() != config_fingerprint:
+        fail("LOCAL_GIT_CONFIG_CHANGED")
+    return head, found[MAIN_REF], config_fingerprint
 
 
 def probe_readonly_mac() -> str:

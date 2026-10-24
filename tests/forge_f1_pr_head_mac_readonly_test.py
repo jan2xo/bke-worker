@@ -4,6 +4,8 @@ from __future__ import annotations
 from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 import io
+import subprocess
+import tempfile
 import os
 from pathlib import Path
 from unittest import TestCase, main, mock
@@ -24,7 +26,8 @@ class TTY(io.StringIO):
 
 class MacReadOnlyContract(TestCase):
     def source(self, *, branch=None, origin=None, dirty="", pr=None,
-               remote_main=None, ancestry="", head=None, remote_lines=None):
+               remote_main=None, ancestry="", head=None, remote_lines=None,
+                config_before="core.bare\nfalse\0", config_after=None):
         branch = mod.BRANCH if branch is None else branch
         origin = mod.PUBLIC_REPO if origin is None else origin
         pr = HEAD if pr is None else pr
@@ -38,7 +41,10 @@ class MacReadOnlyContract(TestCase):
             ("rev-parse", "HEAD"): head,
             ("merge-base", "--is-ancestor", remote_main, "HEAD"): ancestry,
         }
+        configs = iter([config_before, config_before if config_after is None else config_after])
         def fake_git(*args):
+            if args == ("config", "--list", "--includes", "--null"):
+                return next(configs)
             if args not in responses:
                 raise AssertionError("unexpected Git operation: " + repr(args))
             return responses[args]
@@ -46,7 +52,8 @@ class MacReadOnlyContract(TestCase):
             pr + "\t" + mod.PR_REF + "\n" +
             remote_main + "\t" + mod.MAIN_REF
         )
-        def fake_command(args, timeout=30):
+        def fake_command(args, timeout=30, *, cwd=None):
+            self.assertEqual(cwd, "/")
             self.assertEqual(args, ["/usr/bin/git", "ls-remote",
                                     mod.PUBLIC_REPO, mod.PR_REF, mod.MAIN_REF])
             return remote
@@ -55,7 +62,7 @@ class MacReadOnlyContract(TestCase):
             return mod.snapshot_source()
 
     def test_live_pr_ref_and_current_main_ancestry_are_both_required(self):
-        self.assertEqual(self.source(), (HEAD, MAIN))
+        self.assertEqual(self.source()[:2], (HEAD, MAIN))
 
     def test_fail_closed_branch_origin_dirty_pr_and_git_anomalies(self):
         for kwargs in [
@@ -75,6 +82,36 @@ class MacReadOnlyContract(TestCase):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(mod.Blocked):
                     self.source(**kwargs)
+
+    def test_live_source_refuses_local_git_configuration_drift(self):
+        with self.assertRaisesRegex(mod.Blocked, "LOCAL_GIT_CONFIG_CHANGED"):
+            self.source(config_before="core.bare\\nfalse\\0",
+                        config_after="core.bare\\ntrue\\0")
+
+    def test_real_local_instead_of_rewrite_blocks_before_remote_and_chrome(self):
+        # An actual .git/config is used: git status never reports these edits.
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["/usr/bin/git", "init", "-q", directory],
+                           check=True, capture_output=True)
+            subprocess.run(["/usr/bin/git", "-C", directory, "config", "--local",
+                            "url.file:///tmp/fake-bke-refs.insteadOf",
+                            mod.PUBLIC_REPO], check=True, capture_output=True)
+            output, errors = TTY(), io.StringIO()
+            real_command = mod.command
+            with mock.patch.object(mod, "ROOT", Path(directory)), \
+                 mock.patch.object(mod.sys, "platform", "darwin"), \
+                 mock.patch.object(mod.os, "geteuid", return_value=501), \
+                 mock.patch.object(mod.sys, "stdin", TTY()), \
+                 mock.patch.object(mod.sys, "stdout", output), \
+                 mock.patch.object(mod.sys, "stderr", errors), \
+                 mock.patch.object(mod, "command", wraps=real_command) as commands, \
+                 mock.patch.object(mod, "probe_readonly_mac",
+                                   side_effect=AssertionError("Chrome was probed")):
+                self.assertEqual(mod.main([]), 2)
+            self.assertIn("LOCAL_URL_REWRITE_FORBIDDEN", errors.getvalue())
+            self.assertNotIn("READ_ONLY_PID_PROBE_PASS", output.getvalue())
+            self.assertFalse(any("ls-remote" in call.args[0]
+                                 for call in commands.call_args_list))
 
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
@@ -186,6 +223,22 @@ class MacReadOnlyContract(TestCase):
             self.assertEqual(mod.main([]),2)
         self.assertIn("REMOTE_OR_SOURCE_CHANGED_DURING_PROBE",stderr.getvalue())
         self.assertNotIn("READ_ONLY_PID_PROBE_PASS",output.getvalue())
+
+    def test_git_config_change_after_probe_blocks_without_remote_head_change(self):
+        output, errors = TTY(), io.StringIO()
+        with mock.patch.object(mod.sys, "platform", "darwin"), \
+             mock.patch.object(mod.os, "geteuid", return_value=501), \
+             mock.patch.object(mod.sys, "stdin", TTY()), \
+             mock.patch.object(mod.sys, "stdout", output), \
+             mock.patch.object(mod.sys, "stderr", errors), \
+             mock.patch.object(mod, "snapshot_source",
+                               side_effect=[(HEAD, MAIN, "config-before"),
+                                            (HEAD, MAIN, "config-after")]), \
+             mock.patch.object(mod, "probe_readonly_mac", return_value=HASH), \
+             mock.patch("builtins.input", side_effect=[HEAD, mod.CONSENT]):
+            self.assertEqual(mod.main([]), 2)
+        self.assertIn("REMOTE_OR_SOURCE_CHANGED_DURING_PROBE", errors.getvalue())
+        self.assertNotIn("READ_ONLY_PID_PROBE_PASS", output.getvalue())
 
     def test_positive_result_never_means_native_host_or_controller_admission(self):
         output=TTY()

@@ -30,6 +30,9 @@ Preconditions (checked automatically before and after the probe):
 - a non-root human owner, interactive TTY, zero CLI arguments;
 - the exact supported GitHub \`jan2xo/bke-worker\` origin, correct PR branch,
   no tracked modifications or untracked files, canonical real checkout;
+- reject repository-local/worktree/included Git URL rewrite settings and detect
+  local Git configuration drift; the HTTPS live-ref lookup runs outside the
+  checkout with system/global Git configuration disabled and HTTPS-only transport;
 - exact local HEAD equals GitHub's **live** \`refs/pull/146/head\` resolved
   directly via HTTPS Git ls-remote; current remote main must be ancestor
   of this PR head. If the PR or main moves, STOP;
