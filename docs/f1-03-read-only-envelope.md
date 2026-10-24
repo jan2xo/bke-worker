@@ -1,8 +1,8 @@
-# F1-03 — proposed read-only local controller envelope (SOURCE ONLY)
+# F1-03 — signed-proof-bound local read-only native echo (SOURCE ONLY; physical handshake unproven)
 
-This document is part of existing F1-03 Issue #124 / draft PR #146. It
-describes a new standalone contract under
-browser-extension/native-host/local-read-only-controller.mjs.
+This document is part of existing F1-03 Issue #124 / draft PR #146. It describes the strict, one-shot local read-only envelope in
+browser-extension/native-host/local-read-only-controller.mjs and the
+owner-popup opt-in native proof path.
 
 ## What is implemented
 
@@ -29,13 +29,23 @@ ONLY by a future transport after the real native host has completed and
 authenticated its signed challenge. A public SHA-256 digest is NOT a
 MAC or a secret token; it offers scope/accidental collision binding only.
 
-The gate is intentionally **UNIMPORTED** from entry.mjs, host.mjs and
-the extension service worker. No runtime channel, command dispatch,
-native host registration, browser permission, OAuth, GitHub PR authority,
-device/session enrollment, ChatGPT send or OS attestation is enabled by
-this addition. No persistent cross-process replay database is created:
-host restart/MV3 reconnect must require an entirely fresh owner-bound
-proof and durable recovery plan before a status transport is wired.
+The native host now instantiates the gate **only after** cryptographic
+verification of the real P-256 proof on the same local Chrome nativeMessaging
+channel. A new explicit `read_only_probe:true` HELLO opt-in results in a
+one-shot bound LOCAL_READ_ONLY_PING; the extension independently checks exact
+schema, profile/target/bridge pins, both nonces, TTL, and SHA-256 fingerprint,
+then echoes only the verified frame. The host consumes at most one reply and
+returns LOCAL_READ_ONLY_PONG with admission/dispatch/send authority NONE and
+external controller authentication NOT_ESTABLISHED. The legacy one-shot
+LOCAL_PROOF_OK path remains unchanged for non-opt-in callers.
+
+The source tests run a genuine Node subprocess and a mocked Chrome port.
+**This is not real browser-native permission, installed host registration,
+or physical Chrome↔Node certification.** No external controller connection,
+persistent replay store, autonomous reconnect, OS hardware attestation,
+ChatGPT send, GitHub PR authority or account/session enrollment exists.
+MV3/restart recovery and authenticated controller admission remain separate
+required F1-03 work, and no first-send authorization is granted.
 Fail closed if a browser profile/target is shared, cloned or ambiguous.
 
 ## Remaining owner/certification gates
@@ -45,11 +55,12 @@ Fail closed if a browser profile/target is shared, cloned or ambiguous.
 - A genuine signed, owner-consented real Chrome-to-Node handshake and
   physical evidence on the operator's Mac.
 - A genuinely authenticated per-worker controller session, complete
-  browser/target exclusivity and safe MV3 restart semantics.
+  browser/target exclusivity and safe MV3 restart semantics. Local
+  native-proof-bound PING is not authenticated *external* controller admission.
 - Trusted GitHub assignment and first-send authority are separate
   downstream F1-02 / F1-04 tasks, never granted here.
 
-The minimum required proof for this **unwired pure contract** is the
+The minimum source proof for this **locally wired read-only contract** is the
 automatic exact-head PR Guard + WebExtension/native-host Node tests.
 PR #146 remains OPEN/DRAFT/UNMERGED while remaining F1-03 acceptance
 gates are incomplete. No operator Mac action yet.
