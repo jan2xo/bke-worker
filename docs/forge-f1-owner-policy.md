@@ -19,8 +19,25 @@ pinned Google Team ID `EQHXZ8M8AV`, strict signed-bundle integrity and
 independent metadata readback. Unsigned, wrong-signer, broken-seal, aliased,
 unavailable or ambiguous app identity blocks without executing the browser.
 It then validates the actual running Google Chrome process/version and
-dedicated private profile chain. **Publisher signature is not OS-level
-process or ChatGPT account/tab attestation.**
+dedicated private profile chain. **A valid publisher signature of a file
+on disk alone is NOT proof of the running Chrome process.** The separate
+`forge_f1_chrome_readiness.py` Darwin gate now collects the sole matching
+owner UID/PID/profile candidate, rejects multiple candidates, obtains the
+OS-reported executable path from `libproc.proc_pidpath`, and invokes Apple's
+`codesign --verify -R <pinned Google requirement> PID` to dynamically validate
+that running code (rather than validating only a pathname). It rechecks the PID
+start time, kernel executable pathname and owner/profile argv after signature
+verification. If permission/OS support, PID, signer, version, profile, or
+process identity is uncertain, it returns BLOCKED; no fallback to `ps` text
+or a hash of the installed app. The local digest additionally includes the
+validated PID and start time, so a process restart changes the expected
+owner-policy binding across repeated preflights.
+
+**Even this source design is NOT physical macOS acceptance**, unique ChatGPT
+account/tab verification, hardware attestation or durable controller admission.
+Only synthetic/mock tests run in Linux CI. The owner Mac must still verify
+actual Google Chrome process support and native proof under separately reviewed
+human-controlled physical certification; no owner action from a draft PR.
 
 It reuses scripts/forge_f1_chrome_readiness.py to verify that the private
 ~/.bke-worker/f1/chrome-profile directory chain is safe and an actual Chrome

@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import tempfile
+from contextlib import ExitStack
+from unittest.mock import patch
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -152,5 +154,109 @@ def test_extension_match_count_requires_exactly_one():
                                  text=True, capture_output=True, check=False)
         assert blocked.returncode != 0
         assert "EXTENSION_MISSING_OR_DUPLICATE" in blocked.stderr
+
+
+# P2-3: Linux CI models the Darwin kernel and dynamic-signature observations.
+# ps command text is deliberately untrusted; mocking is not a Mac acceptance.
+def _darwin_fixture(lines, *, images=None, starts=None, signed=True, recheck=True):
+    binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    profile = "/Users/operator/.bke-worker/f1/chrome-profile"
+    rows = "\n".join(
+        f"{pid} {os.getuid()} {binary} --user-data-dir={profile}"
+        for pid in lines
+    )
+    if images is None:
+        images = [binary,binary]
+    if starts is None:
+        starts = ["Sat Oct 24 08:00:00 2026"]*2
+    from subprocess import CompletedProcess
+    fake = lambda args, **kw: CompletedProcess(args,0,rows,"")
+    with ExitStack() as st:
+        st.enter_context(patch.object(module.subprocess,"run",side_effect=fake))
+        image = st.enter_context(patch.object(module,"_darwin_pid_executable",side_effect=images))
+        start = st.enter_context(patch.object(module,"_darwin_pid_start",side_effect=starts))
+        signer = st.enter_context(patch.object(module,"_darwin_pid_signature_valid",return_value=signed))
+        row = st.enter_context(patch.object(module,"_darwin_pid_row_unchanged",return_value=recheck))
+        binaryhash = st.enter_context(patch.object(module,"_hash_open_binary",return_value="f"*64))
+        result = module.active_chrome_runtime_sha256("Darwin",binary,profile,"140.0.0.0")
+    return result, (image.call_count,start.call_count,signer.call_count,
+                     row.call_count,binaryhash.call_count)
+
+
+def test_darwin_valid_os_pid_signature_and_start_yields_lifetime_bound_digest():
+    value,calls = _darwin_fixture([411])
+    assert isinstance(value,str) and len(value)==64
+    assert calls == (2,2,1,1,1)
+    second,calls2 = _darwin_fixture([412])
+    assert value != second  # Process relaunch cannot preserve local commitment.
+    assert calls2 == (2,2,1,1,1)
+
+
+def test_darwin_forged_same_uid_chrome_argv_with_decoy_kernel_image_blocked():
+    value,calls = _darwin_fixture([411],images=["/tmp/evil-process"])
+    assert value is None
+    # No disk hash or signer based on a mere argv[0] string.
+    assert calls[2] == calls[4] == 0
+
+
+def test_darwin_one_valid_plus_one_decoy_matching_profile_is_ambiguous():
+    value,calls = _darwin_fixture([411,412])
+    assert value is None and calls == (0,0,0,0,0)
+
+
+def test_darwin_running_pid_must_pass_dynamic_google_signature():
+    value,calls = _darwin_fixture([411],signed=False)
+    assert value is None and calls[2] == 1 and calls[4] == 0
+
+
+def test_darwin_pid_relaunch_image_change_and_argv_transition_fail_closed():
+    binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    for kw in (
+        {"starts":["Sat Oct 24 08:00:00 2026","Sat Oct 24 08:00:01 2026"]},
+        {"images":[binary,"/tmp/changed-after-signer"]},
+        {"recheck":False},
+        {"images":[None]},
+        {"starts":[None]},
+    ):
+        value,_ = _darwin_fixture([411],**kw)
+        assert value is None,kw
+
+
+def test_darwin_dynamic_codesign_checks_pid_not_file_path():
+    from subprocess import CompletedProcess
+    original=module._DARWIN_GOOGLE_REQUIREMENT
+    assert 'com.google.Chrome' in original and 'EQHXZ8M8AV' in original
+    commands=[]
+    def verify(args, **kw):
+        commands.append(args)
+        return CompletedProcess(args,0,"","")
+    with patch.object(module.subprocess,"run",side_effect=verify):
+        assert module._darwin_pid_signature_valid(411)
+    assert commands == [[
+        "/usr/bin/codesign","--verify","--strict",
+        "-R","="+original,"411"
+    ]]
+    with patch.object(module.subprocess,"run",side_effect=lambda *x,**y: CompletedProcess(x,1,"","bad signer")):
+        assert not module._darwin_pid_signature_valid(411)
+    with patch.object(module.subprocess,"run",side_effect=FileNotFoundError):
+        assert not module._darwin_pid_signature_valid(411)
+
+
+def test_darwin_kernel_libproc_unavailable_fails_closed_without_fallback():
+    with patch.object(module.ctypes,"CDLL",side_effect=OSError("libproc absent")):
+        assert module._darwin_pid_executable(411) is None
+    assert module._darwin_pid_executable(0) is None
+
+
+def test_owner_preflight_pins_system_python_and_rechecks_running_pid_identity():
+    from pathlib import Path
+    owner=(root/"scripts/forge-f1-owner-policy.mjs").read_text()
+    assert 'exec("/usr/bin/python3",["-I",python,"--check-profile-chain"' in owner
+    assert 'exec("/usr/bin/python3",[\n  "-I",python,"--check-process"' in owner
+    assert "fresh.digest!==verified.digest" in owner
+    assert "last.digest!==verified.digest" in owner
+    # This suite ensures duplicate requirement constants cannot silently drift.
+    pub=(root/"scripts/forge_f1_chrome_publisher.py").read_text()
+    assert module._DARWIN_GOOGLE_REQUIREMENT in pub
 
 print("BKE F1 Chrome process/profile regression tests: PASS")

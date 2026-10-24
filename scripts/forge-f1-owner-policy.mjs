@@ -54,7 +54,7 @@ async function chromePreflight(){
  const home=await realpath(homedir());
  const profile=join(home,".bke-worker","f1","chrome-profile");
  const python=join(ROOT,"scripts","forge_f1_chrome_readiness.py");
- const chain=exec("python3",[python,"--check-profile-chain",home,profile]);
+ const chain=exec("/usr/bin/python3",["-I",python,"--check-profile-chain",home,profile]);
  if(chain!=="PROFILE_CHAIN_PRIVATE_OWNER_VERIFIED")
    block("PRIVATE_PROFILE_NOT_VERIFIED");
  const installed=[
@@ -75,8 +75,10 @@ async function chromePreflight(){
  if(binary!==installed[0])block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");
  const m=/^Google Chrome (\d+\.\d+\.\d+\.\d+)$/u.exec(exec(binary,["--version"]));
  if(!m)block("OFFICIAL_CHROME_VERSION_INVALID");
- const digest=exec("python3",[
-  python,"--check-process","Darwin",binary,profile,m[1]
+ // The returned commitment binds the OS PID, process start time, kernel image,
+ // dynamic Google signer and binary digest; never accept ps argv alone.
+ const digest=exec("/usr/bin/python3",[
+  "-I",python,"--check-process","Darwin",binary,profile,m[1]
  ]);
  if(!H.test(digest)||/^(.)\1{63}$/u.test(digest))
    block("ISOLATED_CHROME_PROCESS_UNVERIFIED");

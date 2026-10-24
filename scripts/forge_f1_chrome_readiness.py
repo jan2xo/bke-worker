@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import os
 import re
 import shlex
@@ -229,27 +230,126 @@ def _linux_process_probe(launcher_path: str, profile: str, expected_version: str
     return None
 
 
+
+# The exact Google signing requirement matches forge_f1_chrome_publisher.py.
+# Kept local: the owner Mac invokes this file under /usr/bin/python3 -I.
+_DARWIN_GOOGLE_REQUIREMENT = (
+    'anchor apple generic and identifier "com.google.Chrome" '
+    'and certificate leaf[subject.OU] = "EQHXZ8M8AV"'
+)
+
+
+def _darwin_pid_executable(pid: int) -> Optional[str]:
+    """Read executable path from Darwin kernel libproc, NOT ps argv[0]."""
+    if not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        proc = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidpath
+        proc.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        proc.restype = ctypes.c_int
+        buffer = ctypes.create_string_buffer(4096)
+        n = proc(pid, buffer, ctypes.sizeof(buffer))
+        if n <= 0 or n >= len(buffer):
+            return None
+        image = os.fsdecode(buffer.value)
+        return image if image.startswith("/") and "\0" not in image else None
+    except (OSError, AttributeError, TypeError, ValueError):
+        return None
+
+
+def _darwin_pid_start(pid: int) -> Optional[str]:
+    """Recheck PID lifetime; fail on process disappearance or restart."""
+    try:
+        run = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True, text=True, check=False, timeout=8,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    t = run.stdout.strip()
+    return t if run.returncode == 0 and t and "\n" not in t and len(t) < 80 else None
+
+
+def _darwin_pid_signature_valid(pid: int) -> bool:
+    """Verify the RUNNING process PID with Apple's dynamic codesign feature."""
+    try:
+        run = subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict",
+             "-R", "=" + _DARWIN_GOOGLE_REQUIREMENT, str(pid)],
+            capture_output=True, text=True, check=False, timeout=30,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return run.returncode == 0
+
+
+def _darwin_pid_row_unchanged(pid: int, uid: int, executable: str, profile: str) -> bool:
+    try:
+        run = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "pid=,uid=,command="],
+            capture_output=True, text=True, check=False, timeout=8,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    rows = [line.split(maxsplit=2) for line in run.stdout.splitlines() if line.strip()]
+    return (run.returncode == 0 and len(rows) == 1 and len(rows[0]) == 3
+            and rows[0][0] == str(pid) and rows[0][1] == str(uid)
+            and ps_line_matches_profile(rows[0][2], executable, profile))
+
+
+def _darwin_process_probe(executable: str, profile: str) -> Optional[str]:
+    """Reject ambiguous/forged process rows; digest binds OS PID lifetime."""
+    try:
+        listing = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,uid=,command="],
+            capture_output=True, text=True, check=False, timeout=8,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listing.returncode != 0:
+        return None
+    uid = os.getuid()
+    candidates = []
+    for line in listing.stdout.splitlines():
+        row = line.strip().split(maxsplit=2)
+        if (len(row) == 3 and row[0].isdecimal() and row[1].isdecimal()
+            and int(row[1]) == uid
+            and ps_line_matches_profile(row[2], executable, profile)):
+            candidates.append(int(row[0]))
+    # Never select an arbitrary matching process when assignment is ambiguous.
+    if len(candidates) != 1:
+        return None
+    pid = candidates[0]
+    image = _darwin_pid_executable(pid)
+    started = _darwin_pid_start(pid)
+    if (image != executable or not started or
+        os.path.realpath(image) != executable or
+        not _darwin_pid_signature_valid(pid)):
+        return None
+    # Disk bytes alone are NOT runtime identity. Trust requires the PID-bound
+    # dynamic codesign above and the kernel-reported image path.
+    binary_sha256 = _hash_open_binary(image)
+    if not binary_sha256 or not _SHA256.fullmatch(binary_sha256):
+        return None
+    if (_darwin_pid_executable(pid) != image or
+        _darwin_pid_start(pid) != started or
+        not _darwin_pid_row_unchanged(pid, uid, executable, profile)):
+        return None
+    return hashlib.sha256(
+        ("bke-f1/darwin/signed-pid/v1\0" + str(pid) + "\0" +
+         started + "\0" + image + "\0" + binary_sha256).encode("utf-8")
+    ).hexdigest()
+
+
 def active_chrome_runtime_sha256(platform: str, launcher_path: str, profile: str, version: str) -> Optional[str]:
     if platform == "Linux":
         return _linux_process_probe(launcher_path, profile, version)
     if platform == "Darwin":
-        try:
-            result = subprocess.run(
-                ["ps", "-axo", "uid=,command="], capture_output=True, text=True,
-                timeout=8, check=False, env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if result.returncode != 0:
-            return None
-        for line in result.stdout.splitlines():
-            columns = line.strip().split(maxsplit=1)
-            if len(columns) != 2 or not columns[0].isdecimal() or int(columns[0]) != os.getuid():
-                continue
-            if ps_line_matches_profile(columns[1], launcher_path, profile):
-                digest = _hash_open_binary(launcher_path)
-                if digest and _SHA256.fullmatch(digest):
-                    return digest
+        return _darwin_process_probe(launcher_path, profile)
     return None
 
 
