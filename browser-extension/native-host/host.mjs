@@ -2,6 +2,7 @@
 // key; it does NOT issue Command Center authority, worker assignments or JWTs.
 import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
 import { nativeFrameReader,writeFrame } from "./framing.mjs";
+import { createLocalReadOnlyEnvelopeGate } from "./local-read-only-controller.mjs";
 
 const HOST_AUD = "bke-worker/desktop/native-key-proof/v1";
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -11,6 +12,7 @@ const ORIGIN = /^chrome-extension:\/\/[a-p]{32}\/$/u;
 const FIELDS = "bridge_identity_sha256,browser_profile_sha256,chatgpt_target_sha256";
 const POLICY = "allowed_origin,expires_at_ms,profile_binding_sha256,public_key_sha256,resources,version,worker_id";
 const HELLO = "client_nonce,public_key,resources,type,version,worker_id";
+const PROBE_HELLO = "client_nonce,public_key,read_only_probe,resources,type,version,worker_id";
 const PROOF = "client_nonce,device_signature,server_nonce,type,version";
 const MAX_CLOCK_SKEW = 30_000;
 export const HOST_PROOF_AUDIENCE = HOST_AUD;
@@ -50,7 +52,9 @@ export function nativeProofMessage({origin,worker_id,public_key_sha256,
     resources.bridge_identity_sha256,client_nonce,server_nonce,expires_at_ms]);
 }
 function matchesHello(v,policy){
-  if(!exact(v,HELLO)||v.type!=="HELLO"||v.version!==1||
+  const probe=Object.prototype.hasOwnProperty.call(v??{},"read_only_probe");
+  if(!exact(v,probe?PROBE_HELLO:HELLO)||
+     (probe&&v.read_only_probe!==true)||v.type!=="HELLO"||v.version!==1||
      v.worker_id!==policy.worker_id||!validPublic(v.public_key)||
      !validResources(v.resources)||!sameResources(v.resources,policy.resources)||
      !isHash(v.client_nonce))return false;
@@ -129,11 +133,35 @@ export async function runNativeProofHost({
       throw Error("NATIVE_PROOF_DENIED");
     // Proof of local key possession ONLY; never a bearer token, enrollment
     // grant, authenticated Command Center session, or dispatch authority.
-    await writeFrame(output,{
+    const receipt={
       type:"LOCAL_PROOF_OK",version:1,worker_id:policy.worker_id,
       public_key_sha256:policy.public_key_sha256,
       admission_authority:"NONE",dispatch_authority:"NONE",
-    });
+    };
+    await writeFrame(output,receipt);
+    if(hello.read_only_probe===true){
+      // Not a controller admission: only a one-shot echo on an already
+      // P-256-verified native channel, with zero dispatch privileges.
+      const gate=createLocalReadOnlyEnvelopeGate({
+        policy,localReceipt:receipt,clientNonce:hello.client_nonce,
+        serverNonce:issued.server_nonce,clock:now,ttlMs:Math.min(5000,timeoutMs),
+      });
+      try{
+        await writeFrame(output,gate.proposal);
+        const response=gate.accept(await bounded());
+        if(response.state!=="LOCAL_READ_ONLY_PONG")
+          throw Error("NATIVE_READ_ONLY_ENVELOPE_DENIED");
+        await writeFrame(output,{
+          type:"LOCAL_READ_ONLY_PONG",version:1,
+          worker_id:policy.worker_id,
+          admission_authority:"NONE",dispatch_authority:"NONE",
+          message_send_authority:"NONE",
+          controller_authentication:"NOT_ESTABLISHED",
+          external_controller_transport:"NOT_CONNECTED",
+        });
+      }finally{gate.close();}
+      return "LOCAL_READ_ONLY_PONG";
+    }
     return "LOCAL_PROOF_OK";
   } finally {
     reader.close();
