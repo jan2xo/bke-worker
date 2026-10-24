@@ -30,6 +30,9 @@ Preconditions (checked automatically before and after the probe):
 - a non-root human owner, interactive TTY, zero CLI arguments;
 - the exact supported GitHub \`jan2xo/bke-worker\` origin, correct PR branch,
   no tracked modifications or untracked files, canonical real checkout;
+- enumerate the complete tracked index with a **bounded 256-KiB** allowance
+  (the ordinary 4-KiB command-output limit is unchanged for other checks);
+  reject an oversized index rather than truncating or skipping entries;
 - reject any tracked index assume-unchanged/skip-worktree flags; independently
   verify the on-disk diagnostic and both Python verification helpers against
   exact HEAD Git blob object IDs before and after the status check;

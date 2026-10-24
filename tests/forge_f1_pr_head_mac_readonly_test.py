@@ -218,7 +218,7 @@ class MacReadOnlyContract(TestCase):
                 directory, head, main_commit, "LOCAL_GRAFTS_FORBIDDEN"
             )
 
-    def _trusted_source_repo(self, directory):
+    def _trusted_source_repo(self, directory, extra_tracked=0):
         """Real Git index, three tracked Python runtime files, clean F1 PR."""
         def run(*args):
             p = subprocess.run(["/usr/bin/git", "-C", directory, *args],
@@ -232,6 +232,10 @@ class MacReadOnlyContract(TestCase):
             path = Path(directory) / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# canonical source\n", encoding="utf-8")
+        for n in range(extra_tracked):
+            filler = Path(directory) / "fixtures" / ("tracked-" + str(n).zfill(4) + "-" + "x" * 46 + ".txt")
+            filler.parent.mkdir(parents=True, exist_ok=True)
+            filler.write_text("ordinary tracked index record\n", encoding="utf-8")
         run("add", ".")
         run("commit", "-qm", "committed source")
         run("branch", "-m", mod.BRANCH)
@@ -244,11 +248,12 @@ class MacReadOnlyContract(TestCase):
         out, err = TTY(), io.StringIO()
         observed_network = []
         real_command = mod.command
-        def safe_command(argv, timeout=30, *, cwd=None):
+        def safe_command(argv, timeout=30, *, cwd=None, max_output_chars=4096):
             if "ls-remote" in argv:
                 observed_network.append(tuple(argv))
                 raise AssertionError("network lookup before local source denial")
-            return real_command(argv, timeout=timeout, cwd=cwd)
+            return real_command(argv, timeout=timeout, cwd=cwd,
+                                max_output_chars=max_output_chars)
         with mock.patch.object(mod, "ROOT", Path(directory)), \
              mock.patch.object(mod.sys, "platform", "darwin"), \
              mock.patch.object(mod.os, "geteuid", return_value=501), \
@@ -315,6 +320,38 @@ class MacReadOnlyContract(TestCase):
                                                     encoding="utf-8")
             self._run_local_provenance_denial(directory, "RUNTIME_SOURCE_HASH_MISMATCH")
 
+    def test_real_large_clean_tracked_index_matches_head_without_truncation(self):
+        """Reproduces 4-KiB output failure on clean checkout, then verifies all."""
+        with tempfile.TemporaryDirectory() as directory:
+            run = self._trusted_source_repo(directory, extra_tracked=180)
+            index_command = ["/usr/bin/git", "-C", directory,
+                             "ls-files", "-v", "-z"]
+            raw = subprocess.run(index_command, capture_output=True, text=True,
+                                 check=True).stdout
+            self.assertGreater(len(raw), 4096, "Regression fixture is too small")
+            self.assertLess(len(raw), mod.MAX_INDEX_OUTPUT_CHARS)
+            with self.assertRaisesRegex(mod.Blocked, "COMMAND_FAILED"):
+                mod.command(index_command)  # historical 4-KiB limit
+            with mock.patch.object(mod, "ROOT", Path(directory)):
+                mod.verify_tracked_source(run("rev-parse", "HEAD"))
+            self.assertEqual(run("status", "--porcelain"), "")
+
+    def test_index_output_cap_is_finite_and_other_git_calls_remain_4k(self):
+        """Index exception must not silently remove bounds on other commands."""
+        from types import SimpleNamespace
+        argv = ["/usr/bin/git", "--version"]
+        with mock.patch.object(mod.subprocess, "run") as proc:
+            proc.return_value = SimpleNamespace(returncode=0, stdout="x" * 4097)
+            with self.assertRaisesRegex(mod.Blocked, "COMMAND_FAILED"):
+                mod.command(argv)
+            proc.return_value = SimpleNamespace(
+                returncode=0, stdout="x" * (mod.MAX_INDEX_OUTPUT_CHARS + 1))
+            with self.assertRaisesRegex(mod.Blocked, "COMMAND_FAILED"):
+                mod.command(argv, max_output_chars=mod.MAX_INDEX_OUTPUT_CHARS)
+            with self.assertRaisesRegex(mod.Blocked, "OUTPUT_LIMIT_INVALID"):
+                mod.command(argv, max_output_chars=mod.MAX_INDEX_OUTPUT_CHARS + 1)
+            proc.assert_called()
+
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
         self.assertIn("before = snapshot_source()", source)
@@ -323,7 +360,8 @@ class MacReadOnlyContract(TestCase):
         self.assertIn("GIT_OPTIONAL_LOCKS", source)
         self.assertIn('"GIT_CONFIG_KEY_0": "core.fsmonitor"', source)
         self.assertIn('"GIT_CONFIG_VALUE_0": "false"', source)
-        self.assertIn('git("ls-files", "-v", "-z")', source)
+        self.assertIn('git("ls-files", "-v", "-z",', source)
+        self.assertIn("max_output_chars=MAX_INDEX_OUTPUT_CHARS", source)
         self.assertIn('git("ls-tree", "-r", "-z", head, "--", *RUNTIME_FILES)', source)
         self.assertIn('"GIT_NO_REPLACE_OBJECTS": "1"', source)
         self.assertIn('git("for-each-ref", "--format=%(refname)", "refs/replace")', source)

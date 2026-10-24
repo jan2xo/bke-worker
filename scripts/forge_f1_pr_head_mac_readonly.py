@@ -29,6 +29,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 PIN = re.compile(r"^[0-9a-f]{64}$")
 APP_EXE = "Google Chrome.app/Contents/MacOS/Google Chrome"
 CONSENT = "I APPROVE READ ONLY PR 146 MAC IDENTITY CHECK"
+MAX_INDEX_OUTPUT_CHARS = 262144  # Bounded whole-repository tracked-index audit.
 RUNTIME_FILES = (
     "scripts/forge_f1_pr_head_mac_readonly.py",
     "scripts/forge_f1_chrome_readiness.py",
@@ -44,8 +45,12 @@ def fail(reason: str):
     raise Blocked(reason)
 
 
-def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None) -> str:
+def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None,
+            max_output_chars: int = 4096) -> str:
     """No shell, no ambient user Git config or interactive credential prompts."""
+    if (not isinstance(max_output_chars, int) or
+            not 0 < max_output_chars <= MAX_INDEX_OUTPUT_CHARS):
+        fail("OUTPUT_LIMIT_INVALID")
     env = {
         "PATH": "/usr/bin:/bin",
         "HOME": os.path.expanduser("~"),
@@ -65,13 +70,16 @@ def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None) -> st
                               check=False, timeout=timeout, env=env, cwd=cwd)
     except (OSError, subprocess.SubprocessError):
         fail("COMMAND_UNAVAILABLE")
-    if done.returncode != 0 or len(done.stdout) > 4096:
+    if done.returncode != 0 or len(done.stdout) > max_output_chars:
         fail("COMMAND_FAILED")
     return done.stdout.strip()
 
 
-def git(*args: str) -> str:
-    return command(["/usr/bin/git", "-C", str(ROOT), *args])
+def git(*args: str, max_output_chars: int = 4096) -> str:
+    argv = ["/usr/bin/git", "-C", str(ROOT), *args]
+    if max_output_chars == 4096:
+        return command(argv)
+    return command(argv, max_output_chars=max_output_chars)
 
 
 def git_config_fingerprint() -> str:
@@ -119,7 +127,8 @@ def verify_tracked_source(head: str) -> None:
     Inspect every tracked index flag, then hash executed Python sources with
     Git's canonical blob hashing format. HEAD is checked against GitHub later.
     """
-    index = git("ls-files", "-v", "-z")
+    index = git("ls-files", "-v", "-z",
+                max_output_chars=MAX_INDEX_OUTPUT_CHARS)
     if not index:
         fail("TRACKED_INDEX_UNAVAILABLE")
     tracked = set()
