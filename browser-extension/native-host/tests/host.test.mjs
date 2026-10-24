@@ -399,7 +399,7 @@ test("real entry requires exact owner-reviewed controller config bytes before re
   f.policy.expires_at_ms=Date.now()+30000;
   try{
     await writeFile(policy,JSON.stringify(f.policy),{mode:0o600});
-    const bytes=Buffer.from('{"enabled":false,"version":1}\\n');
+    const bytes=Buffer.from('{"enabled":false,"version":1}\n');
     await writeFile(config,bytes,{mode:0o600});
     const digest=createHash("sha256").update(bytes).digest("hex");
     for(const expectedHash of [H("b"),"invalid"]){
