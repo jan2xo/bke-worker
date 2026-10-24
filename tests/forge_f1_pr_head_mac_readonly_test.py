@@ -352,6 +352,78 @@ class MacReadOnlyContract(TestCase):
                 mod.command(argv, max_output_chars=mod.MAX_INDEX_OUTPUT_CHARS + 1)
             proc.assert_called()
 
+    def _trusted_inline_bootstrap(self):
+        """Extract the exact documented pre-execution operator bootstrap."""
+        import re
+        documentation = (SOURCE.parents[1] / "docs" /
+                         "f1-03-pr-head-readonly-physical.md").read_text()
+        match = re.search(
+            r"\x60{3}bash\n/usr/bin/python3 -I -c '\n(.*?)\n' scripts/forge_f1_pr_head_mac_readonly\.py\n\x60{3}",
+            documentation, re.DOTALL)
+        self.assertIsNotNone(match, "missing reviewed inline bootstrap")
+        code = match.group(1)
+        pin = "8e9e3dba509d4e078219c896bfb602e5d1652d5ba587a170f7fd4da3fa3b0663"
+        self.assertIn('PIN = "' + pin + '"', code)
+        self.assertEqual(__import__("hashlib").sha256(SOURCE.read_bytes()).hexdigest(),
+                         pin, "diagnostic changed without out-of-band pin")
+        self.assertNotIn("    /usr/bin/python3 -I scripts/forge_f1_pr_head_mac_readonly.py",
+                         documentation)
+        return code
+
+    def test_real_subprocess_tampered_entrypoint_marker_never_executes(self):
+        """Prove the original direct launch is vulnerable; pinned launch is not."""
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "forge_f1_pr_head_mac_readonly.py"
+            marker = Path(directory) / "attacker-marker"
+            attack = (
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('EXECUTED')\n"
+                "print('Type the exact reviewed PR HEAD SHA:')\n"
+                "print('BKE_F1_PR_HEAD_DIAGNOSTIC=READ_ONLY_PID_PROBE_PASS')\n"
+            )
+            candidate.write_text(attack, encoding="utf-8")
+            # Positive attack control: an unguarded interpreter executes it.
+            plain = subprocess.run(
+                ["/usr/bin/python3", "-I", str(candidate)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            self.assertTrue(marker.exists(), "attack fixture not reproducible")
+            marker.unlink()
+            verified = subprocess.run(
+                ["/usr/bin/python3", "-I", "-c",
+                 self._trusted_inline_bootstrap(), str(candidate)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(verified.returncode, 2, verified.stderr)
+            self.assertFalse(marker.exists(), "candidate executed before hash check")
+            self.assertIn("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED", verified.stderr)
+            self.assertNotIn("Type the exact reviewed", verified.stdout)
+            self.assertNotIn("PID_PROBE_PASS", verified.stdout)
+            self.assertNotIn("PID_PROBE_PASS", verified.stderr)
+
+    def test_verified_bootstrap_unmodified_entrypoint_reaches_owner_gate(self):
+        """Exact pinned source executes only after SHA match, then denies on Linux."""
+        verified = subprocess.run(
+            ["/usr/bin/python3", "-I", "-c",
+             self._trusted_inline_bootstrap(), str(SOURCE)],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(verified.returncode, 2, verified.stderr)
+        self.assertIn("OWNER_TTY_MAC_REQUIRED", verified.stderr)
+        self.assertNotIn("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED", verified.stderr)
+        self.assertNotIn("Type the exact reviewed", verified.stdout)
+        self.assertNotIn("PID_PROBE_PASS", verified.stdout)
+
+    def test_verified_bootstrap_rejects_symlink_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            link = Path(directory) / "suspect.py"
+            link.symlink_to(SOURCE)
+            blocked = subprocess.run(
+                ["/usr/bin/python3", "-I", "-c",
+                 self._trusted_inline_bootstrap(), str(link)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(blocked.returncode, 2, blocked.stderr)
+            self.assertIn("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED", blocked.stderr)
+            self.assertNotIn("PID_PROBE_PASS", blocked.stdout)
+
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
         self.assertIn("before = snapshot_source()", source)

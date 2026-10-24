@@ -23,10 +23,68 @@ On a physical macOS owner workstation, in the canonical repository checkout
 on **only** \`feat/f1-03-owner-policy-provisioning-20261023\` at the exact
 reviewed F1-03 PR #146 head:
 
-    /usr/bin/python3 -I scripts/forge_f1_pr_head_mac_readonly.py
+    DO NOT run the draft entrypoint directly: its self-check occurs too late.
+
+Instead, use a separately verified inline, out-of-checkout Python bootstrap.
+Its SHA-256 pin must be corroborated with the exact reviewed GitHub source
+and FORGE verdict **independently of the local editable repository**. Never
+copy a command from an unreviewed working-tree file. Re-pin and re-review if
+the diagnostic source changes.
+
+Operator-only after independent exact-head acceptance and local consent:
+
+```bash
+/usr/bin/python3 -I -c '
+import hashlib, hmac, os, pathlib, stat, sys
+PIN = "8e9e3dba509d4e078219c896bfb602e5d1652d5ba587a170f7fd4da3fa3b0663"
+def blocked():
+    print("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED reason=ENTRYPOINT_UNTRUSTED", file=sys.stderr)
+    raise SystemExit(2)
+if len(sys.argv) != 2 or not hasattr(os, "O_NOFOLLOW"):
+    blocked()
+candidate = pathlib.Path(sys.argv[1])
+try:
+    fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            blocked()
+        with os.fdopen(fd, "rb") as reader:
+            fd = -1
+            source = reader.read(65537)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+except OSError:
+    blocked()
+if len(source) > 65536 or not hmac.compare_digest(
+    hashlib.sha256(source).hexdigest(), PIN
+):
+    blocked()
+# Only execute the same in-memory bytes checked above; never reopen.
+sys.argv = [str(candidate)]
+exec(compile(source, str(candidate), "exec"), {
+    "__name__": "__main__", "__file__": str(candidate), "__package__": None
+})
+' scripts/forge_f1_pr_head_mac_readonly.py
+```
+
+**Entrypoint SHA-256 pin:** `8e9e3dba509d4e078219c896bfb602e5d1652d5ba587a170f7fd4da3fa3b0663`.
+
+The trusted bootstrap uses `O_NOFOLLOW`, a 64-KiB maximum, and SHA-256
+before even compiling the candidate; then it executes the same, verified
+in-memory bytes so the file cannot be swapped between check and execution.
+A bad pin, symlink or invalid file returns
+`BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED reason=ENTRYPOINT_UNTRUSTED` before
+any reviewed-SHA/consent prompt, local Git command or Mac probe. The verified
+diagnostic retains all current helper hashes, index/config/graph validation,
+live GitHub ref check, explicit human consent, and post-probe verification.
+Trusted operating system and Python standard library are prerequisites.
 
 Preconditions (checked automatically before and after the probe):
 
+- verified bootstrap separately checks exact candidate bytes before any
+  candidate code is parsed or executed; no direct entrypoint execution;
 - a non-root human owner, interactive TTY, zero CLI arguments;
 - the exact supported GitHub \`jan2xo/bke-worker\` origin, correct PR branch,
   no tracked modifications or untracked files, canonical real checkout;
@@ -89,8 +147,9 @@ profile data to a GitHub checkpoint.
 
 Linux Guard must execute \`tests/forge_f1_pr_head_mac_readonly_test.py\`
 through actual \`unittest\` (no conditional skips or unconditional PASS)
-plus all existing F1-03 process/PID/native tests. Tests mock Mac identity
-and GitHub ref inputs; they do not touch a real browser or GitHub remote.
+plus all existing F1-03 process/PID/native tests. Tests execute the documented inline bootstrap in actual Linux subprocesses
+against marker-injected candidate source, positive trusted source and symlink
+negatives; no real Chrome or GitHub remote is accessed.
 
 Even physical **PID diagnostic PASS** is just one prerequisite. Owner
 Chrome extension permission, native-host registration, actual human-granted
