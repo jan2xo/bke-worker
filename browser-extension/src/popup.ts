@@ -61,10 +61,12 @@ verifyNativeButton.addEventListener("click", () => {
       const result = await chrome.runtime.sendMessage({
         type:"bke.native.local.proof",policy:localOwnerPolicy,
       });
-      feedback.textContent = result?.state === "LOCAL_PROOF_OK" &&
+      feedback.textContent = result?.state === "LOCAL_READ_ONLY_PONG" &&
         result?.admission_authority === "NONE" &&
-        result?.dispatch_authority === "NONE"
-        ? "Local device-key possession verified ONLY. No worker pairing or send permission."
+        result?.dispatch_authority === "NONE" &&
+        result?.message_send_authority === "NONE" &&
+        result?.controller_authentication === "NOT_ESTABLISHED"
+        ? "Verified one-shot local native read-only roundtrip. No controller, assignment, or send authority."
         : (result?.code ?? "Native proof blocked or uncertain. No retry was performed.");
     })
     .catch(() => {
