@@ -25,13 +25,33 @@ on disk alone is NOT proof of the running Chrome process.** The separate
 owner UID/PID/profile candidate, rejects multiple candidates, obtains the
 OS-reported executable path from `libproc.proc_pidpath`, and invokes Apple's
 `codesign --verify -R <pinned Google requirement> PID` to dynamically validate
-that running code (rather than validating only a pathname). It rechecks the PID
-start time, kernel executable pathname and owner/profile argv after signature
-verification. If permission/OS support, PID, signer, version, profile, or
-process identity is uncertain, it returns BLOCKED; no fallback to `ps` text
-or a hash of the installed app. The local digest additionally includes the
-validated PID and start time, so a process restart changes the expected
-owner-policy binding across repeated preflights.
+that running code (rather than validating only a pathname).
+
+**P2-4 strengthening:** instead of a second-resolution `ps lstart`, the
+Darwin process checker now **requires `libproc.proc_pidinfo` flavor
+`PROC_PIDUNIQIDENTIFIERINFO=17`** and its kernel-assigned `p_uniqueid`,
+rechecking this process-generation identifier repeatedly and across all
+three owner preflights. The flavor is an Apple XNU private process-info
+interface; user-level availability on the owner's macOS version has NOT been
+verified. If that API returns insufficient bytes, zero, unsupported, or
+permission denied, the result is BLOCKED. **No fallback to PID plus seconds.**
+
+The checker also reads `codesign --display --verbose=4 <PID>` to capture
+the **running process's signed CodeDirectory CDHash** and independently reads
+the on-disk executable's signed CodeDirectory CDHash. They MUST match; any
+changed, absent, ambiguous or mismatching hash is BLOCKED. This binds the
+local fingerprint to a matching signed code identity rather than pretending
+that SHA-256 of a pathname represents loaded process bytes. The checker
+revalidates the PID's Google signing requirement and both CDHashes after the
+profile, kernel executable and generation checks. The local commitment
+includes unique generation and signed code identity—not the unsupported
+assumption that an arbitrary disk-opened file is the running image.
+
+Neither the XNU-private flavor nor the PID-based `codesign --display` call
+has been exercised on this owner's physical Mac. A fail-closed **BLOCKED**
+result there is preferable to weakening identity verification. This approach
+does not independently attest a ChatGPT account, authenticated tab or device
+hardware and cannot grant worker/controller/dispatch authority.
 
 **Even this source design is NOT physical macOS acceptance**, unique ChatGPT
 account/tab verification, hardware attestation or durable controller admission.
