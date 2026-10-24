@@ -106,11 +106,16 @@ test("explicit close aborts the only permitted status attempt",()=>{
  const g=gate();g.close();
  assert.equal(g.accept(g.proposal).code,"LOCAL_CONTROL_REPLAY_OR_ALREADY_CONSUMED");
 });
-test("pure boundary is deliberately not wired to live extension or native-host entry",()=>{
- for(const relative of ["../../src/service-worker.ts","../entry.mjs","../host.mjs"]){
+test("read-only gate is reachable only inside the signed native proof host",()=>{
+ for(const relative of ["../../src/service-worker.ts","../entry.mjs"]){
   const text=readFileSync(new URL(relative,import.meta.url),"utf8");
   assert.doesNotMatch(text,/createLocalReadOnlyEnvelopeGate|local-read-only-controller/u);
  }
+ const verifiedHost=readFileSync(new URL("../host.mjs",import.meta.url),"utf8");
+ assert.match(verifiedHost,/createLocalReadOnlyEnvelopeGate/u);
+ assert.match(verifiedHost,/matchesProof\(proof/u);
+ assert.ok(verifiedHost.indexOf("matchesProof(proof") <
+   verifiedHost.lastIndexOf("createLocalReadOnlyEnvelopeGate("));
  const source=readFileSync(new URL("../local-read-only-controller.mjs",import.meta.url),"utf8");
  for(const forbidden of ["fetch(","connectNative(","sendMessage(","eval(","execFile(","spawn("]){
   assert.equal(source.includes(forbidden),false,"forbidden capability "+forbidden);
