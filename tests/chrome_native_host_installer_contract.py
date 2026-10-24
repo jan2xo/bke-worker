@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for d in (fake, fake/"scripts", fake/"browser-extension", fake/"browser-extension/native-host"):
         d.chmod(0o700)
     shutil.copy2(script,fake/"scripts/prepare-chrome-native-host.sh")
-    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs","controller-admission.mjs","controller-transport.mjs"):
+    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs","controller-admission.mjs","controller-transport.mjs","controller-config.mjs"):
         shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     subprocess.run(["git","init","-q","-b","main",str(fake)],check=True)
     subprocess.run(["git","-C",str(fake),"config","user.email","test@example.invalid"],check=True)
@@ -191,12 +191,16 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert parsed["allowed_origins"]==[env["BKE_NATIVE_HOST_EXTENSION_ORIGIN"]]
     assert parsed["type"]=="stdio"
     assert parsed["path"]==str(sandbox/"install/launch-native-host.sh")
-    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs","controller-admission.mjs","controller-transport.mjs","owner-policy.json"):
+    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs","controller-admission.mjs","controller-transport.mjs","controller-config.mjs","controller-config.json","owner-policy.json"):
         assert (sandbox/"install"/name).is_file(),name
     assert (sandbox/"install/launch-native-host.sh").stat().st_mode & 0o111
     launcher=sandbox/"install/launch-native-host.sh"
     assert 'exec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"' in launcher.read_text()
     assert 'NODE_BIN=' in launcher.read_text()
+    config_bytes=(sandbox/"install/controller-config.json").read_bytes()
+    assert json.loads(config_bytes)=={"enabled":False,"version":1}
+    from hashlib import sha256
+    assert sha256(config_bytes).hexdigest() in launcher.read_text()
     subprocess.run(["bash","-n",str(launcher)],check=True)
     r=subprocess.run([str(launcher),"https://invalid.example/"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode==2 and not r.stdout
@@ -241,6 +245,15 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
         r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
         assert r.returncode!=0 and manifest.exists(),(r.stdout,r.stderr)
         module.write_bytes(original);module.chmod(0o600)
+    for name in ("controller-config.mjs","controller-config.json"):
+        file=sandbox/"install"/name
+        original=file.read_bytes()
+        file.write_bytes(original+b"\\n// tamper probe")
+        r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
+        assert r.returncode!=0 and "artifact hashes mismatch" in r.stderr,(r.stdout,r.stderr)
+        r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
+        assert r.returncode!=0 and manifest.exists(),(r.stdout,r.stderr)
+        file.write_bytes(original);file.chmod(0o600)
     # Hash-locked rollback removes only byte-identical transaction-owned artifacts.
     r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
@@ -252,6 +265,8 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert not (sandbox/"install/local-read-only-controller.mjs").exists()
     assert not (sandbox/"install/controller-admission.mjs").exists()
     assert not (sandbox/"install/controller-transport.mjs").exists()
+    assert not (sandbox/"install/controller-config.mjs").exists()
+    assert not (sandbox/"install/controller-config.json").exists()
     assert not (sandbox/"install/owner-policy.json").exists()
     assert not (sandbox/"state/transaction.json").exists()
     # Conflicts are not overwritten.
