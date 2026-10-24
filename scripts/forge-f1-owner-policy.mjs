@@ -62,7 +62,17 @@ async function chromePreflight(){
   join(home,"Applications","Google Chrome.app","Contents","MacOS","Google Chrome")
  ].filter(existsSync);
  if(installed.length!==1)block("GOOGLE_CHROME_IDENTITY_AMBIGUOUS");
+ // Verify the publisher before executing ANY bytes of the selected binary.
+ // Apple signed-bundle integrity, Google bundle ID and pinned Google Team ID
+ // are enforced by macOS codesign, NOT self-reported --version text.
+ const signer=join(ROOT,"scripts","forge_f1_chrome_publisher.py");
+ let attestation;
+ try{attestation=exec("python3",[signer,installed[0]],95000);}
+ catch{block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");}
+ if(attestation!=="BKE_CHROME_GOOGLE_SIGNER_VERIFIED")
+   block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");
  const binary=await realpath(installed[0]);
+ if(binary!==installed[0])block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");
  const m=/^Google Chrome (\d+\.\d+\.\d+\.\d+)$/u.exec(exec(binary,["--version"]));
  if(!m)block("OFFICIAL_CHROME_VERSION_INVALID");
  const digest=exec("python3",[

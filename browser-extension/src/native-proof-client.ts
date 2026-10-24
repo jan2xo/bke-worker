@@ -1,6 +1,9 @@
-// DORMANT browser-owned client for PR #106's local Chrome native host proof.
-// Not imported by service-worker.ts; manifest has NO nativeMessaging grant.
-// No enrollment, network, browser automation, token or dispatch authority.
+// Local Chrome native-host P-256 key-possession client (owner OPT-IN only).
+// service-worker.ts imports it only through the trusted-popup proof action;
+// nativeMessaging is OPTIONAL and Chrome requests it after a human button click.
+// Real owner Mac host registration/physical handshake remains UNPROVEN.
+// Local proof does not grant enrollment, network dispatch, ChatGPT sends,
+// authenticated controller sessions or GitHub assignment authority.
 import type { createDeviceIdentityBridge, NativeProofChallenge } from "./device-identity.js";
 
 export const NATIVE_HOST_NAME="bke.worker.desktop";
@@ -133,8 +136,9 @@ export async function proveLocalNativeHost({
   let port:Port;
   try{port=runtime.connectNative(NATIVE_HOST_NAME);}
   catch{return blocked("NATIVE_CLIENT_HOST_UNAVAILABLE");}
-  // No nativeMessaging permission in the checked-in Manifest V3. This path is
-  // dormant until a separate owner-approved registration/permission PR.
+  // Chrome must grant optional nativeMessaging from an explicit popup click.
+  // This method is NEVER invoked on service-worker startup or by page scripts.
+  // Successful local P-256 proof is NOT authenticated controller admission.
   const wire=channel(port,at+timeoutMs,clock);
   try{
     wire.send({type:"HELLO",version:1,worker_id:workerId,

@@ -11,8 +11,16 @@ After full review, certification and merge, from a clean current main checkout:
 
 This MUST NOT be run from this unmerged draft or another worker's shared Chrome
 profile. The command checks canonical origin, clean fetched exact current main,
-Node 22+, an interactive non-root Mac owner, exactly one supported official
-Google Chrome installation, executable version and real binary SHA-256.
+Node 22+ and an interactive non-root Mac owner. **Before invoking Chrome**
+(even for `--version`), it verifies the selected non-symlinked Google
+Chrome.app bundle and its executable with Apple's `/usr/bin/codesign`:
+Apple-generic trust anchor, exact `com.google.Chrome` code identifier,
+pinned Google Team ID `EQHXZ8M8AV`, strict signed-bundle integrity and
+independent metadata readback. Unsigned, wrong-signer, broken-seal, aliased,
+unavailable or ambiguous app identity blocks without executing the browser.
+It then validates the actual running Google Chrome process/version and
+dedicated private profile chain. **Publisher signature is not OS-level
+process or ChatGPT account/tab attestation.**
 
 It reuses scripts/forge_f1_chrome_readiness.py to verify that the private
 ~/.bke-worker/f1/chrome-profile directory chain is safe and an actual Chrome
