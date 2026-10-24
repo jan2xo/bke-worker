@@ -43,6 +43,10 @@ class MacReadOnlyContract(TestCase):
         }
         configs = iter([config_before, config_before if config_after is None else config_after])
         def fake_git(*args):
+            if args == ("for-each-ref", "--format=%(refname)", "refs/replace"):
+                return ""
+            if args == ("rev-parse", "--git-path", "info/grafts"):
+                return str(mod.ROOT / ".git" / "info" / "grafts")
             if args == ("config", "--list", "--includes", "--null"):
                 return next(configs)
             if args not in responses:
@@ -58,7 +62,8 @@ class MacReadOnlyContract(TestCase):
                                     mod.PUBLIC_REPO, mod.PR_REF, mod.MAIN_REF])
             return remote
         with mock.patch.object(mod, "git", side_effect=fake_git), \
-             mock.patch.object(mod, "command", side_effect=fake_command):
+             mock.patch.object(mod, "command", side_effect=fake_command), \
+             mock.patch.object(mod.os.path, "lexists", return_value=False):
             return mod.snapshot_source()
 
     def test_live_pr_ref_and_current_main_ancestry_are_both_required(self):
@@ -113,12 +118,113 @@ class MacReadOnlyContract(TestCase):
             self.assertFalse(any("ls-remote" in call.args[0]
                                  for call in commands.call_args_list))
 
+    def _unrelated_real_git_fixture(self, directory):
+        """Two unrelated real commits, a clean PR branch, a canonical origin."""
+        def run(*args, input=None, allow_fail=False):
+            p = subprocess.run(
+                ["/usr/bin/git", "-C", directory, *args],
+                input=input, text=True, capture_output=True, check=False
+            )
+            if not allow_fail:
+                self.assertEqual(p.returncode, 0, (args, p.stdout, p.stderr))
+            return p
+        run("init", "-q")
+        run("config", "user.email", "forge-regression@example.invalid")
+        run("config", "user.name", "FORGE Regression")
+        run("commit", "-qm", "unrelated main baseline", "--allow-empty")
+        main_commit = run("rev-parse", "HEAD").stdout.strip()
+        tree = run("rev-parse", "HEAD^{tree}").stdout.strip()
+        head = run("commit-tree", tree, input="unrelated PR commit\n").stdout.strip()
+        run("update-ref", "refs/heads/" + mod.BRANCH, head)
+        run("symbolic-ref", "HEAD", "refs/heads/" + mod.BRANCH)
+        run("remote", "add", "origin", mod.PUBLIC_REPO)
+        self.assertNotEqual(head, main_commit)
+        self.assertEqual(run("status", "--porcelain").stdout.strip(), "")
+        self.assertNotEqual(
+            run("merge-base", "--is-ancestor", main_commit, "HEAD",
+                allow_fail=True).returncode, 0
+        )
+        return run, head, main_commit, tree
+
+    def _assert_real_graph_override_blocks(self, directory, head, main_commit,
+                                           expected_reason):
+        """Run the actual owner entrypoint; no remote or Chrome probe permitted."""
+        output, errors = TTY(), io.StringIO()
+        network_reads = []
+        original_command = mod.command
+
+        def offline_command(argv, timeout=30, *, cwd=None):
+            if "ls-remote" in argv:
+                network_reads.append(argv)
+                return head + "\t" + mod.PR_REF + "\n" + (
+                    main_commit + "\t" + mod.MAIN_REF
+                )
+            return original_command(argv, timeout=timeout, cwd=cwd)
+
+        with mock.patch.object(mod, "ROOT", Path(directory)), \
+             mock.patch.object(mod.sys, "platform", "darwin"), \
+             mock.patch.object(mod.os, "geteuid", return_value=501), \
+             mock.patch.object(mod.sys, "stdin", TTY()), \
+             mock.patch.object(mod.sys, "stdout", output), \
+             mock.patch.object(mod.sys, "stderr", errors), \
+             mock.patch.object(mod, "command", side_effect=offline_command), \
+             mock.patch.object(mod, "probe_readonly_mac",
+                               side_effect=AssertionError("Chrome probed")) as probe, \
+             mock.patch("builtins.input", side_effect=[head, mod.CONSENT]) as consent:
+            self.assertEqual(mod.main([]), 2)
+        self.assertIn(expected_reason, errors.getvalue())
+        self.assertNotIn("READ_ONLY_PID_PROBE_PASS", output.getvalue())
+        self.assertEqual(network_reads, [], "Graph override reached GitHub lookup")
+        probe.assert_not_called()
+        consent.assert_not_called()
+
+    def test_real_replace_ref_fake_ancestry_blocks_before_mac_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run, head, main_commit, tree = self._unrelated_real_git_fixture(directory)
+            descendant = run("commit-tree", tree, "-p", main_commit,
+                             input="forged descendant\n").stdout.strip()
+            run("replace", head, descendant)
+            # Demonstrate actual vulnerable ancestry is falsely positive.
+            self.assertEqual(run("merge-base", "--is-ancestor",
+                                 main_commit, "HEAD").returncode, 0)
+            self._assert_real_graph_override_blocks(
+                directory, head, main_commit, "LOCAL_REPLACEMENT_REFS_FORBIDDEN"
+            )
+            # A packed replace ref is also observable (no loose-ref-only check).
+            run("pack-refs", "--all", "--prune")
+            self._assert_real_graph_override_blocks(
+                directory, head, main_commit, "LOCAL_REPLACEMENT_REFS_FORBIDDEN"
+            )
+
+    def test_real_graft_fake_ancestry_blocks_before_mac_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run, head, main_commit, _ = self._unrelated_real_git_fixture(directory)
+            git_path = Path(run("rev-parse", "--git-path", "info/grafts").stdout.strip())
+            if not git_path.is_absolute():
+                git_path = Path(directory) / git_path
+            git_path.parent.mkdir(parents=True, exist_ok=True)
+            git_path.write_text(head + " " + main_commit + "\n", encoding="ascii")
+            # Grafts spoof ancestry even when replacement objects are disabled.
+            cmd = ["/usr/bin/git", "-C", directory,
+                   "merge-base", "--is-ancestor", main_commit, "HEAD"]
+            self.assertEqual(subprocess.run(cmd, check=False,
+                                            capture_output=True).returncode, 0)
+            env = dict(os.environ, GIT_NO_REPLACE_OBJECTS="1")
+            self.assertEqual(subprocess.run(cmd, env=env, check=False,
+                                            capture_output=True).returncode, 0)
+            self._assert_real_graph_override_blocks(
+                directory, head, main_commit, "LOCAL_GRAFTS_FORBIDDEN"
+            )
+
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
         self.assertIn("before = snapshot_source()", source)
         self.assertIn("after = snapshot_source()", source)
         self.assertIn("if after != before:", source)
         self.assertIn("GIT_OPTIONAL_LOCKS", source)
+        self.assertIn('"GIT_NO_REPLACE_OBJECTS": "1"', source)
+        self.assertIn('git("for-each-ref", "--format=%(refname)", "refs/replace")', source)
+        self.assertIn('git("rev-parse", "--git-path", "info/grafts")', source)
         self.assertIn("refs/pull/146/head", source)
 
     def mac_probe(self, *, selected=1, statuses=None, expected_error=None):

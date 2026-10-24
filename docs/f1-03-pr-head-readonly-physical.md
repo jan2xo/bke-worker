@@ -31,7 +31,11 @@ Preconditions (checked automatically before and after the probe):
 - the exact supported GitHub \`jan2xo/bke-worker\` origin, correct PR branch,
   no tracked modifications or untracked files, canonical real checkout;
 - reject repository-local/worktree/included Git URL rewrite settings and detect
-  local Git configuration drift; the HTTPS live-ref lookup runs outside the
+  local Git configuration drift; reject all local replacement refs (loose or packed)
+  and legacy Git graft metadata using worktree-aware Git path resolution;
+  `GIT_NO_REPLACE_OBJECTS=1` also prevents replacement interpretation by ancestry;
+  repeat graph checks before and after ancestry and both source snapshots;
+  the HTTPS live-ref lookup runs outside the
   checkout with system/global Git configuration disabled and HTTPS-only transport;
 - exact local HEAD equals GitHub's **live** \`refs/pull/146/head\` resolved
   directly via HTTPS Git ls-remote; current remote main must be ancestor

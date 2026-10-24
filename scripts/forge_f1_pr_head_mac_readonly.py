@@ -49,6 +49,7 @@ def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None) -> st
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_ALLOW_PROTOCOL": "https",
+        "GIT_NO_REPLACE_OBJECTS": "1",
     }
     try:
         done = subprocess.run(argv, capture_output=True, text=True,
@@ -78,6 +79,23 @@ def git_config_fingerprint() -> str:
     return hashlib.sha256(settings.encode("utf-8")).hexdigest()
 
 
+def assert_clean_commit_graph() -> None:
+    """Fail closed on repository-local commit-graph ancestry overrides.
+
+    for-each-ref enumerates loose AND packed replacement refs. The Git-path
+    resolution honors linked worktrees and the common Git directory. Merely
+    setting GIT_NO_REPLACE_OBJECTS cannot disable legacy info/grafts, so both
+    forms are refused before and after local ancestry evaluation.
+    """
+    if git("for-each-ref", "--format=%(refname)", "refs/replace"):
+        fail("LOCAL_REPLACEMENT_REFS_FORBIDDEN")
+    graft_path = Path(git("rev-parse", "--git-path", "info/grafts"))
+    if not graft_path.is_absolute():
+        graft_path = ROOT / graft_path
+    if os.path.lexists(str(graft_path)):
+        fail("LOCAL_GRAFTS_FORBIDDEN")
+
+
 def snapshot_source() -> tuple[str, str, str]:
     """Compare local HEAD with live remote PR ref, never with cached origin/PR."""
     if os.path.realpath(str(ROOT)) != str(ROOT):
@@ -85,6 +103,7 @@ def snapshot_source() -> tuple[str, str, str]:
     if git("rev-parse", "--show-toplevel") != str(ROOT):
         fail("REPOSITORY_UNTRUSTED")
     config_fingerprint = git_config_fingerprint()
+    assert_clean_commit_graph()
     if git("remote", "get-url", "origin") not in ORIGINS:
         fail("ORIGIN_UNTRUSTED")
     if git("branch", "--show-current") != BRANCH:
@@ -107,10 +126,13 @@ def snapshot_source() -> tuple[str, str, str]:
         found[columns[1]] = columns[0]
     if set(found) != {PR_REF, MAIN_REF} or found[PR_REF] != head:
         fail("STALE_OR_DIFFERENT_PR_HEAD")
-    # Current-main ancestry assures this is not a different unrelated branch.
+    # Refuse local ancestry overrides before and after Git graph evaluation.
+    # GIT_NO_REPLACE_OBJECTS=1 is also enforced for every git subprocess.
+    assert_clean_commit_graph()
     if git("merge-base", "--is-ancestor", found[MAIN_REF], "HEAD"):
         # The Git command prints nothing on success.
         fail("MAIN_ANCESTRY_UNCERTAIN")
+    assert_clean_commit_graph()
     if git_config_fingerprint() != config_fingerprint:
         fail("LOCAL_GIT_CONFIG_CHANGED")
     return head, found[MAIN_REF], config_fingerprint
