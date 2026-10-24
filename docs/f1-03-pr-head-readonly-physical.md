@@ -40,11 +40,13 @@ PIN = "8e9e3dba509d4e078219c896bfb602e5d1652d5ba587a170f7fd4da3fa3b0663"
 def blocked():
     print("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED reason=ENTRYPOINT_UNTRUSTED", file=sys.stderr)
     raise SystemExit(2)
-if len(sys.argv) != 2 or not hasattr(os, "O_NOFOLLOW"):
+if len(sys.argv) != 2 or not all(
+    hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK")
+):
     blocked()
 candidate = pathlib.Path(sys.argv[1])
 try:
-    fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
@@ -71,10 +73,12 @@ exec(compile(source, str(candidate), "exec"), {
 
 **Entrypoint SHA-256 pin:** `8e9e3dba509d4e078219c896bfb602e5d1652d5ba587a170f7fd4da3fa3b0663`.
 
-The trusted bootstrap uses `O_NOFOLLOW`, a 64-KiB maximum, and SHA-256
+The trusted bootstrap uses `O_NOFOLLOW | O_NONBLOCK` (a FIFO cannot wait for
+its writer), requires a regular file via descriptor `fstat`, a 64-KiB maximum,
+and SHA-256
 before even compiling the candidate; then it executes the same, verified
 in-memory bytes so the file cannot be swapped between check and execution.
-A bad pin, symlink or invalid file returns
+A bad pin, symlink, FIFO, or other nonregular file returns
 `BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED reason=ENTRYPOINT_UNTRUSTED` before
 any reviewed-SHA/consent prompt, local Git command or Mac probe. The verified
 diagnostic retains all current helper hashes, index/config/graph validation,
@@ -148,8 +152,9 @@ profile data to a GitHub checkpoint.
 Linux Guard must execute \`tests/forge_f1_pr_head_mac_readonly_test.py\`
 through actual \`unittest\` (no conditional skips or unconditional PASS)
 plus all existing F1-03 process/PID/native tests. Tests execute the documented inline bootstrap in actual Linux subprocesses
-against marker-injected candidate source, positive trusted source and symlink
-negatives; no real Chrome or GitHub remote is accessed.
+against marker-injected candidate source, positive trusted source, symlink,
+and a real FIFO with a hard subprocess timeout (no hang, prompt, or probe).
+No real Chrome or GitHub remote is accessed.
 
 Even physical **PID diagnostic PASS** is just one prerequisite. Owner
 Chrome extension permission, native-host registration, actual human-granted

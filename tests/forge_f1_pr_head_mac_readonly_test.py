@@ -424,6 +424,36 @@ class MacReadOnlyContract(TestCase):
             self.assertIn("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED", blocked.stderr)
             self.assertNotIn("PID_PROBE_PASS", blocked.stdout)
 
+    def test_real_fifo_bootstrap_denies_promptly_before_candidate_exec(self):
+        """FIFO read must not wait for writer before the regular-file gate."""
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / "candidate.py"
+            marker = Path(directory) / "never-executed"
+            os.mkfifo(fifo, 0o600)
+            # Positive attack control: the old flags block indefinitely
+            # waiting for a writer instead of reaching fstat(S_ISREG).
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(
+                    ["/usr/bin/python3", "-I", "-c",
+                     "import os,sys;os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)",
+                     str(fifo)],
+                    capture_output=True, text=True, timeout=0.5, check=False)
+            started = time.monotonic()
+            verified = subprocess.run(
+                ["/usr/bin/python3", "-I", "-c",
+                 self._trusted_inline_bootstrap(), str(fifo)],
+                capture_output=True, text=True, timeout=2, check=False)
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(verified.returncode, 2, verified.stderr)
+            self.assertFalse(marker.exists(), "FIFO candidate executed code")
+            self.assertIn("BKE_F1_VERIFIED_BOOTSTRAP=BLOCKED", verified.stderr)
+            self.assertNotIn("Type the exact reviewed PR HEAD SHA", verified.stdout)
+            self.assertNotIn("Type exactly", verified.stdout)
+            self.assertNotIn("READ_ONLY_PID_PROBE_PASS", verified.stdout)
+            self.assertNotIn("READ_ONLY_PID_PROBE_PASS", verified.stderr)
+            self.assertNotIn("PROFILE_CHAIN_PRIVATE_OWNER_VERIFIED", verified.stdout)
+
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
         self.assertIn("before = snapshot_source()", source)
