@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     for d in (fake, fake/"scripts", fake/"browser-extension", fake/"browser-extension/native-host"):
         d.chmod(0o700)
     shutil.copy2(script,fake/"scripts/prepare-chrome-native-host.sh")
-    for name in ("entry.mjs","host.mjs","framing.mjs"):
+    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs"):
         shutil.copy2(root/"browser-extension/native-host"/name,fake/"browser-extension/native-host"/name)
     subprocess.run(["git","init","-q","-b","main",str(fake)],check=True)
     subprocess.run(["git","-C",str(fake),"config","user.email","test@example.invalid"],check=True)
@@ -191,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert parsed["allowed_origins"]==[env["BKE_NATIVE_HOST_EXTENSION_ORIGIN"]]
     assert parsed["type"]=="stdio"
     assert parsed["path"]==str(sandbox/"install/launch-native-host.sh")
-    for name in ("entry.mjs","host.mjs","framing.mjs","owner-policy.json"):
+    for name in ("entry.mjs","host.mjs","framing.mjs","local-read-only-controller.mjs","owner-policy.json"):
         assert (sandbox/"install"/name).is_file(),name
     assert (sandbox/"install/launch-native-host.sh").stat().st_mode & 0o111
     launcher=sandbox/"install/launch-native-host.sh"
@@ -222,6 +222,15 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode!=0 and manifest.exists(),(r.stdout,r.stderr)
     host_file.write_bytes(original_host); host_file.chmod(0o600)
+    # A tampered post-proof gate module also blocks both verification and rollback.
+    read_only=sandbox/"install/local-read-only-controller.mjs"
+    original_read_only=read_only.read_bytes()
+    read_only.write_bytes(original_read_only+b"\n// tampered read-only policy")
+    r=subprocess.run(cmd+["verify"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode!=0 and "artifact hashes mismatch" in r.stderr,(r.stdout,r.stderr)
+    r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
+    assert r.returncode!=0 and manifest.exists(),(r.stdout,r.stderr)
+    read_only.write_bytes(original_read_only); read_only.chmod(0o600)
     # Hash-locked rollback removes only byte-identical transaction-owned artifacts.
     r=subprocess.run(cmd+["rollback"],cwd="/",env=good_env,capture_output=True,text=True)
     assert r.returncode==0,(r.stdout,r.stderr)
@@ -230,6 +239,7 @@ with tempfile.TemporaryDirectory(prefix="bke-installer-contract-") as td:
     assert not (sandbox/"install/entry.mjs").exists()
     assert not (sandbox/"install/host.mjs").exists()
     assert not (sandbox/"install/framing.mjs").exists()
+    assert not (sandbox/"install/local-read-only-controller.mjs").exists()
     assert not (sandbox/"install/owner-policy.json").exists()
     assert not (sandbox/"state/transaction.json").exists()
     # Conflicts are not overwritten.
