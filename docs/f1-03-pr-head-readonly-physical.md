@@ -30,6 +30,12 @@ Preconditions (checked automatically before and after the probe):
 - a non-root human owner, interactive TTY, zero CLI arguments;
 - the exact supported GitHub \`jan2xo/bke-worker\` origin, correct PR branch,
   no tracked modifications or untracked files, canonical real checkout;
+- reject any tracked index assume-unchanged/skip-worktree flags; independently
+  verify the on-disk diagnostic and both Python verification helpers against
+  exact HEAD Git blob object IDs before and after the status check;
+- reject repository-configured fsmonitor and effectful Git content filters;
+  force-disable fsmonitor at highest Git config precedence for every Git
+  subprocess so status cannot launch a local monitor before owner consent;
 - reject repository-local/worktree/included Git URL rewrite settings and detect
   local Git configuration drift; reject all local replacement refs (loose or packed)
   and legacy Git graft metadata using worktree-aware Git path resolution;

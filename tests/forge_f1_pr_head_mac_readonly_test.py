@@ -63,6 +63,7 @@ class MacReadOnlyContract(TestCase):
             return remote
         with mock.patch.object(mod, "git", side_effect=fake_git), \
              mock.patch.object(mod, "command", side_effect=fake_command), \
+             mock.patch.object(mod, "verify_tracked_source"), \
              mock.patch.object(mod.os.path, "lexists", return_value=False):
             return mod.snapshot_source()
 
@@ -168,6 +169,7 @@ class MacReadOnlyContract(TestCase):
              mock.patch.object(mod.sys, "stdout", output), \
              mock.patch.object(mod.sys, "stderr", errors), \
              mock.patch.object(mod, "command", side_effect=offline_command), \
+             mock.patch.object(mod, "verify_tracked_source"), \
              mock.patch.object(mod, "probe_readonly_mac",
                                side_effect=AssertionError("Chrome probed")) as probe, \
              mock.patch("builtins.input", side_effect=[head, mod.CONSENT]) as consent:
@@ -216,12 +218,113 @@ class MacReadOnlyContract(TestCase):
                 directory, head, main_commit, "LOCAL_GRAFTS_FORBIDDEN"
             )
 
+    def _trusted_source_repo(self, directory):
+        """Real Git index, three tracked Python runtime files, clean F1 PR."""
+        def run(*args):
+            p = subprocess.run(["/usr/bin/git", "-C", directory, *args],
+                               check=False, capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, (args, p.stderr))
+            return p.stdout.strip()
+        run("init", "-q")
+        run("config", "user.email", "regression@example.invalid")
+        run("config", "user.name", "FORGE Regression")
+        for name in mod.RUNTIME_FILES:
+            path = Path(directory) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# canonical source\n", encoding="utf-8")
+        run("add", ".")
+        run("commit", "-qm", "committed source")
+        run("branch", "-m", mod.BRANCH)
+        run("remote", "add", "origin", mod.PUBLIC_REPO)
+        self.assertEqual(run("status", "--porcelain"), "")
+        return run
+
+    def _run_local_provenance_denial(self, directory, expected):
+        """Drive real pre-consent source verification without contacting GitHub."""
+        out, err = TTY(), io.StringIO()
+        observed_network = []
+        real_command = mod.command
+        def safe_command(argv, timeout=30, *, cwd=None):
+            if "ls-remote" in argv:
+                observed_network.append(tuple(argv))
+                raise AssertionError("network lookup before local source denial")
+            return real_command(argv, timeout=timeout, cwd=cwd)
+        with mock.patch.object(mod, "ROOT", Path(directory)), \
+             mock.patch.object(mod.sys, "platform", "darwin"), \
+             mock.patch.object(mod.os, "geteuid", return_value=501), \
+             mock.patch.object(mod.sys, "stdin", TTY()), \
+             mock.patch.object(mod.sys, "stdout", out), \
+             mock.patch.object(mod.sys, "stderr", err), \
+             mock.patch.object(mod, "command", side_effect=safe_command), \
+             mock.patch.object(mod, "probe_readonly_mac",
+                               side_effect=AssertionError("unexpected Mac probe")) as probe, \
+             mock.patch("builtins.input",
+                        side_effect=AssertionError("unexpected consent")) as consent:
+            self.assertEqual(mod.main([]), 2)
+        self.assertIn(expected, err.getvalue())
+        self.assertNotIn("READ_ONLY_PID_PROBE_PASS", out.getvalue())
+        self.assertEqual(observed_network, [])
+        probe.assert_not_called()
+        consent.assert_not_called()
+
+    def test_real_core_fsmonitor_marker_never_runs_before_consent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = self._trusted_source_repo(directory)
+            hook = Path(directory) / ".git" / "fsmonitor-marker.sh"
+            marker = Path(directory) / ".git" / "fsmonitor-executed"
+            hook.write_text("#!/bin/sh\nprintf triggered > " + str(marker) + "\n",
+                            encoding="utf-8")
+            hook.chmod(0o700)
+            run("config", "core.fsmonitor", str(hook))
+            # Positive control: an ordinary vulnerable status invokes this.
+            plain = subprocess.run(
+                ["/usr/bin/git", "-C", directory, "status", "--porcelain"],
+                capture_output=True, text=True, check=False
+            )
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            self.assertTrue(marker.exists(), "fsmonitor control did not execute")
+            marker.unlink()
+            self._run_local_provenance_denial(directory, "LOCAL_FSMONITOR_FORBIDDEN")
+            self.assertFalse(marker.exists(), "diagnostic executed fsmonitor")
+
+    def test_real_assume_unchanged_modified_source_fails_before_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = self._trusted_source_repo(directory)
+            target = mod.RUNTIME_FILES[0]
+            run("update-index", "--assume-unchanged", target)
+            (Path(directory) / target).write_text("# attacker modified source\n",
+                                                    encoding="utf-8")
+            self.assertEqual(run("status", "--porcelain"), "")
+            self._run_local_provenance_denial(directory, "UNSAFE_TRACKED_INDEX_FLAGS")
+
+    def test_real_skip_worktree_modified_source_fails_before_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = self._trusted_source_repo(directory)
+            target = mod.RUNTIME_FILES[1]
+            run("update-index", "--skip-worktree", target)
+            (Path(directory) / target).write_text("# attacker modified helper\n",
+                                                    encoding="utf-8")
+            self.assertEqual(run("status", "--porcelain"), "")
+            self._run_local_provenance_denial(directory, "UNSAFE_TRACKED_INDEX_FLAGS")
+
+    def test_real_plain_modified_runtime_blob_is_rejected_independently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._trusted_source_repo(directory)
+            target = mod.RUNTIME_FILES[2]
+            (Path(directory) / target).write_text("# altered helper\n",
+                                                    encoding="utf-8")
+            self._run_local_provenance_denial(directory, "RUNTIME_SOURCE_HASH_MISMATCH")
+
     def test_source_verification_is_exactly_repeated_after_probing(self):
         source = SOURCE.read_text()
         self.assertIn("before = snapshot_source()", source)
         self.assertIn("after = snapshot_source()", source)
         self.assertIn("if after != before:", source)
         self.assertIn("GIT_OPTIONAL_LOCKS", source)
+        self.assertIn('"GIT_CONFIG_KEY_0": "core.fsmonitor"', source)
+        self.assertIn('"GIT_CONFIG_VALUE_0": "false"', source)
+        self.assertIn('git("ls-files", "-v", "-z")', source)
+        self.assertIn('git("ls-tree", "-r", "-z", head, "--", *RUNTIME_FILES)', source)
         self.assertIn('"GIT_NO_REPLACE_OBJECTS": "1"', source)
         self.assertIn('git("for-each-ref", "--format=%(refname)", "refs/replace")', source)
         self.assertIn('git("rev-parse", "--git-path", "info/grafts")', source)

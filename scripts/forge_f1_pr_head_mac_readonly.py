@@ -29,6 +29,11 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 PIN = re.compile(r"^[0-9a-f]{64}$")
 APP_EXE = "Google Chrome.app/Contents/MacOS/Google Chrome"
 CONSENT = "I APPROVE READ ONLY PR 146 MAC IDENTITY CHECK"
+RUNTIME_FILES = (
+    "scripts/forge_f1_pr_head_mac_readonly.py",
+    "scripts/forge_f1_chrome_readiness.py",
+    "scripts/forge_f1_chrome_publisher.py",
+)
 
 
 class Blocked(Exception):
@@ -50,6 +55,10 @@ def command(argv: list[str], timeout: int = 30, *, cwd: str | None = None) -> st
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_ALLOW_PROTOCOL": "https",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        # Disable local fsmonitor at the highest Git config precedence.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "false",
     }
     try:
         done = subprocess.run(argv, capture_output=True, text=True,
@@ -66,12 +75,19 @@ def git(*args: str) -> str:
 
 
 def git_config_fingerprint() -> str:
-    """Reject local/worktree/included URL rewrites; detect config drift."""
+    """Reject URL rewrites and commands Git status could execute."""
     # Global and system Git config are suppressed by command(). Local config
     # is inspected here, but is NEVER consulted by the HTTPS ls-remote call.
     settings = git("config", "--list", "--includes", "--null")
     for entry in settings.split("\0"):
-        key = entry.partition("\n")[0].casefold()
+        key, separator, value = entry.partition("\n")
+        key = key.casefold()
+        if key == "core.fsmonitor" and (not separator or value.casefold() != "false"):
+            fail("LOCAL_FSMONITOR_FORBIDDEN")
+        if (key.startswith("filter.") and key.rsplit(".", 1)[-1] in
+                {"clean", "smudge", "process"}) or (key.startswith("diff.") and
+                key.endswith(".command")):
+            fail("LOCAL_GIT_COMMAND_CONFIG_FORBIDDEN")
         if key.startswith("url.") and (
             key.endswith(".insteadof") or key.endswith(".pushinsteadof")
         ):
@@ -96,6 +112,54 @@ def assert_clean_commit_graph() -> None:
         fail("LOCAL_GRAFTS_FORBIDDEN")
 
 
+def verify_tracked_source(head: str) -> None:
+    """Refuse index hiding flags and independently match runtime blobs to HEAD.
+
+    Git status is not authoritative for assume-unchanged or skip-worktree.
+    Inspect every tracked index flag, then hash executed Python sources with
+    Git's canonical blob hashing format. HEAD is checked against GitHub later.
+    """
+    index = git("ls-files", "-v", "-z")
+    if not index:
+        fail("TRACKED_INDEX_UNAVAILABLE")
+    tracked = set()
+    for record in index.split("\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1] != " ":
+            fail("INDEX_FLAGS_UNCERTAIN")
+        if record[0] != "H":
+            fail("UNSAFE_TRACKED_INDEX_FLAGS")
+        filename = record[2:]
+        if filename in tracked:
+            fail("INDEX_FLAGS_UNCERTAIN")
+        tracked.add(filename)
+    if not set(RUNTIME_FILES).issubset(tracked):
+        fail("RUNTIME_SOURCE_NOT_TRACKED")
+
+    rows = git("ls-tree", "-r", "-z", head, "--", *RUNTIME_FILES)
+    expected = {}
+    for row in rows.split("\0"):
+        if not row:
+            continue
+        meta, tab, filename = row.partition("\t")
+        parts = meta.split(" ")
+        if not tab or len(parts) != 3 or parts[:2] != ["100644", "blob"] or \
+                not SHA.fullmatch(parts[2]) or filename in expected:
+            fail("RUNTIME_SOURCE_TREE_INVALID")
+        expected[filename] = parts[2]
+    if set(expected) != set(RUNTIME_FILES):
+        fail("RUNTIME_SOURCE_TREE_INVALID")
+    for filename, blob_id in expected.items():
+        path = ROOT / filename
+        if os.path.realpath(str(path)) != str(path) or not path.is_file():
+            fail("RUNTIME_SOURCE_PATH_UNTRUSTED")
+        content = path.read_bytes()
+        git_blob = b"blob " + str(len(content)).encode("ascii") + b"\0" + content
+        if hashlib.sha1(git_blob).hexdigest() != blob_id:
+            fail("RUNTIME_SOURCE_HASH_MISMATCH")
+
+
 def snapshot_source() -> tuple[str, str, str]:
     """Compare local HEAD with live remote PR ref, never with cached origin/PR."""
     if os.path.realpath(str(ROOT)) != str(ROOT):
@@ -108,11 +172,13 @@ def snapshot_source() -> tuple[str, str, str]:
         fail("ORIGIN_UNTRUSTED")
     if git("branch", "--show-current") != BRANCH:
         fail("NOT_F1_PR_BRANCH")
-    if git("status", "--porcelain", "--untracked-files=all"):
-        fail("DIRTY_SOURCE")
     head = git("rev-parse", "HEAD")
     if not SHA.fullmatch(head):
         fail("HEAD_INVALID")
+    verify_tracked_source(head)
+    if git("status", "--porcelain", "--untracked-files=all"):
+        fail("DIRTY_SOURCE")
+    verify_tracked_source(head)
     # Run OUTSIDE the checkout: repository-local URL rewrites cannot redirect
     # this explicit canonical GitHub HTTPS ref query. No fetch or hooks.
     remote = command(["/usr/bin/git", "ls-remote", PUBLIC_REPO,
@@ -133,6 +199,7 @@ def snapshot_source() -> tuple[str, str, str]:
         # The Git command prints nothing on success.
         fail("MAIN_ANCESTRY_UNCERTAIN")
     assert_clean_commit_graph()
+    verify_tracked_source(head)
     if git_config_fingerprint() != config_fingerprint:
         fail("LOCAL_GIT_CONFIG_CHANGED")
     return head, found[MAIN_REF], config_fingerprint
