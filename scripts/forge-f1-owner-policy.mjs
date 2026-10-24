@@ -67,7 +67,7 @@ async function chromePreflight(){
  // are enforced by macOS codesign, NOT self-reported --version text.
  const signer=join(ROOT,"scripts","forge_f1_chrome_publisher.py");
  let attestation;
- try{attestation=exec("python3",[signer,installed[0]],95000);}
+ try{attestation=exec("/usr/bin/python3",["-I",signer,installed[0]],95000);}
  catch{block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");}
  if(attestation!=="BKE_CHROME_GOOGLE_SIGNER_VERIFIED")
    block("GOOGLE_CHROME_PUBLISHER_UNVERIFIED");

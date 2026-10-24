@@ -112,6 +112,7 @@ class ChromePublisherTests(unittest.TestCase):
         source=(ROOT/"scripts/forge-f1-owner-policy.mjs").read_text()
         self.assertIn("forge_f1_chrome_publisher.py",source)
         self.assertIn("BKE_CHROME_GOOGLE_SIGNER_VERIFIED",source)
+        self.assertIn('exec("/usr/bin/python3",["-I",signer,installed[0]],95000)',source)
         self.assertLess(source.index("forge_f1_chrome_publisher.py"),
                         source.index('exec(binary,["--version"])'))
         self.assertIn('GOOGLE_CHROME_PUBLISHER_UNVERIFIED',source)
