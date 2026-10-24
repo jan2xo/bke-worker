@@ -321,7 +321,7 @@ NODE
  # Transaction records exact hashes of source-staged bytes before any installation path appears.
  STAGE_MANIFEST="$stage_manifest" STAGE_LAUNCHER="$stage_launcher" STAGE_ENTRY="$stage_entry" STAGE_HOST="$stage_host" STAGE_FRAMING="$stage_framing" STAGE_READ_ONLY="$stage_read_only" STAGE_ADMISSION="$stage_admission" STAGE_TRANSPORT="$stage_transport" STAGE_POLICY="$stage_policy" "$NODE_BIN" - "$stage_state" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" "$origin" <<'NODE'
 import{writeFileSync,readFileSync}from"node:fs";import{createHash}from"node:crypto";
-const[p,manifest,launcher,entry,host,framing,readOnly,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
+const[p,manifest,launcher,entry,host,framing,readOnly,admission,transport,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
 const s={version:1,host:"bke.worker.desktop",manifest,launcher,entry,host_module:host,framing_module:framing,admission_module:admission,read_only_module:readOnly,transport_module:transport,policy,origin,created_by:"prepare-chrome-native-host.sh",
 sha256:{manifest:hash(process.env.STAGE_MANIFEST),launcher:hash(process.env.STAGE_LAUNCHER),entry:hash(process.env.STAGE_ENTRY),host:hash(process.env.STAGE_HOST),framing:hash(process.env.STAGE_FRAMING),admission:hash(process.env.STAGE_ADMISSION),read_only:hash(process.env.STAGE_READ_ONLY),transport:hash(process.env.STAGE_TRANSPORT),policy:hash(process.env.STAGE_POLICY)}};
 writeFileSync(p,JSON.stringify(s)+"\n",{mode:0o600,flag:"w"});
