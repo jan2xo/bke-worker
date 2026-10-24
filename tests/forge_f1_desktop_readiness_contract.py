@@ -72,6 +72,9 @@ assert "EXTENSION_MISSING_OR_DUPLICATE" in helper
 # subprocess contract, in the same required PR-Guard job.
 assert "python3 -I tests/forge_f1_chrome_readiness_test.py" in workflow
 assert "python3 -I tests/forge_f1_process_test_harness_contract.py" in workflow
+assert "python3 -I tests/forge_f1_pr_head_mac_readonly_test.py" in workflow
+assert (root / "scripts/forge_f1_pr_head_mac_readonly.py").is_file()
+assert (root / "docs/f1-03-pr-head-readonly-physical.md").is_file()
 harness_contract = (root / "tests/forge_f1_process_test_harness_contract.py").read_text(encoding="utf-8")
 assert "test_all_twenty_cases_run_with_named_darwin_cases" in harness_contract
 assert "test_injected_assertion_must_fail_ci_and_never_print_pass" in harness_contract
