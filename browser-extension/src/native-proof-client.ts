@@ -34,7 +34,7 @@ type Runtime={
 type ClientOpts={
   runtime:Runtime; identity:DeviceIdentity; workerId:string;
   resources:ResourcePins; profileBindingSha256:string;
-  clock?:()=>number; cryptoImpl?:Pick<Crypto,"getRandomValues">;
+  clock?:()=>number; cryptoImpl?:Pick<Crypto,"getRandomValues"|"subtle">;
   timeoutMs?:number; readOnlyProbe?:boolean;
 };
 type Outcome={state:"LOCAL_PROOF_OK";worker_id:string;public_key_sha256:string;
