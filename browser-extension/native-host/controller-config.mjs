@@ -15,7 +15,7 @@ const exact=(x,keys)=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&
  Object.keys(x).sort().join(',')===keys.slice().sort().join(',');
 function pathSafe(p){
  return typeof p==='string'&&p.startsWith('/')&&resolve(p)===p&&
-  !p.includes('//')&&!p.includes('\\0')&&
+  !p.includes('//')&&!p.includes('\0')&&
   !/(?:^|\/)\.\.?(?:\/|$)/u.test(p);
 }
 export function validateReviewedControllerConfig(value,policy,now=Date.now()){
