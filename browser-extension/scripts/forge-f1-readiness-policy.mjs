@@ -94,7 +94,7 @@ export function evaluateF1DesktopReadiness(evidence) {
   add(blockers, !Array.isArray(extension.hostPermissions) ||
     extension.hostPermissions.length !== 1 || extension.hostPermissions[0] !== "https://chatgpt.com/*",
   "EXTENSION_HOST_PERMISSION_BOUNDARY_DRIFT");
-  add(blockers, extension.nativeMessagingPermission !== false, "UNAUTHORIZED_NATIVE_MESSAGING_PERMISSION");
+  add(blockers, (extension.nativeMessagingPermission !== false && extension.nativeMessagingPermission !== null), "UNAUTHORIZED_NATIVE_MESSAGING_PERMISSION");
 
   add(blockers, host.status !== "VERIFIED_REGISTRATION_ONLY", "NATIVE_HOST_REGISTRATION_NOT_VERIFIED");
   add(blockers, host.name !== "bke.worker.desktop", "NATIVE_HOST_IDENTITY_MISMATCH");
@@ -151,7 +151,8 @@ export function evaluateF1DesktopReadiness(evidence) {
       loaded_enabled_from_canonical_source_owner_attested: extension.enabled === true &&
         extension.pathMatches === true && extension.versionMatches === true && extension.matchCount === 1,
       native_messaging_permission: extension.nativeMessagingPermission === false
-        ? "ABSENT_BY_DESIGN" : "UNEXPECTED_OR_UNVERIFIED",
+        ? "ABSENT_BY_DESIGN" : extension.nativeMessagingPermission === null
+          ? "OPTIONAL_GRANT_NOT_MEASURED" : "UNEXPECTED_OR_UNVERIFIED",
       allowed_host_permissions: Array.isArray(extension.hostPermissions) &&
         extension.hostPermissions.length === 1 && extension.hostPermissions[0] === "https://chatgpt.com/*"
         ? ["https://chatgpt.com/*"] : [],
@@ -161,7 +162,9 @@ export function evaluateF1DesktopReadiness(evidence) {
       status: host.status || "NOT_CHECKED",
       extension_origin_matches: host.origin === expectedOrigin && !!expectedOrigin,
       owner_policy_verified: host.policyVerified === true,
-      live_chrome_connection: "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN",
+      live_chrome_connection: extension.nativeMessagingPermission === null
+        ? "NOT_TESTED_OPTIONAL_NATIVE_PERMISSION_UNVERIFIED"
+        : "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN",
     },
     chatgpt: {
       open_target_count: Number.isInteger(chatgpt.targetCount) ? chatgpt.targetCount : null,

@@ -6,6 +6,9 @@ readonly HOST_NAME="bke.worker.desktop"
 readonly ENTRY_REL="browser-extension/native-host/entry.mjs"
 readonly HOST_MODULE_REL="browser-extension/native-host/host.mjs"
 readonly FRAMING_REL="browser-extension/native-host/framing.mjs"
+readonly READ_ONLY_REL="browser-extension/native-host/local-read-only-controller.mjs"
+readonly ADMISSION_REL="browser-extension/native-host/controller-admission.mjs"
+readonly TRANSPORT_REL="browser-extension/native-host/controller-transport.mjs"
 readonly POLICY_MAX=4096
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
@@ -39,7 +42,7 @@ NODE_VERSION="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')" |
 HOST_DIR="$ROOT_DIR/browser-extension/native-host"
 HOST_ENTRY="$ROOT_DIR/$ENTRY_REL"
 [[ -d "$HOST_DIR" && ! -L "$HOST_DIR" && -f "$HOST_ENTRY" && ! -L "$HOST_ENTRY" ]] || fail "native host source path unsafe or missing."
-for f in "$HOST_DIR/entry.mjs" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do [[ -f "$f" && ! -L "$f" ]] || fail "native host source set incomplete or symlinked."; done
+for f in "$HOST_DIR/entry.mjs" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs" "$HOST_DIR/local-read-only-controller.mjs" "$HOST_DIR/controller-admission.mjs" "$HOST_DIR/controller-transport.mjs"; do [[ -f "$f" && ! -L "$f" ]] || fail "native host source set incomplete or symlinked."; done
 case "$OS" in Darwin) DEFAULT_CONFIG="${HOME%/}/Library/Application Support/Google/Chrome";; Linux) DEFAULT_CONFIG="${XDG_CONFIG_HOME:-${HOME%/}/.config}/google-chrome";; esac
 CHROME_HOST_DIR="$DEFAULT_CONFIG/NativeMessagingHosts"
 MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
@@ -47,7 +50,7 @@ INSTALL_DIR="${HOME%/}/.local/lib/bke-worker/native-host"
 LAUNCHER="$INSTALL_DIR/launch-native-host.sh"
 INSTALLED_ENTRY="$INSTALL_DIR/entry.mjs"
 INSTALLED_HOST="$INSTALL_DIR/host.mjs"
-INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"
+INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"; INSTALLED_READ_ONLY="$INSTALL_DIR/local-read-only-controller.mjs"; INSTALLED_ADMISSION="$INSTALL_DIR/controller-admission.mjs"; INSTALLED_TRANSPORT="$INSTALL_DIR/controller-transport.mjs"
 INSTALLED_POLICY="$INSTALL_DIR/owner-policy.json"
 POLICY="${BKE_NATIVE_HOST_POLICY_PATH:-${HOME%/}/.config/bke-worker/native-host/owner-policy.json}"
 STATE_DIR="${HOME%/}/.local/state/bke-worker/native-host-installer"
@@ -67,7 +70,7 @@ if [[ -n "${BKE_NATIVE_HOST_TEST_ROOT:-}" ]]; then
   Linux) CHROME_HOST_DIR="$TEST_ROOT/xdg/google-chrome/NativeMessagingHosts";;
  esac
  MANIFEST="$CHROME_HOST_DIR/$HOST_NAME.json"
- INSTALL_DIR="$TEST_ROOT/install"; LAUNCHER="$INSTALL_DIR/launch-native-host.sh"; INSTALLED_ENTRY="$INSTALL_DIR/entry.mjs"; INSTALLED_HOST="$INSTALL_DIR/host.mjs"; INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"; INSTALLED_POLICY="$INSTALL_DIR/owner-policy.json"
+ INSTALL_DIR="$TEST_ROOT/install"; LAUNCHER="$INSTALL_DIR/launch-native-host.sh"; INSTALLED_ENTRY="$INSTALL_DIR/entry.mjs"; INSTALLED_HOST="$INSTALL_DIR/host.mjs"; INSTALLED_FRAMING="$INSTALL_DIR/framing.mjs"; INSTALLED_READ_ONLY="$INSTALL_DIR/local-read-only-controller.mjs"; INSTALLED_ADMISSION="$INSTALL_DIR/controller-admission.mjs"; INSTALLED_TRANSPORT="$INSTALL_DIR/controller-transport.mjs"; INSTALLED_POLICY="$INSTALL_DIR/owner-policy.json"
  POLICY="${BKE_NATIVE_HOST_POLICY_PATH:-$TEST_ROOT/policy/owner-policy.json}"
  STATE_DIR="$TEST_ROOT/state"; STATE="$STATE_DIR/transaction.json"; TESTING=1
  if [[ -n "${BKE_NATIVE_HOST_TEST_NODE_PATH:-}" ]]; then NODE_BIN="$BKE_NATIVE_HOST_TEST_NODE_PATH"; fi
@@ -90,7 +93,7 @@ check_trusted_source(){
  remote_head="$(git -C "$ROOT_DIR" rev-parse refs/remotes/origin/main 2>/dev/null)" || fail "origin/main revision unavailable."
  [[ "$head" = "$remote_head" ]] || fail "HEAD is not exact current origin/main; rerun from a fresh trusted main checkout."
  [[ -z "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all 2>/dev/null)" ]] || fail "worktree changed while checking source provenance."
- for p in "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
+ for p in "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs" "$HOST_DIR/local-read-only-controller.mjs" "$HOST_DIR/controller-admission.mjs" "$HOST_DIR/controller-transport.mjs"; do
   git -C "$ROOT_DIR" ls-files --error-unmatch "${p#"$ROOT_DIR"/}" >/dev/null 2>&1 || fail "required source is not tracked by trusted main."
  done
  note "trusted source provenance: origin/main=$remote_head; clean main worktree."
@@ -184,7 +187,7 @@ const p=JSON.parse(raw);if(!validNativeHostPolicy(p)||p.allowed_origin!==origin)
 NODE
 }
 safe_runtime || fail "Node executable validation failed ($SAFE_RUNTIME_REASON; mode=$SAFE_RUNTIME_MODE; owner=$SAFE_RUNTIME_OWNER)."
-for source in "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs"; do
+for source in "$HOST_ENTRY" "$HOST_DIR/host.mjs" "$HOST_DIR/framing.mjs" "$HOST_DIR/local-read-only-controller.mjs" "$HOST_DIR/controller-admission.mjs" "$HOST_DIR/controller-transport.mjs"; do
  secure_file "$source" 16384 || fail "native host source ownership, permissions or path invalid."
 done
 manifest_matches(){
@@ -203,27 +206,27 @@ inspect(){
 }
 verify(){
  secure_file "$STATE" 8192 || fail "transaction record owner/mode invalid."
- for p in "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY"; do
+ for p in "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY"; do
   secure_file "$p" 16384 || fail "installed artifact owner/mode invalid."
  done
  [[ -x "$LAUNCHER" ]] || fail "launcher is not executable."
- "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record or installed artifact hashes mismatch."
+ "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record or installed artifact hashes mismatch."
 import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
 const reject=code=>{process.stderr.write("VERIFY_FAIL:"+code+"\\n");process.exit(1)};
-const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);
+const[sfile,manifest,launcher,entry,host,framing,readOnly,admission,transport,policy]=process.argv.slice(2);
 let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{reject("state-json")}
-const top=["created_by","entry","framing_module","host","host_module","launcher","manifest","origin","policy","sha256","version"];
+const top=["admission_module","created_by","entry","framing_module","host","host_module","launcher","manifest","origin","policy","read_only_module","sha256","transport_module","version"];
 if(!s||typeof s!=="object"||Array.isArray(s)||Object.keys(s).sort().join(",")!==top.sort().join(","))reject("state-keys");
 if(s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||
- s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||
+ s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.read_only_module!==readOnly||s.admission_module!==admission||s.transport_module!==transport||s.policy!==policy||
  s.created_by!=="prepare-chrome-native-host.sh"||
  typeof s.origin!=="string"||!/^chrome-extension:\/\/[a-p]{32}\/$/.test(s.origin))reject("state-identity");
-const hashKeys=["entry","framing","host","launcher","manifest","policy"];
+const hashKeys=["admission","entry","framing","host","launcher","manifest","policy","read_only","transport"];
 if(!s.sha256||typeof s.sha256!=="object"||Array.isArray(s.sha256)||
  Object.keys(s.sha256).sort().join(",")!==hashKeys.sort().join(",")||
  !Object.values(s.sha256).every(h=>typeof h==="string"&&/^[0-9a-f]{64}$/.test(h)))reject("state-hash-shape");
 const checks=[["manifest",manifest,s.sha256.manifest],["launcher",launcher,s.sha256.launcher],
- ["entry",entry,s.sha256.entry],["host",host,s.sha256.host],["framing",framing,s.sha256.framing],
+ ["entry",entry,s.sha256.entry],["host",host,s.sha256.host],["framing",framing,s.sha256.framing],["read_only",readOnly,s.sha256.read_only],["admission",admission,s.sha256.admission],["transport",transport,s.sha256.transport],
  ["policy",policy,s.sha256.policy]];
 for(const[label,p,h]of checks){
  let st;try{st=lstatSync(p)}catch{reject(label+"-missing")}
@@ -270,19 +273,19 @@ install_host(){
  for p in "$CHROME_HOST_DIR" "$INSTALL_DIR" "$STATE_DIR";do ensure_dir "$p";done
  [[ -f "$POLICY" && ! -L "$POLICY" ]]||fail "owner-pinned policy must exist at $POLICY; no pins are invented."
  check_policy
- if [[ -e "$MANIFEST" || -L "$MANIFEST" || -e "$LAUNCHER" || -L "$LAUNCHER" || -e "$INSTALLED_ENTRY" || -L "$INSTALLED_ENTRY" || -e "$INSTALLED_HOST" || -L "$INSTALLED_HOST" || -e "$INSTALLED_FRAMING" || -L "$INSTALLED_FRAMING" || -e "$INSTALLED_POLICY" || -L "$INSTALLED_POLICY" || -e "$STATE" || -L "$STATE" ]];then
+ if [[ -e "$MANIFEST" || -L "$MANIFEST" || -e "$LAUNCHER" || -L "$LAUNCHER" || -e "$INSTALLED_ENTRY" || -L "$INSTALLED_ENTRY" || -e "$INSTALLED_HOST" || -L "$INSTALLED_HOST" || -e "$INSTALLED_FRAMING" || -L "$INSTALLED_FRAMING" || -e "$INSTALLED_READ_ONLY" || -L "$INSTALLED_READ_ONLY" || -e "$INSTALLED_ADMISSION" || -L "$INSTALLED_ADMISSION" || -e "$INSTALLED_TRANSPORT" || -L "$INSTALLED_TRANSPORT" || -e "$INSTALLED_POLICY" || -L "$INSTALLED_POLICY" || -e "$STATE" || -L "$STATE" ]];then
   if manifest_matches&&verify;then pass "matching registration already exists; idempotent no-op.";return;fi
   fail "refusing to overwrite conflicting registration, launcher, policy, or transaction."
  fi
- local stage_manifest stage_launcher stage_entry stage_host stage_framing stage_policy stage_state
+ local stage_manifest stage_launcher stage_entry stage_host stage_framing stage_read_only stage_admission stage_transport stage_policy stage_state
  TX_COMMITTED=0
  TX_CREATED_PATHS=()
  TX_CREATED_IDS=()
- TX_STAGE_MANIFEST="" TX_STAGE_LAUNCHER="" TX_STAGE_ENTRY="" TX_STAGE_HOST="" TX_STAGE_FRAMING="" TX_STAGE_POLICY="" TX_STAGE_STATE=""
+ TX_STAGE_MANIFEST="" TX_STAGE_LAUNCHER="" TX_STAGE_ENTRY="" TX_STAGE_HOST="" TX_STAGE_FRAMING="" TX_STAGE_READ_ONLY="" TX_STAGE_ADMISSION="" TX_STAGE_TRANSPORT="" TX_STAGE_POLICY="" TX_STAGE_STATE=""
  cleanup_install(){
   local rc=$? idx path identity
   if ((rc!=0 && TX_COMMITTED==0));then
-   for staged in "$TX_STAGE_MANIFEST" "$TX_STAGE_LAUNCHER" "$TX_STAGE_ENTRY" "$TX_STAGE_HOST" "$TX_STAGE_FRAMING" "$TX_STAGE_POLICY" "$TX_STAGE_STATE"; do
+   for staged in "$TX_STAGE_MANIFEST" "$TX_STAGE_LAUNCHER" "$TX_STAGE_ENTRY" "$TX_STAGE_HOST" "$TX_STAGE_FRAMING" "$TX_STAGE_READ_ONLY" "$TX_STAGE_ADMISSION" "$TX_STAGE_TRANSPORT" "$TX_STAGE_POLICY" "$TX_STAGE_STATE"; do
     [[ -n "$staged" ]] && rm -f -- "$staged"
    done
    # Delete only targets whose device/inode still matches the no-clobber link created by this transaction.
@@ -300,6 +303,9 @@ install_host(){
  stage_entry="$(mktemp "$INSTALL_DIR/.bke-entry.XXXXXX")"; TX_STAGE_ENTRY="$stage_entry"
  stage_host="$(mktemp "$INSTALL_DIR/.bke-host-module.XXXXXX")"; TX_STAGE_HOST="$stage_host"
  stage_framing="$(mktemp "$INSTALL_DIR/.bke-framing-module.XXXXXX")"; TX_STAGE_FRAMING="$stage_framing"
+ stage_read_only="$(mktemp "$INSTALL_DIR/.bke-read-only-module.XXXXXX")"; TX_STAGE_READ_ONLY="$stage_read_only"
+  stage_admission="$(mktemp "$INSTALL_DIR/.bke-admission-module.XXXXXX")"; TX_STAGE_ADMISSION="$stage_admission"
+  stage_transport="$(mktemp "$INSTALL_DIR/.bke-transport-module.XXXXXX")"; TX_STAGE_TRANSPORT="$stage_transport"
  stage_policy="$(mktemp "$INSTALL_DIR/.bke-policy.XXXXXX")"; TX_STAGE_POLICY="$stage_policy"
  stage_state="$(mktemp "$STATE_DIR/.bke-state.XXXXXX")"; TX_STAGE_STATE="$stage_state"
  "$NODE_BIN" - "$stage_launcher" "$NODE_BIN" <<'NODE'
@@ -307,21 +313,21 @@ import {writeFileSync} from"node:fs";
 const[p,node]=process.argv.slice(2),q="'"+node.replace(/'/g,"'\\''")+"'";
 writeFileSync(p,`#!/usr/bin/env bash\nset -Eeuo pipefail\nHERE="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")" && pwd -P)"\nPOLICY="$HERE/owner-policy.json"\nENTRY="$HERE/entry.mjs"\nNODE_BIN=${q}\n[[ "$#" -eq 1 && "$1" =~ ^chrome-extension://[a-p]{32}/$ ]]||exit 2\n[[ -f "$POLICY" && ! -L "$POLICY" && -f "$ENTRY" && ! -L "$ENTRY" ]]||exit 2\nexec "$NODE_BIN" "$ENTRY" "$POLICY" "$1"\n`,{mode:0o700,flag:"w"});
 NODE
- cp -- "$HOST_ENTRY" "$stage_entry"; cp -- "$HOST_DIR/host.mjs" "$stage_host"; cp -- "$HOST_DIR/framing.mjs" "$stage_framing"; cp -- "$POLICY" "$stage_policy"; chmod 700 "$stage_launcher"; chmod 600 "$stage_entry" "$stage_host" "$stage_framing" "$stage_policy"
+ cp -- "$HOST_ENTRY" "$stage_entry"; cp -- "$HOST_DIR/host.mjs" "$stage_host"; cp -- "$HOST_DIR/framing.mjs" "$stage_framing"; cp -- "$HOST_DIR/local-read-only-controller.mjs" "$stage_read_only"; cp -- "$HOST_DIR/controller-admission.mjs" "$stage_admission"; cp -- "$HOST_DIR/controller-transport.mjs" "$stage_transport"; cp -- "$POLICY" "$stage_policy"; chmod 700 "$stage_launcher"; chmod 600 "$stage_entry" "$stage_host" "$stage_framing" "$stage_read_only" "$stage_admission" "$stage_transport" "$stage_policy"
  "$NODE_BIN" - "$stage_manifest" "$LAUNCHER" "$origin" <<'NODE'
 import{writeFileSync}from"node:fs";const[p,path,origin]=process.argv.slice(2);
 writeFileSync(p,JSON.stringify({name:"bke.worker.desktop",description:"BKE Worker local native host (source-only preparation)",path,type:"stdio",allowed_origins:[origin]})+"\n",{mode:0o600,flag:"w"});
 NODE
  # Transaction records exact hashes of source-staged bytes before any installation path appears.
- STAGE_MANIFEST="$stage_manifest" STAGE_LAUNCHER="$stage_launcher" STAGE_ENTRY="$stage_entry" STAGE_HOST="$stage_host" STAGE_FRAMING="$stage_framing" STAGE_POLICY="$stage_policy" "$NODE_BIN" - "$stage_state" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$origin" <<'NODE'
+ STAGE_MANIFEST="$stage_manifest" STAGE_LAUNCHER="$stage_launcher" STAGE_ENTRY="$stage_entry" STAGE_HOST="$stage_host" STAGE_FRAMING="$stage_framing" STAGE_READ_ONLY="$stage_read_only" STAGE_ADMISSION="$stage_admission" STAGE_TRANSPORT="$stage_transport" STAGE_POLICY="$stage_policy" "$NODE_BIN" - "$stage_state" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" "$origin" <<'NODE'
 import{writeFileSync,readFileSync}from"node:fs";import{createHash}from"node:crypto";
-const[p,manifest,launcher,entry,host,framing,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
-const s={version:1,host:"bke.worker.desktop",manifest,launcher,entry,host_module:host,framing_module:framing,policy,origin,created_by:"prepare-chrome-native-host.sh",
-sha256:{manifest:hash(process.env.STAGE_MANIFEST),launcher:hash(process.env.STAGE_LAUNCHER),entry:hash(process.env.STAGE_ENTRY),host:hash(process.env.STAGE_HOST),framing:hash(process.env.STAGE_FRAMING),policy:hash(process.env.STAGE_POLICY)}};
+const[p,manifest,launcher,entry,host,framing,readOnly,admission,transport,policy,origin]=process.argv.slice(2);const hash=f=>createHash("sha256").update(readFileSync(f)).digest("hex");
+const s={version:1,host:"bke.worker.desktop",manifest,launcher,entry,host_module:host,framing_module:framing,admission_module:admission,read_only_module:readOnly,transport_module:transport,policy,origin,created_by:"prepare-chrome-native-host.sh",
+sha256:{manifest:hash(process.env.STAGE_MANIFEST),launcher:hash(process.env.STAGE_LAUNCHER),entry:hash(process.env.STAGE_ENTRY),host:hash(process.env.STAGE_HOST),framing:hash(process.env.STAGE_FRAMING),admission:hash(process.env.STAGE_ADMISSION),read_only:hash(process.env.STAGE_READ_ONLY),transport:hash(process.env.STAGE_TRANSPORT),policy:hash(process.env.STAGE_POLICY)}};
 writeFileSync(p,JSON.stringify(s)+"\n",{mode:0o600,flag:"w"});
 NODE
  # Install all payload files by no-clobber hard link; register the manifest last.
- for spec in "$stage_launcher:$LAUNCHER" "$stage_entry:$INSTALLED_ENTRY" "$stage_host:$INSTALLED_HOST" "$stage_framing:$INSTALLED_FRAMING" "$stage_policy:$INSTALLED_POLICY" "$stage_state:$STATE";do
+ for spec in "$stage_launcher:$LAUNCHER" "$stage_entry:$INSTALLED_ENTRY" "$stage_host:$INSTALLED_HOST" "$stage_framing:$INSTALLED_FRAMING" "$stage_read_only:$INSTALLED_READ_ONLY" "$stage_admission:$INSTALLED_ADMISSION" "$stage_transport:$INSTALLED_TRANSPORT" "$stage_policy:$INSTALLED_POLICY" "$stage_state:$STATE";do
   src="${spec%%:*}";dst="${spec#*:}"
   ln -- "$src" "$dst"||fail "destination appeared during install; refusing overwrite."
   TX_CREATED_PATHS+=("$dst"); TX_CREATED_IDS+=("$(file_identity "$dst")")
@@ -349,16 +355,16 @@ process.stdout.write(s.origin);
 NODE
 )" || fail "transaction origin invalid; rollback refused."
  valid_origin "$origin" || fail "transaction origin invalid; rollback refused."
- "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record mismatch; preserving all files."
+ "$NODE_BIN" - "$STATE" "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" <<'NODE' || fail "transaction record mismatch; preserving all files."
 import{readFileSync,lstatSync}from"node:fs";import{createHash}from"node:crypto";
-const[sfile,manifest,launcher,entry,host,framing,policy]=process.argv.slice(2);let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
-if(s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
-const checks=[[manifest,s.sha256?.manifest],[launcher,s.sha256?.launcher],[entry,s.sha256?.entry],[host,s.sha256?.host],[framing,s.sha256?.framing],[policy,s.sha256?.policy]];
+const[sfile,manifest,launcher,entry,host,framing,readOnly,admission,transport,policy]=process.argv.slice(2);let s;try{s=JSON.parse(readFileSync(sfile,"utf8"))}catch{process.exit(1)}
+if(s.version!==1||s.host!=="bke.worker.desktop"||s.manifest!==manifest||s.launcher!==launcher||s.entry!==entry||s.host_module!==host||s.framing_module!==framing||s.read_only_module!==readOnly||s.admission_module!==admission||s.transport_module!==transport||s.policy!==policy||s.created_by!=="prepare-chrome-native-host.sh")process.exit(1);
+const checks=[[manifest,s.sha256?.manifest],[launcher,s.sha256?.launcher],[entry,s.sha256?.entry],[host,s.sha256?.host],[framing,s.sha256?.framing],[readOnly,s.sha256?.read_only],[admission,s.sha256?.admission],[transport,s.sha256?.transport],[policy,s.sha256?.policy]];
 for(const[p,h]of checks){const st=lstatSync(p);if(!st.isFile()||st.isSymbolicLink()||createHash("sha256").update(readFileSync(p)).digest("hex")!==h)process.exit(1)}
 NODE
  manifest_matches||fail "manifest modified since install; rollback refused."
- for p in "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$STATE";do secure_file "$p" 16384||fail "installer artifact owner/mode invalid; rollback refused.";done
- rm -- "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_POLICY" "$STATE"
+ for p in "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" "$STATE";do secure_file "$p" 16384||fail "installer artifact owner/mode invalid; rollback refused.";done
+ rm -- "$MANIFEST" "$LAUNCHER" "$INSTALLED_ENTRY" "$INSTALLED_HOST" "$INSTALLED_FRAMING" "$INSTALLED_READ_ONLY" "$INSTALLED_ADMISSION" "$INSTALLED_TRANSPORT" "$INSTALLED_POLICY" "$STATE"
  pass "removed only byte-identical installer-owned artifacts."
 }
 case "$mode" in inspect|dry-run)inspect;;install)install_host;;verify)verify;;rollback)rollback;;esac

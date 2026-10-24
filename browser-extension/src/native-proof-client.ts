@@ -1,6 +1,9 @@
-// DORMANT browser-owned client for PR #106's local Chrome native host proof.
-// Not imported by service-worker.ts; manifest has NO nativeMessaging grant.
-// No enrollment, network, browser automation, token or dispatch authority.
+// Local Chrome native-host P-256 key-possession client (owner OPT-IN only).
+// service-worker.ts imports it only through the trusted-popup proof action;
+// nativeMessaging is OPTIONAL and Chrome requests it after a human button click.
+// Real owner Mac host registration/physical handshake remains UNPROVEN.
+// Local proof does not grant enrollment, network dispatch, ChatGPT sends,
+// authenticated controller sessions or GitHub assignment authority.
 import type { createDeviceIdentityBridge, NativeProofChallenge } from "./device-identity.js";
 
 export const NATIVE_HOST_NAME="bke.worker.desktop";
@@ -9,6 +12,11 @@ const ORIGIN=/^chrome-extension:\/\/[a-p]{32}\/$/;
 const RESOURCE_KEYS=["chatgpt_target_sha256","browser_profile_sha256","bridge_identity_sha256"] as const;
 const CHALLENGE_KEYS=["client_nonce","expires_at_ms","profile_binding_sha256","server_nonce","type","version"] as const;
 const RECEIPT_KEYS=["admission_authority","dispatch_authority","public_key_sha256","type","version","worker_id"] as const;
+const PING_KEYS=["bridge_identity_sha256","chatgpt_target_sha256","client_nonce",
+  "expires_at_ms","profile_binding_sha256","proof_binding_sha256",
+  "sequence","server_nonce","type","version","worker_id"] as const;
+const PONG_KEYS=["admission_authority","controller_authentication","dispatch_authority",
+  "external_controller_transport","message_send_authority","type","version","worker_id"] as const;
 type ResourcePins={chatgpt_target_sha256:string;browser_profile_sha256:string;bridge_identity_sha256:string};
 type DeviceIdentity=ReturnType<typeof createDeviceIdentityBridge>;
 type Listener=(message:unknown)=>void;
@@ -26,11 +34,15 @@ type Runtime={
 type ClientOpts={
   runtime:Runtime; identity:DeviceIdentity; workerId:string;
   resources:ResourcePins; profileBindingSha256:string;
-  clock?:()=>number; cryptoImpl?:Pick<Crypto,"getRandomValues">;
-  timeoutMs?:number;
+  clock?:()=>number; cryptoImpl?:Pick<Crypto,"getRandomValues"|"subtle">;
+  timeoutMs?:number; readOnlyProbe?:boolean;
 };
 type Outcome={state:"LOCAL_PROOF_OK";worker_id:string;public_key_sha256:string;
   admission_authority:"NONE";dispatch_authority:"NONE"}|
+  {state:"LOCAL_READ_ONLY_PONG";worker_id:string;public_key_sha256:string;
+   admission_authority:"NONE";dispatch_authority:"NONE";
+   message_send_authority:"NONE";controller_authentication:"NOT_ESTABLISHED";
+   external_controller_transport:"NOT_CONNECTED"}|
   {state:"BLOCKED";code:string};
 const blocked=(code:string):Outcome=>({state:"BLOCKED",code});
 const exact=(v:unknown,keys:readonly string[]):v is Record<string,unknown> =>
@@ -55,6 +67,41 @@ function validReceipt(x:unknown,worker:string,hash:string):boolean {
   return exact(x,RECEIPT_KEYS)&&x.type==="LOCAL_PROOF_OK"&&x.version===1&&
     x.worker_id===worker&&x.public_key_sha256===hash&&
     x.admission_authority==="NONE"&&x.dispatch_authority==="NONE";
+}
+async function validReadOnlyPing(
+  value:unknown, worker:string, key:string, origin:string, resources:ResourcePins,
+  profile:string, clientNonce:string, serverNonce:string, proofExpiry:number,
+  clock:()=>number, cryptoImpl:Pick<Crypto,"getRandomValues"|"subtle">,
+):Promise<boolean>{
+  const at=freshTime(clock);
+  if(at===null||!exact(value,PING_KEYS)||value.type!=="LOCAL_READ_ONLY_PING"||
+    value.version!==1||value.sequence!==1||value.worker_id!==worker||
+    value.profile_binding_sha256!==profile||
+    value.chatgpt_target_sha256!==resources.chatgpt_target_sha256||
+    value.bridge_identity_sha256!==resources.bridge_identity_sha256||
+    value.client_nonce!==clientNonce||value.server_nonce!==serverNonce||
+    typeof value.proof_binding_sha256!=="string"||!HASH.test(value.proof_binding_sha256)||
+    typeof value.expires_at_ms!=="number"||!Number.isSafeInteger(value.expires_at_ms)||
+    value.expires_at_ms<=at||value.expires_at_ms>at+5000||
+    value.expires_at_ms>proofExpiry)return false;
+  const payload=["bke-worker/desktop/local-controller/read-only/v1",
+    worker,origin,key,profile,resources.chatgpt_target_sha256,
+    resources.bridge_identity_sha256,clientNonce,serverNonce,value.expires_at_ms];
+  try{
+    const bytes=await cryptoImpl.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(payload)));
+    const digest=Array.from(new Uint8Array(bytes))
+      .map(b=>b.toString(16).padStart(2,"0")).join("");
+    return digest===value.proof_binding_sha256;
+  }catch{return false;}
+}
+function validReadOnlyPong(value:unknown,worker:string):boolean{
+  return exact(value,PONG_KEYS)&&value.type==="LOCAL_READ_ONLY_PONG"&&
+    value.version===1&&value.worker_id===worker&&
+    value.admission_authority==="NONE"&&value.dispatch_authority==="NONE"&&
+    value.message_send_authority==="NONE"&&
+    value.controller_authentication==="NOT_ESTABLISHED"&&
+    value.external_controller_transport==="NOT_CONNECTED";
 }
 function nonce(cryptoImpl:Pick<Crypto,"getRandomValues">):string {
   const b=new Uint8Array(32);
@@ -108,12 +155,12 @@ function channel(port:Port,deadline:number,clock:()=>number){
 
 export async function proveLocalNativeHost({
   runtime,identity,workerId,resources,profileBindingSha256,
-  clock=()=>Date.now(),cryptoImpl=crypto,timeoutMs=15_000,
+  clock=()=>Date.now(),cryptoImpl=crypto,timeoutMs=15_000,readOnlyProbe=false,
 }:ClientOpts):Promise<Outcome>{
   if(typeof workerId!=="string"||!/^[a-z0-9][a-z0-9-]{0,62}$/.test(workerId) ||
     !resourceShape(resources)||typeof profileBindingSha256!=="string"||
     !HASH.test(profileBindingSha256)||!Number.isSafeInteger(timeoutMs)||
-    timeoutMs<100||timeoutMs>15_000||
+    timeoutMs<100||timeoutMs>15_000||typeof readOnlyProbe!=="boolean"||
     typeof runtime?.getURL!=="function"||typeof runtime?.connectNative!=="function"||
     typeof identity?.read!=="function"||typeof identity?.signNativeProof!=="function")
     return blocked("NATIVE_CLIENT_CONFIG_INVALID");
@@ -133,13 +180,14 @@ export async function proveLocalNativeHost({
   let port:Port;
   try{port=runtime.connectNative(NATIVE_HOST_NAME);}
   catch{return blocked("NATIVE_CLIENT_HOST_UNAVAILABLE");}
-  // No nativeMessaging permission in the checked-in Manifest V3. This path is
-  // dormant until a separate owner-approved registration/permission PR.
+  // Chrome must grant optional nativeMessaging from an explicit popup click.
+  // This method is NEVER invoked on service-worker startup or by page scripts.
+  // Successful local P-256 proof is NOT authenticated controller admission.
   const wire=channel(port,at+timeoutMs,clock);
   try{
     wire.send({type:"HELLO",version:1,worker_id:workerId,
       public_key:pub.public_key,resources:{...resources},
-      client_nonce:clientNonce});
+      client_nonce:clientNonce,...(readOnlyProbe?{read_only_probe:true}:{})});
     const incoming=await wire.receive();
     const now=freshTime(clock);
     if(now===null||!validChallenge(incoming,clientNonce,profileBindingSha256,now,15_000))
@@ -159,6 +207,26 @@ export async function proveLocalNativeHost({
     const receipt=await wire.receive();
     if(!validReceipt(receipt,workerId,pub.public_key_sha256))
       return blocked("NATIVE_CLIENT_RECEIPT_DENIED");
+    if(readOnlyProbe){
+      // Only after a genuine signed local proof, on this one Chrome-native
+      // port; public SHA-256 binds fields but is NOT controller authentication.
+      const ping=await wire.receive();
+      if(!await validReadOnlyPing(
+        ping,workerId,pub.public_key_sha256,origin,resources,
+        profileBindingSha256,clientNonce,incoming.server_nonce,
+        incoming.expires_at_ms,clock,cryptoImpl))
+        return blocked("NATIVE_CLIENT_READ_ONLY_PING_DENIED");
+      wire.send(ping);
+      const pong=await wire.receive();
+      if(!validReadOnlyPong(pong,workerId))
+        return blocked("NATIVE_CLIENT_READ_ONLY_PONG_DENIED");
+      return Object.freeze({state:"LOCAL_READ_ONLY_PONG",
+        worker_id:workerId,public_key_sha256:pub.public_key_sha256,
+        admission_authority:"NONE",dispatch_authority:"NONE",
+        message_send_authority:"NONE",
+        controller_authentication:"NOT_ESTABLISHED",
+        external_controller_transport:"NOT_CONNECTED"});
+    }
     return Object.freeze({state:"LOCAL_PROOF_OK",worker_id:workerId,
       public_key_sha256:pub.public_key_sha256,
       admission_authority:"NONE",dispatch_authority:"NONE"});

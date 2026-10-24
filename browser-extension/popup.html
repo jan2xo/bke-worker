@@ -31,6 +31,18 @@
         <button id="initialize-identity" type="button">Create device identity</button>
       </div>
 
+      <section aria-label="Owner-approved local native proof">
+        <label>
+          Owner-approved local policy (non-secret JSON, select manually)
+          <input id="native-policy-file" type="file" accept=".json,application/json" />
+        </label>
+        <button id="verify-native-local" type="button">Verify local native host (opt-in)</button>
+        <p class="boundary">
+          Clicking asks Chrome for optional nativeMessaging permission. A local
+          P-256 proof is not worker enrollment, ChatGPT account verification,
+          GitHub assignment, or permission to send messages.
+        </p>
+      </section>
       <p id="feedback" class="feedback"></p>
       <p class="boundary">Device identity creation is local to this browser profile. It does not pair or activate a worker.</p>
       <section id="status" aria-live="polite"></section>
