@@ -312,4 +312,53 @@ def test_owner_preflight_pins_interpreter_and_rechecks_unique_generation():
     assert "_darwin_signed_cdhash(pid)" in checker
 
 
-print("BKE F1 Chrome process/profile regression tests: PASS")
+def _run_all_process_regression_tests():
+    """Execute EVERY top-level test_ function, not merely import definitions."""
+    import inspect
+    import unittest
+
+    if not __debug__:
+        raise SystemExit("BKE_F1_PROCESS_TEST_ASSERTIONS_DISABLED")
+
+    discovered = sorted((name, obj) for name, obj in globals().items()
+                        if name.startswith("test_"))
+    mandatory = {
+        "test_darwin_same_pid_same_ps_second_but_different_unique_generation_changes_binding",
+        "test_darwin_running_image_different_from_disk_cdhash_refused",
+        "test_darwin_forged_same_uid_chrome_argv_cannot_replace_kernel_executable",
+        "test_darwin_process_uniqueid_kernel_flavor_and_access_denial",
+    }
+    names = {name for name, _ in discovered}
+    if (len(discovered) < 20 or not mandatory.issubset(names)
+        or any(not inspect.isfunction(fn) or fn.__module__ != __name__
+               for _, fn in discovered)):
+        raise SystemExit("BKE_F1_PROCESS_TEST_DISCOVERY_INCOMPLETE")
+
+    class ExecutableProcessRegressions(unittest.TestCase):
+        pass
+
+    for name, fn in discovered:
+        def create_case(fn):
+            def case(self):
+                # Test-only negative sentinel: must fail BEFORE its real body.
+                # The separate harness-contract subprocess verifies that the
+                # intended test was invoked and its failure propagates to CI.
+                if (os.environ.get("BKE_F1_TEST_INJECT_FAILURE") == "1"
+                    and fn.__name__ ==
+                    "test_darwin_same_pid_same_ps_second_but_different_unique_generation_changes_binding"):
+                    raise AssertionError("BKE_F1_INTENTIONAL_FAILURE_SENTINEL")
+                fn()
+            return case
+        setattr(ExecutableProcessRegressions, name, create_case(fn))
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(ExecutableProcessRegressions)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if result.testsRun != len(discovered) or not result.wasSuccessful():
+        raise SystemExit(1)
+    print("BKE F1 Chrome process/profile regression tests: PASS "
+          f"executed={result.testsRun}")
+
+
+if __name__ == "__main__":
+    _run_all_process_regression_tests()
+
