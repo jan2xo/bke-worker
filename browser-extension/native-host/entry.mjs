@@ -3,7 +3,8 @@
 // NOT registered in Chrome: operator-controlled native manifest/OS origin
 // authorization and server-side host attestation are separate acceptance.
 import { open,constants } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve,join,dirname } from "node:path";
+import {readPinnedControllerConfig} from "./controller-config.mjs";
 import { fileURLToPath } from "node:url";
 import { runNativeProofHost } from "./host.mjs";
 
@@ -27,11 +28,21 @@ async function readOwnerPinnedPolicy(path) {
 }
 
 export async function main(args=process.argv.slice(2)) {
-  if(args.length!==2)throw Error("NATIVE_INVOCATION_DENIED");
-  const [policyPath,claimedOrigin]=args;
+  if(args.length!==2&&args.length!==3)throw Error("NATIVE_INVOCATION_DENIED");
+  const [policyPath,claimedOrigin,expectedControllerConfigSha256]=args;
   const policy=await readOwnerPinnedPolicy(policyPath);
+  // Only the installed, hash-pinned launcher can specify this digest.
+  // Browser-origin argv is never a controller principal or approval.
+  // Without the third pinned argument, the ordinary source smoke remains
+  // local-only and any controller_probe is explicitly denied.
+  const controllerOptions=expectedControllerConfigSha256===undefined?null:
+    await readPinnedControllerConfig({
+      path:join(dirname(policyPath),"controller-config.json"),
+      expectedSha256:expectedControllerConfigSha256,policy,
+    });
   return runNativeProofHost({
     input:process.stdin,output:process.stdout,policy,claimedOrigin,
+    controllerOptions,
   });
 }
 

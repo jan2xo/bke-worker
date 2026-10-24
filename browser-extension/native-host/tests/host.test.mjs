@@ -391,3 +391,32 @@ test("controller HELLO cannot skip read-only opt-in or P-256 signature",async()=
   s.send({...replyProof(f,challenge),device_signature:"A".repeat(86)});
   await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);s.input.destroy();
 });
+
+test("real entry requires exact owner-reviewed controller config bytes before reading Chrome frames",async()=>{
+  const f=fixture(),dir=await mkdtemp(join(tmpdir(),"bke-entry-controller-pin-"));
+  const policy=join(dir,"owner-policy.json"),config=join(dir,"controller-config.json");
+  const entry=fileURLToPath(new URL("../entry.mjs",import.meta.url));
+  f.policy.expires_at_ms=Date.now()+30000;
+  try{
+    await writeFile(policy,JSON.stringify(f.policy),{mode:0o600});
+    const bytes=Buffer.from('{"enabled":false,"version":1}\\n');
+    await writeFile(config,bytes,{mode:0o600});
+    const digest=createHash("sha256").update(bytes).digest("hex");
+    for(const expectedHash of [H("b"),"invalid"]){
+      const child=spawn(process.execPath,[entry,policy,ORIGIN,expectedHash],{
+        stdio:["pipe","pipe","pipe"]});
+      const output=[];child.stdout.on("data",x=>output.push(x));child.stdin.end();
+      const [code]=await once(child,"exit");
+      assert.equal(code,1);assert.equal(Buffer.concat(output).length,0);
+    }
+    const child=spawn(process.execPath,[entry,policy,ORIGIN,digest],{
+      stdio:["pipe","pipe","pipe"]});
+    const wire=nativeFrameReader(child.stdout);
+    child.stdin.write(encodeFrame(f.hello));
+    const challenge=await wire.next();
+    child.stdin.write(encodeFrame(replyProof(f,challenge)));
+    assert.equal((await wire.next()).type,"LOCAL_PROOF_OK");
+    child.stdin.end();
+    assert.equal((await once(child,"exit"))[0],0);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
