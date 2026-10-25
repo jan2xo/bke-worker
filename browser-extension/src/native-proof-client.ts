@@ -166,6 +166,17 @@ export async function proveLocalNativeHost({
     return blocked("NATIVE_CLIENT_CONFIG_INVALID");
   const at=freshTime(clock);
   if(at===null)return blocked("NATIVE_CLIENT_CLOCK_INVALID");
+  // A Chrome/MV3 pause or wall-clock correction must never revive an
+  // expired one-shot proof. Every session observation is monotonic.
+  let lastClock=at;
+  const sessionClock=()=>{
+    const value=clock();
+    if(!Number.isSafeInteger(value)||value<=0||
+       value<lastClock||value>=Number.MAX_SAFE_INTEGER-16000)
+      throw Error("NATIVE_CLIENT_CLOCK_REWOUND_OR_INVALID");
+    lastClock=value;
+    return value;
+  };
   const origin=runtime.getURL("");
   if(typeof origin!=="string"||!ORIGIN.test(origin))
     return blocked("NATIVE_CLIENT_EXTENSION_ORIGIN_INVALID");
@@ -183,13 +194,13 @@ export async function proveLocalNativeHost({
   // Chrome must grant optional nativeMessaging from an explicit popup click.
   // This method is NEVER invoked on service-worker startup or by page scripts.
   // Successful local P-256 proof is NOT authenticated controller admission.
-  const wire=channel(port,at+timeoutMs,clock);
+  const wire=channel(port,at+timeoutMs,sessionClock);
   try{
     wire.send({type:"HELLO",version:1,worker_id:workerId,
       public_key:pub.public_key,resources:{...resources},
       client_nonce:clientNonce,...(readOnlyProbe?{read_only_probe:true}:{})});
     const incoming=await wire.receive();
-    const now=freshTime(clock);
+    const now=freshTime(sessionClock);
     if(now===null||!validChallenge(incoming,clientNonce,profileBindingSha256,now,15_000))
       return blocked("NATIVE_CLIENT_CHALLENGE_DENIED");
     const challenge:NativeProofChallenge={
@@ -200,7 +211,8 @@ export async function proveLocalNativeHost({
     };
     const proof=await identity.signNativeProof(workerId,challenge);
     if(proof.state!=="SIGNED")return blocked("NATIVE_CLIENT_PROOF_DENIED");
-    if(freshTime(clock)===null||clock()>=challenge.expires_at_ms)
+    const signedAt=freshTime(sessionClock);
+    if(signedAt===null||signedAt>=challenge.expires_at_ms)
       return blocked("NATIVE_CLIENT_EXPIRED");
     wire.send({type:"PROOF",version:1,client_nonce:clientNonce,
       server_nonce:incoming.server_nonce,device_signature:proof.device_signature});
@@ -214,7 +226,7 @@ export async function proveLocalNativeHost({
       if(!await validReadOnlyPing(
         ping,workerId,pub.public_key_sha256,origin,resources,
         profileBindingSha256,clientNonce,incoming.server_nonce,
-        incoming.expires_at_ms,clock,cryptoImpl))
+        incoming.expires_at_ms,sessionClock,cryptoImpl))
         return blocked("NATIVE_CLIENT_READ_ONLY_PING_DENIED");
       wire.send(ping);
       const pong=await wire.receive();

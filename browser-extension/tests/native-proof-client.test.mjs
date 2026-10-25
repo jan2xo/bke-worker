@@ -180,6 +180,24 @@ test("host challenge nonce, clock, profile and schema tamper fails closed BEFORE
     assert.equal(port.connected,false);
   }
 });
+test("rewound clock after signed PROOF cannot yield a positive local native receipt",async()=>{
+ const f=await fixture(),start=Date.now();
+ let clock=start;
+ const port=scriptedPort(f);
+ const original=port.postMessage.bind(port);
+ port.postMessage=(message)=>{
+   // Adversarial wall-clock rollback AFTER valid local challenge and P-256
+   // signing, before receipt delivery. Earlier client accepted the receipt.
+   if(message.type==="PROOF")clock=start-1000;
+   original(message);
+ };
+ const result=await execute(f,port,{clock:()=>clock});
+ assert.equal(result.state,"BLOCKED");
+ assert.equal(result.code,"NATIVE_CLIENT_OUTCOME_UNCERTAIN");
+ assert.equal(port.connected,false);
+ assert.equal(port.messages.size,0);
+ assert.equal(port.disconnects.size,0);
+});
 test("fake elevated receipt, wrong key or worker cannot provide authority",async()=>{
   const transforms=[
     r=>({...r,admission_authority:"ACTIVE"}),
