@@ -35,7 +35,7 @@ export function buildReviewedOwnerPolicy(inputs,{now=Date.now(),ttlMs=7*86400000
  if(!validNativeHostPolicy(policy,now))DENY("SCHEMA_INVALID");
  return Object.freeze(policy);
 }
-async function ownedDir(p,uid,create=false){
+async function ownedDir(p,uid,create=false,ownerPrivate=false){
  if(create){
    try{await mkdir(p,{mode:0o700});}
    catch(e){if(e.code!=="EEXIST")DENY("DIRECTORY_UNAVAILABLE");}
@@ -43,7 +43,8 @@ async function ownedDir(p,uid,create=false){
  let s;
  try{s=await lstat(p);}catch{DENY("DIRECTORY_UNAVAILABLE");}
  if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==uid||
-   (s.mode&0o022)!==0)DENY("DIRECTORY_UNTRUSTED");
+   (s.mode&(ownerPrivate?0o077:0o022))!==0)
+   DENY("DIRECTORY_UNTRUSTED");
 }
 export async function persistOwnerPolicy(policy,{
  home=homedir(),uid=process.getuid?.(),now=Date.now()
@@ -72,7 +73,11 @@ export async function persistOwnerPolicy(policy,{
  const config=join(home,".config");
  const app=join(config,"bke-worker");
  const dir=join(app,"native-host");
- for(const p of [config,app,dir])await ownedDir(p,uid,true);
+ // The native entry requires its immediate policy parent to have NO
+ // group/other access. Reject incompatible pre-existing directories before
+ // creating the policy instead of writing a file the host cannot load.
+ for(const p of [config,app,dir])
+   await ownedDir(p,uid,true,p===dir);
  const destination=join(dir,"owner-policy.json");
  const bytes=Buffer.from(JSON.stringify(policy)+"\n","utf8");
  if(bytes.length>4096)DENY("OVERSIZE");
@@ -98,6 +103,17 @@ export async function persistOwnerPolicy(policy,{
    await unlink(temporary).catch(()=>{});
  }
  if(!linked)DENY("WRITE_FAILED");
+ // Once the temporary hardlink has been removed, fsync the containing
+ // directory. A file fsync alone does not durably record the new pathname.
+ // On uncertainty retain the policy and require manual owner recovery:
+ // never claim completion or clobber/retry an ambiguous write.
+ let directoryFd;
+ try {
+   directoryFd=await open(dir,constants.O_RDONLY|constants.O_NOFOLLOW|
+     constants.O_DIRECTORY);
+   await directoryFd.sync();
+ }catch{DENY("DURABILITY_UNCERTAIN");}
+ finally{if(directoryFd)await directoryFd.close().catch(()=>{});}
  return Object.freeze({state:"OWNER_POLICY_WRITTEN_LOCAL_ONLY",
    pairing_authority:"NONE",dispatch_authority:"NONE"});
 }

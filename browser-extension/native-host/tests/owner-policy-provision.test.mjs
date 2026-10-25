@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {mkdtemp,realpath,readFile,stat,lstat,symlink,rm,mkdir} from "node:fs/promises";
+import {mkdtemp,realpath,readFile,stat,lstat,symlink,rm,mkdir,chmod} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {buildReviewedOwnerPolicy,persistOwnerPolicy} from "../owner-policy-provision.mjs";
@@ -65,6 +65,22 @@ test("symlinked directory or existing policy symlink is never replaced",async t=
  await symlink(join(outside,"nonexistent"),linkPath);
  await assert.rejects(persistOwnerPolicy(policy,{home}),/OWNER_POLICY_ALREADY_EXISTS/);
  assert.equal((await lstat(linkPath)).isSymbolicLink(),true);
+});
+test("pre-existing group-accessible policy parent is rejected before file creation",async t=>{
+ const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-dir-mode-")));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const config=join(home,".config"),app=join(config,"bke-worker");
+ const dir=join(app,"native-host");
+ for(const parent of [config,app,dir])await mkdir(parent,{mode:0o700});
+ await chmod(dir,0o750);
+ const policy=buildReviewedOwnerPolicy(values());
+ await assert.rejects(persistOwnerPolicy(policy,{home}),/OWNER_POLICY_DIRECTORY_UNTRUSTED/);
+ await assert.rejects(stat(join(dir,"owner-policy.json")) ,/ENOENT/);
+ await chmod(dir,0o700);
+ assert.equal((await persistOwnerPolicy(policy,{home})).state,
+   "OWNER_POLICY_WRITTEN_LOCAL_ONLY");
+ assert.equal((await stat(dir)).mode&0o077,0);
+ assert.equal((await stat(join(dir,"owner-policy.json"))).nlink,1);
 });
 test("programmatic writer cannot bypass anti-placeholder and duplicate pin checks",async t=>{
  const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-writer-")));
