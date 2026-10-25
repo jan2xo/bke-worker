@@ -201,6 +201,7 @@ jobs:
         run: |
           python3 tests/operator_entrypoint_contract.py
           python3 tests/sandbox_single_worker_contract.py
+          bash -n scripts/pilot-macos.sh
           python3 tests/chrome_native_host_installer_contract.py
           python3 tests/forge_f1_desktop_readiness_contract.py
           python3 tests/forge_f1_chrome_readiness_test.py

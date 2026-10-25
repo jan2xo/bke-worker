@@ -18,7 +18,9 @@ if [[ -z "$CDP_ENDPOINT" ]]; then
   exit 1
 fi
 
-for command in curl jq dotnet chromium; do
+# Prove browser via the live loopback CDP endpoint, not a Linux-only binary.
+# macOS uses an owner-launched Google Chrome app for the disposable pilot.
+for command in curl jq dotnet; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "ERROR: required command missing: $command" >&2
     exit 1
