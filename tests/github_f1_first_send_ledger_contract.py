@@ -14,7 +14,7 @@ from github_f1_first_send_ledger import (
     FirstSendLedgerDenied, append_first_send_fence, consume_first_send_claim,
     confirm_new_conversation, validate_ledger_successor, validated_ledger,
 )
-from github_f1_private_arbiter_writer import GitHubAppArbiterWriter, GitHubWriterDenied
+from github_f1_private_arbiter_writer import GitHubAppArbiterWriter, GitHubWriterDenied, canonical, blob_sha
 from github_f1_private_arbiter_writer_contract import FakeProvider, TOKEN
 from unittest.mock import patch
 
@@ -307,7 +307,74 @@ class FirstSendLedgerTests(unittest.TestCase):
                         validate_ledger_successor(
                             fence, changed, expected_parent_sha=FENCE_HEAD))
 
-    def test_real_wire_adapter_models_one_fence_then_one_consumption(self):
+    def test_writer_denies_expired_and_backdated_v2_send_proposals(self):
+        provider = FakeProvider()
+        root, fence = prepared()
+        raw = canonical(root)
+        digest = blob_sha(raw)
+        provider.blobs[digest] = raw
+        provider.trees[provider.commits[provider.head]["tree"]] = digest
+        with patch("urllib.request.build_opener", return_value=provider):
+            writer = GitHubAppArbiterWriter(TOKEN, live_writes_enabled=True)
+        deadline = root["claims"][0]["lease_deadline_ms"]
+        for ns, code in (
+            (deadline * 1_000_000, "F1_PROVIDER_LEASE_EXPIRED"),
+            ((deadline - 30_001) * 1_000_000, "F1_PROVIDER_CLOCK_BACKDATED"),
+            (True, "F1_PROVIDER_CLOCK_INVALID"),
+        ):
+            with patch("github_f1_private_arbiter_writer.time.time_ns",
+                       return_value=ns):
+                self.denied(code, lambda: writer.publish(
+                    expected_head=provider.head, proposed_manifest=fence))
+            self.assertEqual(provider.head, HEAD)
+            self.assertFalse(any(method != "GET" for method, _ in provider.requests))
+        provider.requests.clear()
+        # Expiry between the first check and PATCH must not publish.
+        with patch("github_f1_private_arbiter_writer.time.time_ns",
+                   side_effect=[(deadline - 1) * 1_000_000,
+                                deadline * 1_000_000]):
+            self.denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
+                expected_head=provider.head, proposed_manifest=fence))
+        self.assertEqual(provider.head, HEAD)
+        self.assertFalse(any(method == "PATCH" for method, _ in provider.requests))
+        provider.requests.clear()
+        with patch("github_f1_private_arbiter_writer.time.time_ns",
+                   side_effect=[(deadline - 1) * 1_000_000,
+                                (deadline - 2) * 1_000_000]):
+            self.denied("F1_PROVIDER_CLOCK_REWOUND", lambda: writer.publish(
+                expected_head=provider.head, proposed_manifest=fence))
+        self.assertEqual(provider.head, HEAD)
+        self.assertFalse(any(method == "PATCH" for method, _ in provider.requests))
+
+    def test_writer_denies_expired_consumption_without_ref_mutation(self):
+        provider = FakeProvider()
+        root, fence = prepared()
+        raw = canonical(root)
+        digest = blob_sha(raw)
+        provider.blobs[digest] = raw
+        provider.trees[provider.commits[provider.head]["tree"]] = digest
+        with patch("urllib.request.build_opener", return_value=provider):
+            writer = GitHubAppArbiterWriter(TOKEN, live_writes_enabled=True)
+        with patch("github_f1_private_arbiter_writer.time.time_ns",
+                   return_value=SEND_NOW_MS * 1_000_000):
+            first = writer.publish(expected_head=provider.head,
+                                   proposed_manifest=fence)
+        consumed = consume_first_send_claim(
+            fence, attempt_id="attempt-f1-01",
+            expected_parent_sha=first["arbiter_head"], send_claim_id=SEND_CLAIM_ID,
+            claimed_at=TIME, now_ms=SEND_NOW_MS)
+        provider.requests.clear()
+        deadline = root["claims"][0]["lease_deadline_ms"]
+        with patch("github_f1_private_arbiter_writer.time.time_ns",
+                   return_value=deadline * 1_000_000):
+            self.denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
+                expected_head=provider.head, proposed_manifest=consumed))
+        self.assertEqual(provider.head, first["arbiter_head"])
+        self.assertFalse(any(method != "GET" for method, _ in provider.requests))
+
+    @patch("github_f1_private_arbiter_writer.time.time_ns",
+           return_value=SEND_NOW_MS * 1_000_000)
+    def test_real_wire_adapter_models_one_fence_then_one_consumption(self, _clock):
         provider = FakeProvider()
         root, fence = prepared()
         # The synthetic provider starts with legacy v1; replacing its
@@ -418,7 +485,9 @@ class FirstSendLedgerTests(unittest.TestCase):
             self.assertRaises(FirstSendLedgerDenied, validate_ledger_successor,
                               used, changed, expected_parent_sha="d" * 40)
 
-    def test_confirmed_second_attempt_full_mock_provider_successor_sequence(self):
+    @patch("github_f1_private_arbiter_writer.time.time_ns",
+           return_value=SEND_NOW_MS * 1_000_000)
+    def test_confirmed_second_attempt_full_mock_provider_successor_sequence(self, _clock):
         provider = FakeProvider()
         root, fence = prepared()
         from github_f1_private_arbiter_writer import blob_sha, canonical

@@ -13,11 +13,12 @@ import binascii
 from hashlib import sha1
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 
-from github_atomic_claim import ARBITER_REF
+from github_atomic_claim import ARBITER_REF, LEASE_MS
 from github_f1_first_send_ledger import (
     FirstSendLedgerDenied, validate_ledger_successor, validated_ledger,
 )
@@ -88,6 +89,48 @@ def parse_ref(value: Any) -> str:
             value["object"].get("type") != "commit"):
         deny("F1_PROVIDER_REF_INVALID")
     return sha(value["object"].get("sha"))
+
+
+def checked_send_lease_window(parent: dict, successor: dict,
+                              *, previous_ms: int | None = None) -> int | None:
+    """Reject stale v2 send transitions at the actual publisher boundary.
+
+    Uses the private writer host's wall clock, NOT a time supplied by the
+    proposed manifest. Trust in that host and its App principal remains an
+    owner/security gate. Expiry NEVER releases a worker reservation.
+    """
+    if successor["version"] != 2 or parent["version"] != 2:
+        return None
+    prior, after = parent["attempts"], successor["attempts"]
+    selected = None
+    if len(after) == len(prior) + 1:
+        selected = after[-1]
+    elif len(after) == len(prior):
+        for before, now in zip(prior, after):
+            if (before != now and before["state"] == "FENCED_READY_TO_SEND"
+                    and now["state"] == "FENCED_MAY_HAVE_SENT"):
+                selected = now
+                break
+    if selected is None:
+        return None
+    claim = next((x for x in parent["claims"]
+                  if x["claim_id"] == selected["worker_claim_id"]), None)
+    if claim is None or claim["state"] != "RESERVED":
+        deny("F1_PROVIDER_CLAIM_NOT_RESERVED")
+    try:
+        ns = time.time_ns()
+    except Exception:
+        deny("F1_PROVIDER_CLOCK_INVALID")
+    if type(ns) is not int or ns < 0 or ns > (2**53 - 1) * 1_000_000:
+        deny("F1_PROVIDER_CLOCK_INVALID")
+    now_ms = ns // 1_000_000
+    if previous_ms is not None and now_ms < previous_ms:
+        deny("F1_PROVIDER_CLOCK_REWOUND")
+    if now_ms < claim["lease_deadline_ms"] - LEASE_MS:
+        deny("F1_PROVIDER_CLOCK_BACKDATED")
+    if now_ms >= claim["lease_deadline_ms"]:
+        deny("F1_PROVIDER_LEASE_EXPIRED")
+    return now_ms
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -245,6 +288,9 @@ class GitHubAppArbiterWriter:
                 )
             except FirstSendLedgerDenied:
                 deny("F1_PROVIDER_TRANSITION_INVALID")
+            # Pure helpers can be bypassed by a constructed successor.
+            lease_observed_ms = checked_send_lease_window(
+                parent["manifest"], successor)
             content = canonical(successor)
             # Re-read immediately before mutation. This is not a substitute
             # for GitHub's atomic non-force ref update in a concurrent race.
@@ -272,6 +318,12 @@ class GitHubAppArbiterWriter:
             evidence = self._snapshot(child)
             if evidence["parents"] != [before] or evidence["manifest"] != successor:
                 deny("F1_PROVIDER_CHILD_INVALID")
+            # Recheck just before the irreversible ref update; slow
+            # provider round trips must not silently outlive this lease.
+            if lease_observed_ms is not None:
+                checked_send_lease_window(
+                    parent["manifest"], successor,
+                    previous_ms=lease_observed_ms)
             # GitHub fast-forward constraint serializes sibling contenders.
             updated = self._call("PATCH", UPDATE_PATH, {
                 "sha": child, "force": False,
