@@ -83,6 +83,14 @@ The owner-local-bindings.mjs helper generates four domain-separated SHA-256
 local commitments for this owner-attested profile, browser profile, bridge
 identity and target using the owner-supplied public extension ID, worker ID
 and key thumbprint, the verified executable digest and dedicated profile path.
+**The browser-profile reservation commitment is intentionally worker-independent:
+under the same owner OS account, two different workers reporting the same
+canonical dedicated profile path derive the same SHA-256 reservation lock,
+regardless of worker key, extension ID, or Chrome version.** The separate
+worker-specific profile binding still changes with those identity fields.
+This prevents worker-specific hash variations from defeating a common-profile
+fence; the local path remains owner-attested, not independently OS/server
+attested, and different path aliases or profile copies are not proven equivalent.
 The Chrome profile path is used in-memory only, never written to policy or
 terminal output. The target commitment proves ONLY the site and owner's
 claim of one idle tab — it does NOT attest the ChatGPT account, specific

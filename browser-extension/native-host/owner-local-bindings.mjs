@@ -25,6 +25,7 @@ export function deriveOwnerAttestedLocalPins(source){
     !source.profile_path.startsWith("/")||
     source.profile_path.includes("\0")||
     source.profile_path.includes("//")||
+    source.profile_path.endsWith("/")||
     /(?:^|\/)\.\.?(?:\/|$)/u.test(source.profile_path)||
     /^(.)\1{63}$/u.test(source.public_key_sha256)||
     /^(.)\1{63}$/u.test(source.chrome_runtime_sha256))
@@ -38,9 +39,12 @@ export function deriveOwnerAttestedLocalPins(source){
   worker_id,allowed_origin,public_key_sha256,
   profile_path,chrome_runtime_sha256,
  ]);
+ // This reservation key identifies the owner-account's physical profile
+ // path, NOT the worker using it. A worker-scoped key let two different
+ // identities derive DIFFERENT locks for one shared writable directory.
+ // Process signer/key/worker remain bound separately in profile_binding.
  const browser_profile_sha256=digest([
-  "bke-worker/f1/owner-local-browser-profile/v1",
-  profile_binding_sha256,profile_path,chrome_runtime_sha256,
+  "bke-worker/f1/owner-local-browser-profile/v2",profile_path,
  ]);
  const bridge_identity_sha256=digest([
   "bke-worker/f1/owner-local-bridge-identity/v1",

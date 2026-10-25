@@ -47,6 +47,23 @@ test("all scope changes invalidate local binding fingerprints",()=>{
   assert.notEqual(x.chatgpt_target_sha256,base.chatgpt_target_sha256);
  }
 });
+test("identical owner profile path produces the SAME reservation fingerprint across workers",()=>{
+ const a=verified();
+ const b={...a,worker_id:"other-worker",
+  extension_id:"bcdefghijklmnopabcdefghijklmnopa",
+  public_key_sha256:h("another worker-owned device key"),
+  chrome_runtime_sha256:h("updated verified Chrome image")};
+ const x=deriveOwnerAttestedLocalPins(a).input;
+ const y=deriveOwnerAttestedLocalPins(b).input;
+ assert.notEqual(x.profile_binding_sha256,y.profile_binding_sha256);
+ assert.notEqual(x.bridge_identity_sha256,y.bridge_identity_sha256);
+ assert.notEqual(x.chatgpt_target_sha256,y.chatgpt_target_sha256);
+ assert.equal(x.browser_profile_sha256,y.browser_profile_sha256,
+   "one writable browser profile must map to one shared local lock");
+ const other=deriveOwnerAttestedLocalPins({...b,
+  profile_path:"/Users/operator/.bke-worker/f1/other-profile"}).input;
+ assert.notEqual(other.browser_profile_sha256,x.browser_profile_sha256);
+});
 test("unverified OS process, tab, origin, hash and unsafe paths fail closed",()=>{
  const source=verified();
  const invalid=[
@@ -61,6 +78,7 @@ test("unverified OS process, tab, origin, hash and unsafe paths fail closed",()=
   {...source,profile_path:"/tmp/../browser"},
   {...source,profile_path:"/tmp//browser"},
   {...source,profile_path:"/tmp/./browser"},
+  {...source,profile_path:"/tmp/browser/"},
   {...source,profile_path:"relative/path"},
   {...source,worker_id:"F1-WORKER"},
   {...source,extension_id:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/"},

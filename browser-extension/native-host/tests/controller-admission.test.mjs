@@ -5,6 +5,7 @@ import {mkdtemp,rm,readdir,readFile,chmod,symlink,mkdir} from 'node:fs/promises'
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createControllerChallenge,controllerSignedPayload} from '../controller-admission.mjs';
+import {deriveOwnerAttestedLocalPins} from '../owner-local-bindings.mjs';
 const sha=x=>createHash('sha256').update(x).digest('hex');
 const T=1_800_000_000_000;
 function setup(){
@@ -173,6 +174,36 @@ test('concurrent controller claims for identical target never both succeed',asyn
  ]);
  assert.equal(results.filter(x=>x.status==='fulfilled').length,1);
  assert.equal(results.filter(x=>x.status==='rejected').length,1);
+ assert.equal((await readdir(dir)).length,4);
+}));
+test('two distinct worker identities with the SAME owner Chrome profile cannot both reserve',async()=>privateDir(async dir=>{
+ const physical="/Users/operator/.bke-worker/f1/chrome-profile";
+ const origin="abcdefghijklmnopabcdefghijklmnop";
+ const make=(worker_id,public_key_sha256,extension_id=origin)=>{
+  const pins=deriveOwnerAttestedLocalPins({worker_id,extension_id,
+   public_key_sha256,profile_path:physical,
+   chrome_runtime_sha256:sha('same signed Chrome process'),
+   verified_process_profile:true,
+   owner_attested_single_idle_chatgpt_tab:true}).input;
+  return {worker_id:pins.worker_id,allowed_origin:pins.allowed_origin,
+   profile_binding_sha256:pins.profile_binding_sha256,
+   browser_profile_sha256:pins.browser_profile_sha256,
+   chatgpt_target_sha256:pins.chatgpt_target_sha256,
+   bridge_identity_sha256:pins.bridge_identity_sha256};
+ };
+ const first=setup(),second=setup();
+ first.params.scope=make('worker-a',sha('worker a p256'));
+ second.params.scope=make('worker-b',sha('worker b p256'),
+   'bcdefghijklmnopabcdefghijklmnopa');
+ assert.notEqual(first.params.scope.profile_binding_sha256,
+   second.params.scope.profile_binding_sha256);
+ assert.equal(first.params.scope.browser_profile_sha256,
+   second.params.scope.browser_profile_sha256);
+ const a=first.gate(),b=second.gate();
+ assert.equal((await a.accept(first.respond(a.challenge),{fenceDir:dir})).state,
+   'CONTROLLER_AUTH_READ_ONLY');
+ await assert.rejects(b.accept(second.respond(b.challenge),{fenceDir:dir}),
+   /FENCE_CONFLICT_OR_IO_UNCERTAIN/);
  assert.equal((await readdir(dir)).length,4);
 }));
 test('profile or target collision between different workers is locked, crash no automatic takeover',async()=>privateDir(async dir=>{
