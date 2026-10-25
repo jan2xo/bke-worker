@@ -15,7 +15,7 @@ from github_f1_first_send_ledger import (
     confirm_new_conversation, validate_ledger_successor, validated_ledger,
 )
 from github_f1_private_arbiter_writer import GitHubAppArbiterWriter, GitHubWriterDenied, canonical, blob_sha
-from github_f1_private_arbiter_writer_contract import FakeProvider, TOKEN
+from github_f1_private_arbiter_writer_contract import FakeProvider, TOKEN, HEAD
 from unittest.mock import patch
 
 PR_HEAD = "a" * 40
