@@ -81,6 +81,53 @@ class FirstSendLedgerTests(unittest.TestCase):
                     validate_ledger_successor(legacy, ledger,
                                              expected_parent_sha=FENCE_HEAD))
 
+    def test_distinct_workers_cannot_reuse_target_or_profile_commitment(self):
+        # Distinct RESERVED GitHub claims for separate workers/PRs may coexist,
+        # but cannot reserve one browser profile or ChatGPT target fingerprint.
+        ledger, claim_one = base()
+        preflight = {
+            "state": "PRECLAIM_CONSISTENT_ONLY", "worker_id": "f2",
+            "repository": "jan2xo/bke-worker", "number": 123,
+            "head_sha": "b" * 40, "assignment_authority": "NONE",
+            "dispatch_authority": "NONE", "wake_authority": "NONE",
+            "atomicity": "NONE",
+        }
+        observed = {
+            "repository": preflight["repository"], "number": 123,
+            "head_sha": preflight["head_sha"], "labels": [],
+        }
+        other, claim_two = prepare_reservation(
+            manifest={"version": 1, "sequence": ledger["sequence"],
+                      "claims": ledger["claims"]},
+            preflight=preflight, current_pr=observed,
+            expected_labels=[], now_ms=100_001,
+        )
+        both = {"version": 2, "sequence": other["sequence"],
+                "claims": other["claims"], "attempts": []}
+        first = append_first_send_fence(
+            both, attempt_id="attempt-first-01", worker_claim_id=claim_one,
+            target_sha256="a" * 64, profile_sha256="b" * 64,
+            tab_id=17, execution_id="execution-first-1234",
+            fence_id="fence-first-12345",
+        )
+        def second(target, profile):
+            return append_first_send_fence(
+                first, attempt_id="attempt-second-01", worker_claim_id=claim_two,
+                target_sha256=target, profile_sha256=profile,
+                tab_id=18, execution_id="execution-second-1234",
+                fence_id="fence-second-12345",
+            )
+        self.denied("F1_ATTEMPT_RESOURCE_CONFLICT",
+                    lambda: second("a" * 64, "d" * 64))
+        self.denied("F1_ATTEMPT_RESOURCE_CONFLICT",
+                    lambda: second("c" * 64, "b" * 64))
+        self.denied("F1_ATTEMPT_RESOURCE_CONFLICT",
+                    lambda: second("a" * 64, "b" * 64))
+        allowed = second("c" * 64, "d" * 64)
+        self.assertEqual(len(allowed["attempts"]), 2)
+        self.assertEqual(validate_ledger_successor(
+            first, allowed, expected_parent_sha=FENCE_HEAD), allowed)
+
     def test_fence_requires_existing_reserved_worker_claim(self):
         ledger, claim = base()
         self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda:
