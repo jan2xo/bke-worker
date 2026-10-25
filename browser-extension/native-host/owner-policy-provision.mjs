@@ -1,7 +1,8 @@
 // F1-03 local owner-policy staging: no device/server/PR/dispatch authority.
 // All trust pins must originate from an independent owner review; never synthesize them.
 import {createHash,randomBytes} from "node:crypto";
-import {open,mkdir,lstat,realpath,link,unlink,readFile} from "node:fs/promises";
+import {open,mkdir,lstat,realpath,link,unlink} from "node:fs/promises";
+import {readBoundedOwnerBytes} from "./controller-config.mjs";
 import {constants} from "node:fs";
 import {homedir} from "node:os";
 import {join,resolve} from "node:path";
@@ -49,6 +50,34 @@ async function ownedDir(p,uid,create=false,ownerPrivate=false){
    (s.mode&(ownerPrivate?0o077:0o022))!==0)
    DENY("DIRECTORY_UNTRUSTED");
 }
+// Read-only file witness used both while the temp hardlink exists and after
+// its removal. Reject file replacement, extra hardlinks, growth and drift.
+// No unbounded path read or new authority is created by this check.
+export async function verifyOwnerPolicyFile(path,bytes,uid=process.getuid?.(),links=1){
+ if(!Buffer.isBuffer(bytes)||bytes.length<8||bytes.length>4096||
+    !Number.isSafeInteger(uid)||uid!==process.getuid?.()||
+    (links!==1&&links!==2))DENY("READBACK_FAILED");
+ let fd;
+ try{
+   const initial=await lstat(path);
+   if(!initial.isFile()||initial.isSymbolicLink()||initial.uid!==uid||
+      (initial.mode&0o077)!==0||initial.nlink!==links||
+      initial.size!==bytes.length)DENY("READBACK_FAILED");
+   fd=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);
+   const opened=await fd.stat();
+   if(!opened.isFile()||opened.ino!==initial.ino||opened.dev!==initial.dev||
+      opened.uid!==uid||(opened.mode&0o077)!==0||
+      opened.nlink!==links||opened.size!==bytes.length)DENY("READBACK_FAILED");
+   const actual=await readBoundedOwnerBytes(fd,bytes.length);
+   if(!actual.equals(bytes))DENY("READBACK_FAILED");
+   const final=await fd.stat();
+   if(final.nlink!==links||final.uid!==uid||
+      (final.mode&0o077)!==0)DENY("READBACK_FAILED");
+   return true;
+ }catch{DENY("READBACK_FAILED");}
+ finally{if(fd)await fd.close().catch(()=>{});}
+}
+
 export async function persistOwnerPolicy(policy,{
  home=homedir(),uid=process.getuid?.(),now=Date.now()
 }={}){
@@ -90,26 +119,30 @@ export async function persistOwnerPolicy(policy,{
  const destination=join(dir,"owner-policy.json");
  if(!constants.O_NOFOLLOW)DENY("OS_UNSUPPORTED");
  const temporary=join(dir,".policy-"+randomBytes(16).toString("hex")+".tmp");
- let fd, linked=false;
+ let fd, linked=false, cleanupUncertain=false;
  try{
    fd=await open(temporary,constants.O_CREAT|constants.O_EXCL|
      constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
    await fd.writeFile(bytes);await fd.sync();await fd.close();fd=null;
    // Atomic hard-link refuses an existing policy, including a symlink.
    await link(temporary,destination);linked=true;
-   const st=await lstat(destination);
-   if(!st.isFile()||st.isSymbolicLink()||st.uid!==uid||
-     (st.mode&0o077)!==0||st.size!==bytes.length||
-     !(await readFile(destination)).equals(bytes))DENY("READBACK_FAILED");
+   // Before removing the staging name there MUST be exactly two links.
+   // The readback uses an O_NOFOLLOW descriptor with strict 4-KB bounds.
+   await verifyOwnerPolicyFile(destination,bytes,uid,2);
  }catch(e){
    if(e.code==="EEXIST")DENY("ALREADY_EXISTS");
    if(e.message?.startsWith("OWNER_POLICY_"))throw e;
    DENY("WRITE_FAILED");
  }finally{
    if(fd)await fd.close().catch(()=>{});
-   await unlink(temporary).catch(()=>{});
+   try{await unlink(temporary);}
+   catch(error){if(error?.code!=="ENOENT")cleanupUncertain=true;}
  }
  if(!linked)DENY("WRITE_FAILED");
+ // Never claim a usable native-host policy if the temporary hard link
+ // remains (or its removal was uncertain). The native host requires nlink=1.
+ if(cleanupUncertain)DENY("CLEANUP_UNCERTAIN");
+ await verifyOwnerPolicyFile(destination,bytes,uid,1);
  // Once the temporary hardlink has been removed, fsync the containing
  // directory. A file fsync alone does not durably record the new pathname.
  // On uncertainty retain the policy and require manual owner recovery:

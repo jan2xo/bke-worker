@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {mkdtemp,realpath,readFile,stat,lstat,symlink,rm,mkdir,chmod} from "node:fs/promises";
+import {mkdtemp,realpath,readFile,stat,lstat,symlink,rm,mkdir,chmod,writeFile,link,unlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {buildReviewedOwnerPolicy,persistOwnerPolicy} from "../owner-policy-provision.mjs";
+import {buildReviewedOwnerPolicy,persistOwnerPolicy,verifyOwnerPolicyFile} from "../owner-policy-provision.mjs";
 import {validNativeHostPolicy} from "../host.mjs";
 const h=x=>createHash("sha256").update("synthetic BKE fixture only "+x).digest("hex");
 const values=()=>({
@@ -103,6 +103,25 @@ test("owner-reviewed pins are deep frozen and async persistence ignores later ca
  assert.equal(validNativeHostPolicy(saved),true);
  assert.notEqual(saved.resources.chatgpt_target_sha256,mutable.resources.chatgpt_target_sha256);
  assert.notEqual(saved.worker_id,mutable.worker_id);
+});
+test("owner policy file witness refuses extra hardlinks, public mode and changed bytes",async t=>{
+ const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-link-witness-")));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const file=join(home,"owner-policy.json"),extra=join(home,"other-link.json");
+ const bytes=Buffer.from(JSON.stringify(buildReviewedOwnerPolicy(values()))+"\\n","utf8");
+ await writeFile(file,bytes,{mode:0o600});
+ assert.equal(await verifyOwnerPolicyFile(file,bytes),true);
+ await link(file,extra);
+ await assert.rejects(verifyOwnerPolicyFile(file,bytes),/OWNER_POLICY_READBACK_FAILED/);
+ assert.equal(await verifyOwnerPolicyFile(file,bytes,process.getuid(),2),true);
+ await unlink(extra);
+ await chmod(file,0o644);
+ await assert.rejects(verifyOwnerPolicyFile(file,bytes),/OWNER_POLICY_READBACK_FAILED/);
+ await chmod(file,0o600);
+ const changed=Buffer.from(bytes);
+ changed[changed.length-2]^=1;
+ await assert.rejects(verifyOwnerPolicyFile(file,changed),/OWNER_POLICY_READBACK_FAILED/);
+ assert.equal(await verifyOwnerPolicyFile(file,bytes),true);
 });
 test("programmatic writer cannot bypass anti-placeholder and duplicate pin checks",async t=>{
  const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-writer-")));
