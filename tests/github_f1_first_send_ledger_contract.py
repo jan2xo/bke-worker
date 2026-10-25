@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 import sys
 import unittest
@@ -20,6 +21,9 @@ from unittest.mock import patch
 PR_HEAD = "a" * 40
 FENCE_HEAD = "f" * 40
 TIME = "2026-10-20T06:00:00.000Z"
+CLAIM_NOW_MS = int(datetime.fromisoformat(
+    TIME.replace("Z", "+00:00")).timestamp() * 1000)
+SEND_NOW_MS = CLAIM_NOW_MS + 1_000
 FENCE_ID = "fence-123456"
 SEND_CLAIM_ID = "send-1234567"
 
@@ -39,7 +43,7 @@ def base():
     claim, claim_id = prepare_reservation(
         manifest={"version": 1, "sequence": 0, "claims": []},
         preflight=preflight, current_pr=observed,
-        expected_labels=[], now_ms=100_000,
+        expected_labels=[], now_ms=CLAIM_NOW_MS,
     )
     ledger = {"version": 2, "sequence": claim["sequence"],
               "claims": claim["claims"], "attempts": []}
@@ -54,7 +58,7 @@ def prepared():
         target_sha256="a" * 64, profile_sha256="b" * 64,
         tab_id=17, execution_id="execution-12345678",
         fence_id=FENCE_ID,
-    )
+     now_ms=SEND_NOW_MS)
 
 
 def consumed():
@@ -63,7 +67,7 @@ def consumed():
         fence, attempt_id="attempt-f1-01",
         expected_parent_sha=FENCE_HEAD,
         send_claim_id=SEND_CLAIM_ID, claimed_at=TIME,
-    )
+     now_ms=SEND_NOW_MS)
     return base_ledger, fence, sent
 
 
@@ -71,6 +75,45 @@ class FirstSendLedgerTests(unittest.TestCase):
     def denied(self, code, op):
         with self.assertRaisesRegex(FirstSendLedgerDenied, "^" + code + "$"):
             op()
+
+    def test_expired_send_lease_denies_new_fence_and_consumption(self):
+        ledger, claim_id = base()
+        expires = ledger["claims"][0]["lease_deadline_ms"]
+        self.assertEqual(expires, CLAIM_NOW_MS + 30_000)
+        args = dict(attempt_id="attempt-lease-01", worker_claim_id=claim_id,
+                    target_sha256="a" * 64, profile_sha256="b" * 64,
+                    tab_id=1, execution_id="execution-lease-1234",
+                    fence_id="fence-lease-12345")
+        self.denied("F1_ATTEMPT_LEASE_EXPIRED", lambda:
+                    append_first_send_fence(ledger, now_ms=expires, **args))
+        self.denied("F1_ATTEMPT_CLOCK_INVALID", lambda:
+                    append_first_send_fence(ledger, now_ms=True, **args))
+        fence = append_first_send_fence(
+            ledger, now_ms=expires - 1, **args)
+        self.denied("F1_ATTEMPT_LEASE_EXPIRED", lambda:
+                    consume_first_send_claim(
+                        fence, attempt_id="attempt-lease-01",
+                        expected_parent_sha=FENCE_HEAD,
+                        send_claim_id="send-lease-12345",
+                        claimed_at=TIME, now_ms=expires))
+        self.denied("F1_ATTEMPT_CLOCK_INVALID", lambda:
+                    consume_first_send_claim(
+                        fence, attempt_id="attempt-lease-01",
+                        expected_parent_sha=FENCE_HEAD,
+                        send_claim_id="send-lease-12345",
+                        claimed_at=TIME, now_ms=-1))
+        valid = consume_first_send_claim(
+            fence, attempt_id="attempt-lease-01",
+            expected_parent_sha=FENCE_HEAD,
+            send_claim_id="send-lease-12345",
+            claimed_at=TIME, now_ms=expires - 1)
+        self.assertEqual(valid["attempts"][0]["state"], "FENCED_MAY_HAVE_SENT")
+        self.assertEqual(validate_ledger_successor(
+            fence, valid, expected_parent_sha=FENCE_HEAD), valid)
+        # Expiry is NOT release: the original reservation and its resources
+        # remain occupied and must never be reclaimed from local clock alone.
+        self.assertEqual(ledger["claims"][0]["state"], "RESERVED")
+        self.assertEqual(ledger["claims"][0]["lease_deadline_ms"], expires)
 
     def test_v1_existing_claim_reader_works_but_no_implicit_v2_migration(self):
         ledger, _ = base()
@@ -100,7 +143,7 @@ class FirstSendLedgerTests(unittest.TestCase):
             manifest={"version": 1, "sequence": ledger["sequence"],
                       "claims": ledger["claims"]},
             preflight=preflight, current_pr=observed,
-            expected_labels=[], now_ms=100_001,
+            expected_labels=[], now_ms=CLAIM_NOW_MS + 1,
         )
         both = {"version": 2, "sequence": other["sequence"],
                 "claims": other["claims"], "attempts": []}
@@ -109,14 +152,14 @@ class FirstSendLedgerTests(unittest.TestCase):
             target_sha256="a" * 64, profile_sha256="b" * 64,
             tab_id=17, execution_id="execution-first-1234",
             fence_id="fence-first-12345",
-        )
+         now_ms=SEND_NOW_MS)
         def second(target, profile):
             return append_first_send_fence(
                 first, attempt_id="attempt-second-01", worker_claim_id=claim_two,
                 target_sha256=target, profile_sha256=profile,
                 tab_id=18, execution_id="execution-second-1234",
                 fence_id="fence-second-12345",
-            )
+             now_ms=SEND_NOW_MS)
         self.denied("F1_ATTEMPT_RESOURCE_CONFLICT",
                     lambda: second("a" * 64, "d" * 64))
         self.denied("F1_ATTEMPT_RESOURCE_CONFLICT",
@@ -149,8 +192,8 @@ class FirstSendLedgerTests(unittest.TestCase):
             reused = dict(args, **{key: existing[key]})
             self.denied("F1_ATTEMPT_IDENTITY_REPLAY",
                         lambda reused=reused: append_first_send_fence(
-                            confirmed, **reused))
-        valid = append_first_send_fence(confirmed, **args)
+                            confirmed, **reused, now_ms=SEND_NOW_MS))
+        valid = append_first_send_fence(confirmed, **args, now_ms=SEND_NOW_MS)
         self.assertEqual(len(valid["attempts"]), 2)
         self.assertEqual(validate_ledger_successor(
             confirmed, valid, expected_parent_sha=FENCE_HEAD), valid)
@@ -169,12 +212,12 @@ class FirstSendLedgerTests(unittest.TestCase):
                         ledger, attempt_id="attempt-f1-01",
                         worker_claim_id="0" * 32,
                         target_sha256="a" * 64, profile_sha256="b" * 64,
-                        tab_id=1, execution_id="execution-12345", fence_id=FENCE_ID))
+                        tab_id=1, execution_id="execution-12345", fence_id=FENCE_ID, now_ms=SEND_NOW_MS))
         self.assertEqual(len(ledger["attempts"]), 0)
         fence = append_first_send_fence(
             ledger, attempt_id="attempt-f1-01", worker_claim_id=claim,
             target_sha256="a" * 64, profile_sha256="b" * 64, tab_id=17,
-            execution_id="execution-12345678", fence_id=FENCE_ID)
+            execution_id="execution-12345678", fence_id=FENCE_ID, now_ms=SEND_NOW_MS)
         self.assertEqual(fence["attempts"][0]["state"], "FENCED_READY_TO_SEND")
 
     def test_fence_append_requires_one_sequence_increment_and_no_claim_mutation(self):
@@ -202,7 +245,7 @@ class FirstSendLedgerTests(unittest.TestCase):
                     consume_first_send_claim(
                         used, attempt_id="attempt-f1-01",
                         expected_parent_sha=FENCE_HEAD, send_claim_id=SEND_CLAIM_ID,
-                        claimed_at=TIME))
+                        claimed_at=TIME, now_ms=SEND_NOW_MS))
         self.denied("F1_LEDGER_TRANSITION_INVALID", lambda:
                     validate_ledger_successor(
                         used, fence, expected_parent_sha=FENCE_HEAD))
@@ -282,7 +325,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         fence_head = first["arbiter_head"]
         next_ledger = consume_first_send_claim(
             fence, attempt_id="attempt-f1-01", expected_parent_sha=fence_head,
-            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME)
+            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME, now_ms=SEND_NOW_MS)
         second = writer.publish(expected_head=fence_head,
                                 proposed_manifest=next_ledger)
         self.assertNotEqual(first["arbiter_head"], second["arbiter_head"])
@@ -318,13 +361,13 @@ class FirstSendLedgerTests(unittest.TestCase):
             tab_id=18, execution_id="execution-87654321",
             fence_id="fence-second-123")
         self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
-                    lambda: append_first_send_fence(fence, **params))
+                    lambda: append_first_send_fence(fence, **params, now_ms=SEND_NOW_MS))
         self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
-                    lambda: append_first_send_fence(used, **params))
+                    lambda: append_first_send_fence(used, **params, now_ms=SEND_NOW_MS))
         confirmed = confirm_new_conversation(
             used, attempt_id="attempt-f1-01",
             conversation_id="conversation-first-123", confirmed_at=TIME)
-        again = append_first_send_fence(confirmed, **params)
+        again = append_first_send_fence(confirmed, **params, now_ms=SEND_NOW_MS)
         self.assertEqual(validate_ledger_successor(
             confirmed, again, expected_parent_sha="d" * 40), again)
         self.assertEqual(len(again["attempts"]), 2)
@@ -334,7 +377,7 @@ class FirstSendLedgerTests(unittest.TestCase):
             corrupted[key] = "e" * 64
             self.denied("F1_PREVIOUS_ATTEMPT_UNRESOLVED",
                         lambda corrupted=corrupted:
-                        append_first_send_fence(confirmed, **corrupted))
+                        append_first_send_fence(confirmed, **corrupted, now_ms=SEND_NOW_MS))
 
     def test_confirmation_wrong_order_duplicate_conversation_and_malformed_rejected(self):
         _, fence, used = consumed()
@@ -389,7 +432,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         used = consume_first_send_claim(
             fence, attempt_id="attempt-f1-01",
             expected_parent_sha=first["arbiter_head"],
-            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME)
+            send_claim_id=SEND_CLAIM_ID, claimed_at=TIME, now_ms=SEND_NOW_MS)
         second = writer.publish(expected_head=first["arbiter_head"],
                                 proposed_manifest=used)
         confirmed = confirm_new_conversation(
@@ -401,7 +444,7 @@ class FirstSendLedgerTests(unittest.TestCase):
             confirmed, attempt_id="attempt-f1-02",
             worker_claim_id=confirmed["claims"][0]["claim_id"],
             target_sha256="a" * 64, profile_sha256="b" * 64,
-            tab_id=18, execution_id="execution-87654321", fence_id="fence-second-123")
+            tab_id=18, execution_id="execution-87654321", fence_id="fence-second-123", now_ms=SEND_NOW_MS)
         fourth = writer.publish(expected_head=third["arbiter_head"],
                                 proposed_manifest=newer)
         self.assertNotEqual(fourth["arbiter_head"], third["arbiter_head"])

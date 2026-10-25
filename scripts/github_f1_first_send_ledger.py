@@ -51,6 +51,18 @@ def _clock(value: Any) -> bool:
         return False
 
 
+def _require_send_window(claim: dict, now_ms: int) -> None:
+    """Source-only eligibility check; caller must separately attest its clock.
+
+    Expired claims still occupy resources: never auto-release or retry them.
+    This check does not issue a real GitHub, browser or send authorization.
+    """
+    if type(now_ms) is not int or not 0 <= now_ms < 2**53:
+        _deny("F1_ATTEMPT_CLOCK_INVALID")
+    if now_ms >= claim["lease_deadline_ms"]:
+        _deny("F1_ATTEMPT_LEASE_EXPIRED")
+
+
 def validated_ledger(raw: Any) -> dict[str, Any]:
     """Validate v2 for future use; read legacy v1 without silently migrating.
 
@@ -153,14 +165,15 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
 def append_first_send_fence(ledger: dict, *, attempt_id: str,
                             worker_claim_id: str, target_sha256: str,
                             profile_sha256: str, tab_id: int, execution_id: str,
-                            fence_id: str) -> dict:
-    """Propose durable PRE-SEND fence; must be published/read back before CAS."""
+                            fence_id: str, now_ms: int) -> dict:
+    """Propose a pre-send fence after an explicit, externally attested clock check."""
     old = validated_ledger(ledger)
     if old["version"] != 2:
         _deny("F1_LEDGER_V2_REQUIRED")
     claim = next((c for c in old["claims"] if c["claim_id"] == worker_claim_id), None)
     if claim is None or claim["state"] != "RESERVED":
         _deny("F1_ATTEMPT_WORKER_CLAIM_INVALID")
+    _require_send_window(claim, now_ms)
     out = deepcopy(old)
     out["sequence"] += 1
     out["attempts"].append({
@@ -178,8 +191,9 @@ def append_first_send_fence(ledger: dict, *, attempt_id: str,
 
 def consume_first_send_claim(ledger: dict, *, attempt_id: str,
                               expected_parent_sha: str,
-                              send_claim_id: str, claimed_at: str) -> dict:
-    """Irreversibly consume one opportunity; never a browser-send permit."""
+                              send_claim_id: str, claimed_at: str,
+                              now_ms: int) -> dict:
+    """Consume one opportunity only within its lease; never a browser-send permit."""
     old = validated_ledger(ledger)
     if old["version"] != 2:
         _deny("F1_LEDGER_V2_REQUIRED")
@@ -188,6 +202,11 @@ def consume_first_send_claim(ledger: dict, *, attempt_id: str,
         _deny("F1_SEND_ALREADY_CONSUMED")
     if not _string(_SHA, expected_parent_sha) or not _string(_ID, send_claim_id) or not _clock(claimed_at):
         _deny("F1_SEND_CLAIM_INVALID")
+    worker = next((claim for claim in old["claims"]
+                   if claim["claim_id"] == matches[0]["worker_claim_id"]), None)
+    if worker is None or worker["state"] != "RESERVED":
+        _deny("F1_ATTEMPT_WORKER_CLAIM_INVALID")
+    _require_send_window(worker, now_ms)
     out = deepcopy(old)
     out["sequence"] += 1
     row = next(r for r in out["attempts"] if r["attempt_id"] == attempt_id)
