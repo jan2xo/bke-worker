@@ -33,6 +33,9 @@ export function buildReviewedOwnerPolicy(inputs,{now=Date.now(),ttlMs=7*86400000
      bridge_identity_sha256:inputs.bridge_identity_sha256,
    },expires_at_ms:now+ttlMs};
  if(!validNativeHostPolicy(policy,now))DENY("SCHEMA_INVALID");
+ // Both the policy and nested target/profile/bridge pins are immutable.
+ // A caller must never be able to edit approved commitments after review.
+ Object.freeze(policy.resources);
  return Object.freeze(policy);
 }
 async function ownedDir(p,uid,create=false,ownerPrivate=false){
@@ -56,8 +59,9 @@ export async function persistOwnerPolicy(policy,{
  // This exported function must not be weaker than the interactive builder.
  // Re-validate owner-reviewed pin shape and anti-placeholder checks for
  // direct programmatic callers before touching ANY filesystem path.
+ let reviewed;
  try{
-   buildReviewedOwnerPolicy({
+   reviewed=buildReviewedOwnerPolicy({
      allowed_origin:policy.allowed_origin,worker_id:policy.worker_id,
      public_key_sha256:policy.public_key_sha256,
      profile_binding_sha256:policy.profile_binding_sha256,
@@ -66,6 +70,11 @@ export async function persistOwnerPolicy(policy,{
      bridge_identity_sha256:policy.resources.bridge_identity_sha256,
    },{now,ttlMs:policy.expires_at_ms-now});
  }catch{DENY("PINS_UNTRUSTED");}
+ // Seal the exact validated bytes before the first filesystem await.
+ // Caller-owned policy objects, including nested resources, may be mutated
+ // while directories are inspected: never serialize the mutable original.
+ const bytes=Buffer.from(JSON.stringify(reviewed)+"\n","utf8");
+ if(bytes.length>4096)DENY("OVERSIZE");
  let physical;
  try{physical=await realpath(home);}catch{DENY("HOME_UNTRUSTED");}
  if(physical!==home)DENY("HOME_UNTRUSTED");
@@ -79,8 +88,6 @@ export async function persistOwnerPolicy(policy,{
  for(const p of [config,app,dir])
    await ownedDir(p,uid,true,p===dir);
  const destination=join(dir,"owner-policy.json");
- const bytes=Buffer.from(JSON.stringify(policy)+"\n","utf8");
- if(bytes.length>4096)DENY("OVERSIZE");
  if(!constants.O_NOFOLLOW)DENY("OS_UNSUPPORTED");
  const temporary=join(dir,".policy-"+randomBytes(16).toString("hex")+".tmp");
  let fd, linked=false;

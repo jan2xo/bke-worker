@@ -82,6 +82,28 @@ test("pre-existing group-accessible policy parent is rejected before file creati
  assert.equal((await stat(dir)).mode&0o077,0);
  assert.equal((await stat(join(dir,"owner-policy.json"))).nlink,1);
 });
+test("owner-reviewed pins are deep frozen and async persistence ignores later caller mutations",async t=>{
+ const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-pin-snapshot-")));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const original=buildReviewedOwnerPolicy(values());
+ assert.equal(Object.isFrozen(original),true);
+ assert.equal(Object.isFrozen(original.resources),true);
+ assert.throws(()=>{original.resources.chatgpt_target_sha256=h("unreviewed");},TypeError);
+ // Simulate an embedding program supplying a mutable policy object. The
+ // synchronous validation happens before the first awaited realpath/mkdir.
+ const mutable=structuredClone(original);
+ const writing=persistOwnerPolicy(mutable,{home});
+ mutable.resources.chatgpt_target_sha256=h("substituted after validation");
+ mutable.resources.browser_profile_sha256=h("other browser");
+ mutable.worker_id="another-worker";
+ const result=await writing;
+ assert.equal(result.state,"OWNER_POLICY_WRITTEN_LOCAL_ONLY");
+ const saved=JSON.parse(await readFile(join(home,".config/bke-worker/native-host/owner-policy.json"),"utf8"));
+ assert.deepEqual(saved,original);
+ assert.equal(validNativeHostPolicy(saved),true);
+ assert.notEqual(saved.resources.chatgpt_target_sha256,mutable.resources.chatgpt_target_sha256);
+ assert.notEqual(saved.worker_id,mutable.worker_id);
+});
 test("programmatic writer cannot bypass anti-placeholder and duplicate pin checks",async t=>{
  const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-writer-")));
  t.after(()=>rm(home,{recursive:true,force:true}));
