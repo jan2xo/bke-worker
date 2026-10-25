@@ -98,6 +98,13 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
       // These are LOCAL, conservative isolation reservations, not Github leases.
       // All locks survive a disconnect/crash/clock expiry until owner recovery.
       await reserveFences(fenceDir,scope,principal.controller_id,challengeNonce);
+      // Fsync may complete after the signature's short expiry. Refuse a stale
+      // successful receipt but RETAIN all fences as uncertain owner recovery;
+      // never roll back or automatically reassign an in-flight reservation.
+      let completedAt;try{completedAt=clock();}catch{BLOCK('CLOCK_INVALID');}
+      if(!Number.isSafeInteger(completedAt)||completedAt<at||
+         completedAt>=challenge.expires_at_ms)
+        BLOCK('EXPIRED_OR_CLOCK_REWOUND');
       return Object.freeze({state:'CONTROLLER_AUTH_READ_ONLY',
         worker_id:scope.worker_id,controller_id:principal.controller_id,
         principal_authentication:'ED25519_SIGNATURE_VERIFIED',

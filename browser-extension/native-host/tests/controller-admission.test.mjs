@@ -79,6 +79,25 @@ test('clock expiry, rollback, and missing clock fail closed',async()=>privateDir
  await assert.rejects(j.accept(f.respond(j.challenge),{fenceDir:dir}),/EXPIRED_OR_CLOCK_REWOUND/);
  assert.deepEqual(await readdir(dir),[]);
 }));
+test('expiry or clock failure during durable fencing never reports admission, locks remain',async()=>privateDir(async dir=>{
+ const f=setup();
+ for(const mode of ['expired','rewound','invalid']){
+  const inner=join(dir,mode);await mkdir(inner,{mode:0o700});
+  let calls=0;
+  const g=createControllerChallenge({...f.params,clock:()=>{
+   calls++;
+   if(calls<=2)return T;
+   if(mode==='expired')return T+3000;
+   if(mode==='rewound')return T-1;
+   throw Error('clock unavailable');
+  }});
+  await assert.rejects(g.accept(f.respond(g.challenge),{fenceDir:inner}),
+   /EXPIRED_OR_CLOCK_REWOUND|CLOCK_INVALID/);
+  assert.equal((await readdir(inner)).length,4);
+  await assert.rejects(g.accept(f.respond(g.challenge),{fenceDir:inner}),
+   /REPLAY_OR_UNCERTAIN/);
+ }
+}));
 test('unreviewed principal, malformed scope, weak nonces rejected',()=>{
  const f=setup();
  for(const patch of [
