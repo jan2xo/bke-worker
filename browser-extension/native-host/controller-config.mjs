@@ -57,6 +57,29 @@ export function validateReviewedControllerConfig(value,policy,now=Date.now()){
   socketPath:value.socket_path,fenceDir:value.fence_dir,
  });
 }
+// A pre-read fstat bound is not a read bound. Another process under the
+// owner UID may grow a file after inspection. Read no more than 4097 bytes,
+// reject growth, truncation and size drift, and never allocate from file size.
+export async function readBoundedOwnerBytes(fd,expectedSize){
+ if(!Number.isSafeInteger(expectedSize)||expectedSize<8||expectedSize>4096)
+   throw Error('NATIVE_OWNER_FILE_SIZE_DENIED');
+ const buffer=Buffer.alloc(4097);
+ let length=0;
+ while(length<buffer.length){
+   const {bytesRead}=await fd.read(buffer,length,buffer.length-length,length);
+   if(!Number.isSafeInteger(bytesRead)||bytesRead<0||
+      bytesRead>buffer.length-length)throw Error('NATIVE_OWNER_FILE_READ_INVALID');
+   if(bytesRead===0)break;
+   length+=bytesRead;
+ }
+ if(length!==expectedSize||length>4096)
+   throw Error('NATIVE_OWNER_FILE_SIZE_DENIED');
+ const final=await fd.stat();
+ if(!final.isFile()||final.size!==expectedSize)
+   throw Error('NATIVE_OWNER_FILE_CHANGED');
+ return buffer.subarray(0,length);
+}
+
 export async function readPinnedControllerConfig({path,expectedSha256,policy,now=Date.now()}={}){
  if(!pathSafe(path)||typeof expectedSha256!=='string'||!HASH.test(expectedSha256)||
     typeof process.getuid!=='function'||!constants.O_NOFOLLOW)
@@ -76,7 +99,7 @@ export async function readPinnedControllerConfig({path,expectedSha256,policy,now
   if(!stat.isFile()||stat.uid!==process.getuid()||(stat.mode&0o077)!==0||
      stat.size<8||stat.size>4096||stat.nlink!==1)
     throw Error('bad file');
-  const bytes=await fd.readFile();
+  const bytes=await readBoundedOwnerBytes(fd,stat.size);
   if(createHash('sha256').update(bytes).digest('hex')!==expectedSha256)
     throw Error('changed file');
   let data;try{data=JSON.parse(bytes.toString('utf8'));}

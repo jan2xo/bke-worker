@@ -4,7 +4,7 @@ import {generateKeyPairSync,createHash} from 'node:crypto';
 import {mkdtemp,writeFile,chmod,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {validateReviewedControllerConfig,readPinnedControllerConfig,controllerConfigDigest,ownerGlobalFenceDir} from '../controller-config.mjs';
+import {validateReviewedControllerConfig,readPinnedControllerConfig,readBoundedOwnerBytes,controllerConfigDigest,ownerGlobalFenceDir} from '../controller-config.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex');
 const T=1_800_000_000_000;
 const origin='chrome-extension://'+'a'.repeat(32)+'/';
@@ -74,6 +74,33 @@ test('invalid parent, symlink, malicious JSON, and overlarge file refuse',()=>wi
  await writeFile(file,'X'.repeat(4100));
  await assert.rejects(readPinnedControllerConfig({path:file,expectedSha256:controllerConfigDigest(Buffer.from('X'.repeat(4100))),policy,now:T}),/INTEGRITY_DENIED/);
 }));
+
+test('bounded owner-file read rejects an append racing with initial fstat without allocating from new size',async()=>{
+ const payload=Buffer.from('X'.repeat(4097));
+ const fd={
+  async read(buffer,offset,length,position){
+   const bytes=payload.subarray(position,position+length);
+   bytes.copy(buffer,offset);
+   return {bytesRead:bytes.length,buffer};
+  },
+  async stat(){return {isFile:()=>true,size:payload.length};},
+ };
+ await assert.rejects(readBoundedOwnerBytes(fd,8),/NATIVE_OWNER_FILE_SIZE_DENIED/);
+});
+test('bounded owner-file read supports partial reads but denies post-read size drift',async()=>{
+ const payload=Buffer.from('{"ok":1}');
+ const make=finalSize=>({
+  async read(buffer,offset,length,position){
+   if(position>=payload.length)return {bytesRead:0,buffer};
+   const bytes=payload.subarray(position,Math.min(position+3,position+length));
+   bytes.copy(buffer,offset);
+   return {bytesRead:bytes.length,buffer};
+  },
+  async stat(){return {isFile:()=>true,size:finalSize};}
+ });
+ assert.equal((await readBoundedOwnerBytes(make(payload.length),payload.length)).toString(),payload.toString());
+ await assert.rejects(readBoundedOwnerBytes(make(payload.length+1),payload.length),/NATIVE_OWNER_FILE_CHANGED/);
+});
 
 test('different worker configs cannot split shared local exclusion into distinct fence roots',()=>{
  const first=f(),second=f();

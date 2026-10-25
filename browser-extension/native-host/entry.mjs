@@ -4,7 +4,7 @@
 // authorization and server-side host attestation are separate acceptance.
 import { open,lstat,realpath,constants } from "node:fs/promises";
 import { isAbsolute, resolve,join,dirname } from "node:path";
-import {readPinnedControllerConfig} from "./controller-config.mjs";
+import {readPinnedControllerConfig,readBoundedOwnerBytes} from "./controller-config.mjs";
 import { fileURLToPath } from "node:url";
 import { runNativeProofHost } from "./host.mjs";
 
@@ -32,8 +32,8 @@ async function readOwnerPinnedPolicy(path) {
       (info.mode&0o077)!==0||info.nlink!==1||
       info.uid!==process.getuid())
       throw Error("NATIVE_POLICY_OWNER_INVALID");
-    const raw=await handle.readFile({encoding:"utf8"});
-    return JSON.parse(raw);
+    const raw=await readBoundedOwnerBytes(handle,info.size);
+    return JSON.parse(raw.toString("utf8"));
   }finally{await handle.close();}
 }
 
