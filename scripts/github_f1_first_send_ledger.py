@@ -77,6 +77,7 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
     if len(attempts) > seq:
         _deny("F1_LEDGER_INVALID")
     seen_ids, latest_by_claim, seen_send_ids, prior_conversation_ids = set(), {}, set(), set()
+    seen_fence_ids, seen_execution_ids = set(), set()
     # Resource commitments must not be claimed by distinct worker/PR owners.
     # This only compares supplied fingerprints; real target/profile attestation
     # is separately required before any authorization or live browser action.
@@ -100,6 +101,13 @@ def validated_ledger(raw: Any) -> dict[str, Any]:
             _deny("F1_ATTEMPT_ROW_INVALID")
         if item["attempt_id"] in seen_ids:
             _deny("F1_ATTEMPT_REPLAY")
+        # A confirmed earlier attempt cannot lend its one-shot fence or
+        # execution identity to a later (possibly different-worker) attempt.
+        if (item["fence_id"] in seen_fence_ids or
+                item["execution_id"] in seen_execution_ids):
+            _deny("F1_ATTEMPT_IDENTITY_REPLAY")
+        seen_fence_ids.add(item["fence_id"])
+        seen_execution_ids.add(item["execution_id"])
         for field in ("target_sha256", "profile_sha256"):
             resource = (field, item[field])
             prior_owner = resource_owners.get(resource)

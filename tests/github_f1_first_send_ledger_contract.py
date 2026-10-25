@@ -128,6 +128,40 @@ class FirstSendLedgerTests(unittest.TestCase):
         self.assertEqual(validate_ledger_successor(
             first, allowed, expected_parent_sha=FENCE_HEAD), allowed)
 
+    def test_confirmed_attempt_fence_and_execution_ids_cannot_be_reused(self):
+        _, _, consumed_claim = consumed()
+        confirmed = confirm_new_conversation(
+            consumed_claim, attempt_id="attempt-f1-01",
+            conversation_id="conversation-first-123", confirmed_at=TIME)
+        existing = confirmed["attempts"][0]
+        args = dict(
+            attempt_id="attempt-f1-02",
+            worker_claim_id=existing["worker_claim_id"],
+            target_sha256=existing["target_sha256"],
+            profile_sha256=existing["profile_sha256"],
+            tab_id=18,
+            execution_id="execution-fresh-2345",
+            fence_id="fence-fresh-234567",
+        )
+        # Reusing either original identity after full confirmation was
+        # previously accepted, undermining cross-attempt replay isolation.
+        for key in ("fence_id", "execution_id"):
+            reused = dict(args, **{key: existing[key]})
+            self.denied("F1_ATTEMPT_IDENTITY_REPLAY",
+                        lambda reused=reused: append_first_send_fence(
+                            confirmed, **reused))
+        valid = append_first_send_fence(confirmed, **args)
+        self.assertEqual(len(valid["attempts"]), 2)
+        self.assertEqual(validate_ledger_successor(
+            confirmed, valid, expected_parent_sha=FENCE_HEAD), valid)
+        # Validator, not merely the proposal helper, must deny a history
+        # graft with a duplicated one-shot identifier.
+        for key in ("fence_id", "execution_id"):
+            graft = deepcopy(valid)
+            graft["attempts"][1][key] = existing[key]
+            self.denied("F1_ATTEMPT_IDENTITY_REPLAY",
+                        lambda graft=graft: validated_ledger(graft))
+
     def test_fence_requires_existing_reserved_worker_claim(self):
         ledger, claim = base()
         self.denied("F1_ATTEMPT_WORKER_CLAIM_INVALID", lambda:
