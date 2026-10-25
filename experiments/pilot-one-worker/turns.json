@@ -1,0 +1,6 @@
+{
+  "pilot": "personal-single-worker-two-turns",
+  "purpose": "Demonstrate one GitHub-labelled PR receiving two separate autonomous ChatGPT commits",
+  "completed_turns": 0,
+  "turns": []
+}
