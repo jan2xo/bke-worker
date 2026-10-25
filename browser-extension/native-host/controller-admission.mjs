@@ -78,7 +78,7 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
   const challenge=Object.freeze({type:'CONTROLLER_CHALLENGE',version:1,
     ...boundScope,client_nonce:clientNonce,server_nonce:serverNonce,
     challenge_nonce:challengeNonce,issued_at_ms:issued,expires_at_ms:issued+ttlMs});
-  let consumed=false;
+  let consumed=false,closed=false;
   return Object.freeze({challenge,
     async accept(frame,{fenceDir}={}){
       if(consumed)BLOCK('REPLAY_OR_UNCERTAIN');
@@ -105,6 +105,10 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
       // These are LOCAL, conservative isolation reservations, not Github leases.
       // All locks survive a disconnect/crash/clock expiry until owner recovery.
       await reserveFences(fenceDir,boundScope,controllerId,challengeNonce);
+      // The transport may time out and close the challenge WHILE durable
+      // fences are being created. Preserve those locks as uncertain, but
+      // never resolve an in-flight closed session as authenticated.
+      if(closed)BLOCK('SESSION_CLOSED_UNCERTAIN');
       // Fsync may complete after the signature's short expiry. Refuse a stale
       // successful receipt but RETAIN all fences as uncertain owner recovery;
       // never roll back or automatically reassign an in-flight reservation.
@@ -119,7 +123,7 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
         github_assignment:'NOT_VERIFIED',chatgpt_target_attestation:'NOT_PROVEN',
         dispatch_authority:'NONE',message_send_authority:'NONE'});
     },
-    close(){consumed=true;},
+    close(){closed=true;consumed=true;},
   });
 }
 

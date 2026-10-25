@@ -79,6 +79,20 @@ test('clock expiry, rollback, and missing clock fail closed',async()=>privateDir
  await assert.rejects(j.accept(f.respond(j.challenge),{fenceDir:dir}),/EXPIRED_OR_CLOCK_REWOUND/);
  assert.deepEqual(await readdir(dir),[]);
 }));
+test('transport cancellation during asynchronous controller fencing denies positive receipt and retains locks',async()=>privateDir(async dir=>{
+ const f=setup(),g=f.gate();
+ const pending=g.accept(f.respond(g.challenge),{fenceDir:dir});
+ // accept() has validated the signature and entered awaited fence I/O.
+ // This simulates a transport deadline/connection close on that same tick.
+ g.close();
+ await assert.rejects(pending,/CONTROLLER_SESSION_CLOSED_UNCERTAIN/);
+ assert.equal((await readdir(dir)).length,4);
+ for(const name of await readdir(dir)){
+  const record=JSON.parse(await readFile(join(dir,name),'utf8'));
+  assert.equal(record.state,'RESERVED_UNCERTAIN_NO_AUTOMATIC_RELEASE');
+ }
+ await assert.rejects(g.accept(f.respond(g.challenge),{fenceDir:dir}),/REPLAY_OR_UNCERTAIN/);
+}));
 test('expiry or clock failure during durable fencing never reports admission, locks remain',async()=>privateDir(async dir=>{
  const f=setup();
  for(const mode of ['expired','rewound','invalid']){
