@@ -110,3 +110,13 @@ test('native framed backpressure rejects close, finish and error; drain cleans l
  const closed=make();closed.destroyed=true;
  await assert.rejects(writeFrame(closed,{type:'HELLO'}),/NATIVE_FRAME_CHANNEL_CLOSED/);
 });
+
+test('silent writable backpressure times out and late drain cannot revive an uncertain message',async()=>{
+ const stream=new EventEmitter();stream.destroyed=false;stream.writableEnded=false;
+ stream.write=()=>false;
+ await assert.rejects(writeFrame(stream,{type:'CHALLENGE'},35),/NATIVE_FRAME_BACKPRESSURE_TIMEOUT/);
+ for(const event of ['drain','error','close','finish'])
+  assert.equal(stream.listenerCount(event),0);
+ stream.emit('drain');
+ await assert.rejects(writeFrame(stream,{type:'CHALLENGE'},0),/NATIVE_FRAME_TIMEOUT_INVALID/);
+});

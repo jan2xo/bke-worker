@@ -52,16 +52,20 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
     close() { closed=true; },
   });
 }
-export async function writeFrame(stream,value) {
+export async function writeFrame(stream,value,timeoutMs=15_000) {
+  if (!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>15_000)
+    throw Error("NATIVE_FRAME_TIMEOUT_INVALID");
   const frame=encodeFrame(value,MAX_RESPONSE_BYTES);
   if (!stream.write(frame)) {
     // Backpressure can end in close/finish without drain or error.
     // Reject rather than leaving a controller/native-host write unresolved.
     await new Promise((resolve,reject)=>{
       let settled=false;
+      let timer;
       const finish=(error)=>{
         if(settled)return;
         settled=true;
+        clearTimeout(timer);
         stream.off("drain",onDrain);
         stream.off("error",onError);
         stream.off("close",onClose);
@@ -76,6 +80,9 @@ export async function writeFrame(stream,value) {
       stream.once("error",onError);
       stream.once("close",onClose);
       stream.once("finish",onFinish);
+      // Close/error is not guaranteed: a silent but open pipe can stall.
+      // Settling this promise removes all listeners and denies the handshake.
+      timer=setTimeout(()=>finish(Error("NATIVE_FRAME_BACKPRESSURE_TIMEOUT")),timeoutMs);
       if(stream.destroyed)onClose();
       else if(stream.writableEnded)onFinish();
     });

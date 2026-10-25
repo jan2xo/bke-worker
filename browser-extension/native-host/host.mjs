@@ -134,7 +134,7 @@ export async function runNativeProofHost({
       client_nonce:hello.client_nonce,expires_at_ms,
       profile_binding_sha256:policy.profile_binding_sha256,
     };
-    await writeFrame(output,issued);
+    await writeFrame(output,issued,timeoutMs);
     const proof=await bounded();
     if(!matchesProof(proof,issued,hello,policy,claimedOrigin,now(),moment))
       throw Error("NATIVE_PROOF_DENIED");
@@ -145,7 +145,7 @@ export async function runNativeProofHost({
       public_key_sha256:policy.public_key_sha256,
       admission_authority:"NONE",dispatch_authority:"NONE",
     };
-    await writeFrame(output,receipt);
+    await writeFrame(output,receipt,timeoutMs);
     if(hello.read_only_probe===true){
       // Not a controller admission: only a one-shot echo on an already
       // P-256-verified native channel, with zero dispatch privileges.
@@ -154,7 +154,7 @@ export async function runNativeProofHost({
         serverNonce:issued.server_nonce,clock:now,ttlMs:Math.min(5000,timeoutMs),
       });
       try{
-        await writeFrame(output,gate.proposal);
+        await writeFrame(output,gate.proposal,timeoutMs);
         const response=gate.accept(await bounded());
         if(response.state!=="LOCAL_READ_ONLY_PONG")
           throw Error("NATIVE_READ_ONLY_ENVELOPE_DENIED");
@@ -165,7 +165,7 @@ export async function runNativeProofHost({
           message_send_authority:"NONE",
           controller_authentication:"NOT_ESTABLISHED",
           external_controller_transport:"NOT_CONNECTED",
-        });
+        },timeoutMs);
       }finally{gate.close();}
       if(hello.controller_probe===true){
           // The actual Chrome entry never passes controllerOptions.
@@ -198,7 +198,7 @@ export async function runNativeProofHost({
             chatgpt_target_attestation:"NOT_PROVEN",
             scope_fencing:"LOCAL_PERSISTENT_OWNER_RECOVERY_REQUIRED",
             dispatch_authority:"NONE",message_send_authority:"NONE",
-          });
+          },timeoutMs);
           return "CONTROLLER_AUTH_READ_ONLY";
         }
         return "LOCAL_READ_ONLY_PONG";

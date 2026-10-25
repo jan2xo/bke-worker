@@ -264,6 +264,21 @@ test("signed local P-256 proof refuses challenge/proof clock rollback and invali
   await assert.rejects(q.handle,/NATIVE_CLOCK_DENIED/);
   q.input.destroy();
 });
+test("native proof does not hang when output remains open but never drains",async()=>{
+ const f=fixture(),input=new PassThrough();
+ const {EventEmitter}=await import("node:events");
+ const output=new EventEmitter();
+ output.destroyed=false;output.writableEnded=false;output.write=()=>false;
+ const work=runNativeProofHost({
+   input,output,claimedOrigin:ORIGIN,policy:f.policy,
+   now:()=>T,nonce:()=>H("6"),timeoutMs:45,
+ });
+ input.write(encodeFrame(f.hello));
+ await assert.rejects(work,/NATIVE_FRAME_BACKPRESSURE_TIMEOUT/);
+ for(const name of ["drain","close","finish","error"])
+   assert.equal(output.listenerCount(name),0);
+ input.destroy();
+});
 test("native executable performs real child-process Chrome wire framing with owner policy",async()=>{
   const f=fixture();
   // This does not install any Chrome native host manifest or browser permissions.
