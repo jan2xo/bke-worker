@@ -72,6 +72,12 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
         if (decoded===null||typeof decoded!=="object"||Array.isArray(decoded))
           throw Error("NATIVE_FRAME_INVALID_OBJECT");
         return decoded;
+      }catch(error){
+        // A malformed or truncated message poisons this authenticated
+        // channel. Never let a later valid frame revive the same reader.
+        // Preserve the causal first error while denying every later read.
+        cancel();
+        throw error;
       }finally{reading=false;}
     },
     close() {cancel();},

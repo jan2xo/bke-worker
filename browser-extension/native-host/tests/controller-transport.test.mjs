@@ -86,6 +86,27 @@ test('native frame buffer bounds reject giant untrusted chunks before copying an
  assert.deepEqual(await bounded.next(),{type:'SECOND'});
  bounded.close();
 });
+test('invalid native frame permanently closes its reader; later valid authentication cannot revive it',async()=>{
+ const valid=encodeFrame({type:'LOCAL_PROOF_OK'});
+ const badJson=Buffer.from('{"broken":', 'utf8');
+ const badJsonFrame=Buffer.alloc(badJson.length+4);
+ badJsonFrame.writeUInt32LE(badJson.length,0);
+ badJson.copy(badJsonFrame,4);
+ const nullFrame=encodeFrame(null);
+ const zeroHeader=Buffer.alloc(4);
+ for(const [invalid,reason] of [
+  [badJsonFrame,/NATIVE_FRAME_INVALID_JSON/],
+  [nullFrame,/NATIVE_FRAME_INVALID_OBJECT/],
+  [zeroHeader,/NATIVE_FRAME_OVERSIZE/],
+ ]){
+  const pipe=Readable.from([Buffer.concat([invalid,valid])]);
+  const reader=nativeFrameReader(pipe);
+  await assert.rejects(reader.next(),reason);
+  assert.equal(pipe.destroyed,true);
+  await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
+  reader.close();
+ }
+});
 test('native framed backpressure rejects close, finish and error; drain cleans listeners',async()=>{
  const make=()=>{
   const stream=new EventEmitter();
