@@ -108,7 +108,7 @@ test("owner policy file witness refuses extra hardlinks, public mode and changed
  const home=await realpath(await mkdtemp(join(tmpdir(),"bke-f1-link-witness-")));
  t.after(()=>rm(home,{recursive:true,force:true}));
  const file=join(home,"owner-policy.json"),extra=join(home,"other-link.json");
- const bytes=Buffer.from(JSON.stringify(buildReviewedOwnerPolicy(values()))+"\\n","utf8");
+ const bytes=Buffer.from(JSON.stringify(buildReviewedOwnerPolicy(values()))+"\n","utf8");
  await writeFile(file,bytes,{mode:0o600});
  assert.equal(await verifyOwnerPolicyFile(file,bytes),true);
  await link(file,extra);
