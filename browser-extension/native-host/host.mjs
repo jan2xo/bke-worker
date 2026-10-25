@@ -107,6 +107,12 @@ export async function runNativeProofHost({
     claimedOrigin!==policy.allowed_origin ||
     !Number.isSafeInteger(timeoutMs)||timeoutMs<100||timeoutMs>15_000)
     throw Error("NATIVE_POLICY_DENIED");
+  // The launcher owns the authoritative policy. Once checked, bind the
+  // entire handshake to ONE immutable snapshot, not a mutable caller object
+  // that could be changed during async reads and writes.
+  const sessionPolicy=Object.freeze({
+    ...policy,resources:Object.freeze({...policy.resources}),
+  });
   const reader=nativeFrameReader(input);
   let timer=null;
   const bounded=async()=>{
@@ -120,29 +126,29 @@ export async function runNativeProofHost({
   };
   try {
     const hello=await bounded();
-    if(!matchesHello(hello,policy))throw Error("NATIVE_HELLO_DENIED");
+    if(!matchesHello(hello,sessionPolicy))throw Error("NATIVE_HELLO_DENIED");
     const server_nonce=nonce();
     if(!isHash(server_nonce)||server_nonce===hello.client_nonce)
       throw Error("NATIVE_NONCE_DENIED");
     const moment=now();
     if(!Number.isSafeInteger(moment)||moment<started||
-      moment>=policy.expires_at_ms)
+      moment>=sessionPolicy.expires_at_ms)
       throw Error("NATIVE_CLOCK_DENIED");
-    const expires_at_ms=Math.min(moment+timeoutMs,policy.expires_at_ms);
+    const expires_at_ms=Math.min(moment+timeoutMs,sessionPolicy.expires_at_ms);
     const issued={
       type:"CHALLENGE",version:1,server_nonce,
       client_nonce:hello.client_nonce,expires_at_ms,
-      profile_binding_sha256:policy.profile_binding_sha256,
+      profile_binding_sha256:sessionPolicy.profile_binding_sha256,
     };
     await writeFrame(output,issued,timeoutMs);
     const proof=await bounded();
-    if(!matchesProof(proof,issued,hello,policy,claimedOrigin,now(),moment))
+    if(!matchesProof(proof,issued,hello,sessionPolicy,claimedOrigin,now(),moment))
       throw Error("NATIVE_PROOF_DENIED");
     // Proof of local key possession ONLY; never a bearer token, enrollment
     // grant, authenticated Command Center session, or dispatch authority.
     const receipt={
-      type:"LOCAL_PROOF_OK",version:1,worker_id:policy.worker_id,
-      public_key_sha256:policy.public_key_sha256,
+      type:"LOCAL_PROOF_OK",version:1,worker_id:sessionPolicy.worker_id,
+      public_key_sha256:sessionPolicy.public_key_sha256,
       admission_authority:"NONE",dispatch_authority:"NONE",
     };
     await writeFrame(output,receipt,timeoutMs);
@@ -150,7 +156,7 @@ export async function runNativeProofHost({
       // Not a controller admission: only a one-shot echo on an already
       // P-256-verified native channel, with zero dispatch privileges.
       const gate=createLocalReadOnlyEnvelopeGate({
-        policy,localReceipt:receipt,clientNonce:hello.client_nonce,
+        sessionPolicy,localReceipt:receipt,clientNonce:hello.client_nonce,
         serverNonce:issued.server_nonce,clock:now,ttlMs:Math.min(5000,timeoutMs),
       });
       try{
@@ -160,7 +166,7 @@ export async function runNativeProofHost({
           throw Error("NATIVE_READ_ONLY_ENVELOPE_DENIED");
         await writeFrame(output,{
           type:"LOCAL_READ_ONLY_PONG",version:1,
-          worker_id:policy.worker_id,
+          worker_id:sessionPolicy.worker_id,
           admission_authority:"NONE",dispatch_authority:"NONE",
           message_send_authority:"NONE",
           controller_authentication:"NOT_ESTABLISHED",
@@ -181,18 +187,18 @@ export async function runNativeProofHost({
             fenceDir:controllerOptions.fenceDir,
             clock:now,clientNonce:hello.client_nonce,serverNonce:issued.server_nonce,
             scope:{
-              worker_id:policy.worker_id,allowed_origin:claimedOrigin,
-              profile_binding_sha256:policy.profile_binding_sha256,
-              browser_profile_sha256:policy.resources.browser_profile_sha256,
-              chatgpt_target_sha256:policy.resources.chatgpt_target_sha256,
-              bridge_identity_sha256:policy.resources.bridge_identity_sha256,
+              worker_id:sessionPolicy.worker_id,allowed_origin:claimedOrigin,
+              profile_binding_sha256:sessionPolicy.profile_binding_sha256,
+              browser_profile_sha256:sessionPolicy.resources.browser_profile_sha256,
+              chatgpt_target_sha256:sessionPolicy.resources.chatgpt_target_sha256,
+              bridge_identity_sha256:sessionPolicy.resources.bridge_identity_sha256,
             },
           });
           if(admission.state!=="CONTROLLER_AUTH_READ_ONLY")
             throw Error("NATIVE_CONTROLLER_DENIED");
           await writeFrame(output,{
             type:"CONTROLLER_AUTH_READ_ONLY_ACK",version:1,
-            worker_id:policy.worker_id,controller_id:admission.controller_id,
+            worker_id:sessionPolicy.worker_id,controller_id:admission.controller_id,
             principal_authentication:"ED25519_SIGNATURE_VERIFIED",
             github_assignment:"NOT_VERIFIED",
             chatgpt_target_attestation:"NOT_PROVEN",

@@ -91,6 +91,32 @@ test("genuine P-256 proof yields only a local possession receipt, not device enr
   });
   assert.doesNotMatch(JSON.stringify(ok),/token|signature|installation|paired|access/i);
 });
+test("approved native policy snapshot cannot be retargeted during an asynchronous HELLO",async()=>{
+  const f=fixture(),original=structuredClone(f.policy);
+  const session=await launch(f);
+  // The host validated original pins on entry. Mutating the caller-owned
+  // policy during its awaited input must not authorize a different target.
+  const different=H("e");
+  f.policy.resources.chatgpt_target_sha256=different;
+  session.send({...f.hello,resources:{
+    ...f.hello.resources,chatgpt_target_sha256:different,
+  }});
+  await assert.rejects(session.handle,/NATIVE_HELLO_DENIED/);
+  session.input.destroy();
+
+  // The original signed identity must continue to work despite a later
+  // mutation of the object supplied by an embedding caller.
+  const g=fixture(),approved=structuredClone(g.policy),s=await launch(g);
+  g.policy.worker_id="substituted-worker";
+  g.policy.resources.chatgpt_target_sha256=H("f");
+  s.send(g.hello);
+  const challenge=await s.response.next();
+  const proof=replyProof({...g,policy:approved},challenge);
+  s.send(proof);
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  assert.equal(await s.handle,"LOCAL_PROOF_OK");
+});
+
 test("one-shot post-signature native envelope echoes only scoped read-only proof",async()=>{
   const f=fixture(),s=await launch(f);
   s.send({...f.hello,read_only_probe:true});
