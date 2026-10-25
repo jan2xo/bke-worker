@@ -21,7 +21,15 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
   // The stream is untrusted. Refuse an oversized chunk BEFORE Buffer.concat,
   // not after allocating/copying a potentially unbounded incoming payload.
   const appendBounded = async () => {
-    const item = await iterator.next();
+    let item;
+    try { item = await iterator.next(); }
+    catch (error) {
+      if (closed) throw Error("NATIVE_CHANNEL_CLOSED");
+      throw error;
+    }
+    // close() can race a next() already waiting on untrusted input. No late
+    // bytes may complete an expired, disconnected or uncertain host session.
+    if (closed) throw Error("NATIVE_CHANNEL_CLOSED");
     if (item.done) throw Error("NATIVE_FRAME_TRUNCATED");
     const chunk = item.value;
     if (!Buffer.isBuffer(chunk) && !(chunk instanceof Uint8Array))
@@ -49,7 +57,16 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
         throw Error("NATIVE_FRAME_INVALID_OBJECT");
       return decoded;
     },
-    close() { closed=true; },
+    close() {
+      if (closed) return;
+      closed=true;
+      // A boolean alone strands a pending iterator.next() and may let its
+      // eventual late frame complete. Node Readable.destroy() cancels pending
+      // async iteration; non-destroyable test sources still check closed
+      // immediately after their pending next() returns.
+      if (typeof stream.destroy==="function" && !stream.destroyed)
+        stream.destroy();
+    },
   });
 }
 export async function writeFrame(stream,value,timeoutMs=15_000) {

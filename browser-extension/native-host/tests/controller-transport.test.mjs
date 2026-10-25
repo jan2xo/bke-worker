@@ -6,7 +6,7 @@ import {mkdtemp,rm,mkdir,chmod,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {once, EventEmitter} from 'node:events';
-import {Readable} from 'node:stream';
+import {Readable,PassThrough} from 'node:stream';
 import {authenticatedReadOnlyControllerTransport} from '../controller-transport.mjs';
 import {controllerSignedPayload} from '../controller-admission.mjs';
 import {nativeFrameReader,writeFrame,encodeFrame,MAX_FRAME_BYTES} from '../framing.mjs';
@@ -119,4 +119,26 @@ test('silent writable backpressure times out and late drain cannot revive an unc
   assert.equal(stream.listenerCount(event),0);
  stream.emit('drain');
  await assert.rejects(writeFrame(stream,{type:'CHALLENGE'},0),/NATIVE_FRAME_TIMEOUT_INVALID/);
+});
+
+test('closing a native frame reader cancels a pending real Node stream read',async()=>{
+ const pipe=new PassThrough(),reader=nativeFrameReader(pipe);
+ const waiting=reader.next();
+ reader.close();
+ await assert.rejects(waiting,/NATIVE_CHANNEL_CLOSED/);
+ assert.equal(pipe.destroyed,true);
+ await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
+ reader.close(); // Safe repeat after cancellation.
+});
+test('a late complete frame from a noncancelable source is denied after reader closure',async()=>{
+ let supply;
+ const source={
+  [Symbol.asyncIterator](){return {next(){return new Promise(resolve=>{supply=resolve;});}};}
+ };
+ const reader=nativeFrameReader(source);
+ const waiting=reader.next();
+ reader.close();
+ supply({done:false,value:encodeFrame({type:'LATE_PROOF'})});
+ await assert.rejects(waiting,/NATIVE_CHANNEL_CLOSED/);
+ await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
 });
