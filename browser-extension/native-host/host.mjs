@@ -113,6 +113,19 @@ export async function runNativeProofHost({
   const sessionPolicy=Object.freeze({
     ...policy,resources:Object.freeze({...policy.resources}),
   });
+  // A local read-only echo is NOT controller admission. Never extend the
+  // owner-pinned policy's lifetime just because the P-256 proof succeeded:
+  // external controller work can begin or finish after the policy expires.
+  let lastPolicyClock=started;
+  const requireCurrentOwnerPolicy=()=>{
+    let at;
+    try{at=now();}
+    catch{throw Error("NATIVE_OWNER_POLICY_CLOCK_DENIED");}
+    if(!Number.isSafeInteger(at)||at<lastPolicyClock||
+       at>=sessionPolicy.expires_at_ms)
+      throw Error("NATIVE_OWNER_POLICY_EXPIRED_OR_CLOCK_REWOUND");
+    lastPolicyClock=at;
+  };
   const reader=nativeFrameReader(input);
   let timer=null;
   const bounded=async()=>{
@@ -174,6 +187,9 @@ export async function runNativeProofHost({
         },timeoutMs);
       }finally{gate.close();}
       if(hello.controller_probe===true){
+          // The local echo may have completed at the last valid instant.
+          // Do not start an external controller handshake after policy expiry.
+          requireCurrentOwnerPolicy();
           // The actual Chrome entry never passes controllerOptions.
           // Browser messages cannot choose a controller key or socket.
           if(!controllerOptions||typeof controllerOptions!=="object"||
@@ -196,6 +212,9 @@ export async function runNativeProofHost({
           });
           if(admission.state!=="CONTROLLER_AUTH_READ_ONLY")
             throw Error("NATIVE_CONTROLLER_DENIED");
+          // A durable fence may finish after expiry. Preserve uncertainty
+          // but refuse a now-expired positive controller ACK.
+          requireCurrentOwnerPolicy();
           await writeFrame(output,{
             type:"CONTROLLER_AUTH_READ_ONLY_ACK",version:1,
             worker_id:sessionPolicy.worker_id,controller_id:admission.controller_id,

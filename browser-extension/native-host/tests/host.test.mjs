@@ -407,6 +407,26 @@ test("native entry refuses shared, aliased or multiply linked policy provenance 
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
+test("owner policy expiry or clock rewind after local read-only echo cannot start controller admission",async()=>{
+ for(const mode of ["expired","rewound"]){
+  const f=fixture();
+  f.policy.expires_at_ms=T+500;
+  let reads=0;
+  const clock=()=>++reads<=5?T:(mode==="expired"?T+500:T-1);
+  const s=await launch(f,{now:clock,timeoutMs:1000});
+  s.send({...f.hello,read_only_probe:true,controller_probe:true});
+  const challenge=await s.response.next();
+  assert.equal(challenge.expires_at_ms,T+500);
+  s.send(replyProof(f,challenge));
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  const ping=await s.response.next();
+  s.send(ping);
+  assert.equal((await s.response.next()).type,"LOCAL_READ_ONLY_PONG");
+  await assert.rejects(s.handle,/NATIVE_OWNER_POLICY_EXPIRED_OR_CLOCK_REWOUND/);
+  assert.equal(reads,6);
+  s.input.destroy();
+ }
+});
 test("explicit controller probe denies missing owner provisioning after local cryptographic proof",async()=>{
   const f=fixture(),s=await launch(f);
   s.send({...f.hello,read_only_probe:true,controller_probe:true});
