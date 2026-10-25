@@ -271,7 +271,7 @@ test("native proof does not hang when output remains open but never drains",asyn
  output.destroyed=false;output.writableEnded=false;output.write=()=>false;
  const work=runNativeProofHost({
    input,output,claimedOrigin:ORIGIN,policy:f.policy,
-   now:()=>T,nonce:()=>H("6"),timeoutMs:45,
+   now:()=>T,nonce:()=>H("6"),timeoutMs:120,
  });
  input.write(encodeFrame(f.hello));
  await assert.rejects(work,/NATIVE_FRAME_BACKPRESSURE_TIMEOUT/);
