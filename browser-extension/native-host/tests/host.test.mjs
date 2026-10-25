@@ -242,6 +242,28 @@ test("host deadline expires with no proof; does not silently grant authorization
   await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
   s.input.destroy();
 });
+test("signed local P-256 proof refuses challenge/proof clock rollback and invalid proof time",async()=>{
+  const f=fixture();
+  // Date.now can jump backwards due to wall-clock correction; a freshly
+  // signed PROOF must not escape that fail-closed uncertainty.
+  for(const rewind of [T-1,NaN]){
+    let current=T;
+    const s=await launch(f,{now:()=>current});
+    s.send(f.hello);
+    const challenge=await s.response.next();
+    current=rewind;
+    s.send(replyProof(f,challenge));
+    await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
+    s.input.destroy();
+  }
+  // Clock rollback after host start but before the issued challenge also denies.
+  let current=T;
+  const q=await launch(f,{now:()=>current});
+  current=T-1;
+  q.send(f.hello);
+  await assert.rejects(q.handle,/NATIVE_CLOCK_DENIED/);
+  q.input.destroy();
+});
 test("native executable performs real child-process Chrome wire framing with owner policy",async()=>{
   const f=fixture();
   // This does not install any Chrome native host manifest or browser permissions.

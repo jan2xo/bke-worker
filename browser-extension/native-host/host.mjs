@@ -15,7 +15,6 @@ const HELLO = "client_nonce,public_key,resources,type,version,worker_id";
 const PROBE_HELLO = "client_nonce,public_key,read_only_probe,resources,type,version,worker_id";
 const CONTROL_HELLO = "client_nonce,controller_probe,public_key,read_only_probe,resources,type,version,worker_id";
 const PROOF = "client_nonce,device_signature,server_nonce,type,version";
-const MAX_CLOCK_SKEW = 30_000;
 export const HOST_PROOF_AUDIENCE = HOST_AUD;
 const exact=(x,fields)=>x&&typeof x==="object"&&!Array.isArray(x)&&
   Object.keys(x).sort().join(",")===fields;
@@ -72,8 +71,11 @@ function decodeP1363(s){
   const bytes=Buffer.from(s,"base64url");
   return bytes.length===64&&bytes.toString("base64url")===s?bytes:null;
 }
-function matchesProof(value,issued,hello,policy,origin,now){
-  if(!exact(value,PROOF)||value.type!=="PROOF"||value.version!==1||
+function matchesProof(value,issued,hello,policy,origin,now,issuedAt){
+  // Clock monotonicity is part of this one-shot proof: a signed response
+  // must not become valid again after wall-clock rollback or invalid time.
+  if(!Number.isSafeInteger(now)||now<issuedAt||
+    !exact(value,PROOF)||value.type!=="PROOF"||value.version!==1||
     value.client_nonce!==hello.client_nonce||
     value.server_nonce!==issued.server_nonce||now>=issued.expires_at_ms)
     return false;
@@ -123,7 +125,8 @@ export async function runNativeProofHost({
     if(!isHash(server_nonce)||server_nonce===hello.client_nonce)
       throw Error("NATIVE_NONCE_DENIED");
     const moment=now();
-    if(moment<started-MAX_CLOCK_SKEW||moment>=policy.expires_at_ms)
+    if(!Number.isSafeInteger(moment)||moment<started||
+      moment>=policy.expires_at_ms)
       throw Error("NATIVE_CLOCK_DENIED");
     const expires_at_ms=Math.min(moment+timeoutMs,policy.expires_at_ms);
     const issued={
@@ -133,7 +136,7 @@ export async function runNativeProofHost({
     };
     await writeFrame(output,issued);
     const proof=await bounded();
-    if(!matchesProof(proof,issued,hello,policy,claimedOrigin,now()))
+    if(!matchesProof(proof,issued,hello,policy,claimedOrigin,now(),moment))
       throw Error("NATIVE_PROOF_DENIED");
     // Proof of local key possession ONLY; never a bearer token, enrollment
     // grant, authenticated Command Center session, or dispatch authority.
