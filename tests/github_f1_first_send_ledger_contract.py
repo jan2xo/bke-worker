@@ -307,6 +307,11 @@ class FirstSendLedgerTests(unittest.TestCase):
                         validate_ledger_successor(
                             fence, changed, expected_parent_sha=FENCE_HEAD))
 
+    def writer_denied(self, code, operation):
+        # Provider and pure-ledger denials have distinct exception types.
+        with self.assertRaisesRegex(GitHubWriterDenied, "^" + code + "$"):
+            operation()
+
     def test_writer_denies_expired_and_backdated_v2_send_proposals(self):
         provider = FakeProvider()
         root, fence = prepared()
@@ -324,7 +329,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         ):
             with patch("github_f1_private_arbiter_writer.time.time_ns",
                        return_value=ns):
-                self.denied(code, lambda: writer.publish(
+                self.writer_denied(code, lambda: writer.publish(
                     expected_head=provider.head, proposed_manifest=fence))
             self.assertEqual(provider.head, HEAD)
             self.assertFalse(any(method != "GET" for method, _ in provider.requests))
@@ -333,7 +338,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         with patch("github_f1_private_arbiter_writer.time.time_ns",
                    side_effect=[(deadline - 1) * 1_000_000,
                                 deadline * 1_000_000]):
-            self.denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
+            self.writer_denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
                 expected_head=provider.head, proposed_manifest=fence))
         self.assertEqual(provider.head, HEAD)
         self.assertFalse(any(method == "PATCH" for method, _ in provider.requests))
@@ -341,7 +346,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         with patch("github_f1_private_arbiter_writer.time.time_ns",
                    side_effect=[(deadline - 1) * 1_000_000,
                                 (deadline - 2) * 1_000_000]):
-            self.denied("F1_PROVIDER_CLOCK_REWOUND", lambda: writer.publish(
+            self.writer_denied("F1_PROVIDER_CLOCK_REWOUND", lambda: writer.publish(
                 expected_head=provider.head, proposed_manifest=fence))
         self.assertEqual(provider.head, HEAD)
         self.assertFalse(any(method == "PATCH" for method, _ in provider.requests))
@@ -367,7 +372,7 @@ class FirstSendLedgerTests(unittest.TestCase):
         deadline = root["claims"][0]["lease_deadline_ms"]
         with patch("github_f1_private_arbiter_writer.time.time_ns",
                    return_value=deadline * 1_000_000):
-            self.denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
+            self.writer_denied("F1_PROVIDER_LEASE_EXPIRED", lambda: writer.publish(
                 expected_head=provider.head, proposed_manifest=consumed))
         self.assertEqual(provider.head, first["arbiter_head"])
         self.assertFalse(any(method != "GET" for method, _ in provider.requests))
