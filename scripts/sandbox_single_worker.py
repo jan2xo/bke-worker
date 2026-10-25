@@ -17,7 +17,10 @@ import sys
 import time
 from urllib.parse import urlparse
 
-SANDBOX = "jan2xo/bke-worker-sandbox"
+SANDBOX = "jan2xo/bke-worker"
+PR_NUMBER = 148
+PR_BRANCH = "pilot/one-worker-two-real-turns"
+PILOT_FILE = "experiments/pilot-one-worker/turns.json"
 WORKER = "pilot-f1"
 LABEL = "bke-worker:" + WORKER
 POLL_SECONDS = 60
@@ -63,15 +66,19 @@ def assignment():
                   if isinstance(name, str) and name.startswith("bke-worker:")]
         if LABEL not in owners:
             continue
+        if pr.get("number") != PR_NUMBER:
+            raise Blocked("PILOT_LABEL_ON_OTHER_PR")
         if owners != [LABEL]:
             raise Blocked("AMBIGUOUS_WORKER_LABEL")
         head = pr.get("head") or {}
         number = pr.get("number")
         commit = head.get("sha")
         head_repo = (head.get("repo") or {}).get("full_name")
+        base = pr.get("base") or {}
         if (pr.get("state") != "open" or type(number) is not int or
-                number <= 0 or type(commit) is not str or
-                not SHA.fullmatch(commit) or head_repo != SANDBOX):
+                number != PR_NUMBER or type(commit) is not str or
+                not SHA.fullmatch(commit) or head_repo != SANDBOX or
+                head.get("ref") != PR_BRANCH or base.get("ref") != "main"):
             raise Blocked("SANDBOX_ASSIGNMENT_INVALID")
         matches.append((number, commit))
     if len(matches) > 1:
@@ -124,16 +131,20 @@ def check_live_configuration():
 
 def prompt(number: int, head: str):
     return (
-        "BKE WORKER PERSONAL SANDBOX PILOT. Only act in "
-        + SANDBOX + ", PR #" + str(number) + " at exact head " + head + ". "
-        "First read bke.md and BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md "
-        "from current main of jan2xo/bke-worker, and confirm current sandbox "
-        "PR ownership is exactly " + LABEL + ". If ownership/head changed, stop. "
-        "Continue ONE bounded engineering step through GitHub, commit only in "
-        "the sandbox PR and post a causal PR checkpoint. Never merge, touch "
-        "production, change credentials, authenticate ChatGPT, create an "
-        "unrelated task, or edit a non-sandbox repository. If blocked, record "
-        "the reason on the sandbox PR and stop."
+        "BKE WORKER PERSONAL PILOT. Only act in repository " + SANDBOX
+        + " on disposable PR #" + str(number) + " at head SHA " + head
+        + ", branch " + PR_BRANCH + ". Read current main bke.md and "
+        "BKE-WORKER-CANONICAL-PROJECT-EXECUTION-INSTRUCTIONS.md, and "
+        "verify that PR #" + str(number) + " is open, draft, has exactly "
+        "one worker label " + LABEL + " and still has the stated head SHA. "
+        "If it changed, do NOT commit. Edit ONLY " + PILOT_FILE + " on "
+        "this PR branch: read its JSON and increment completed_turns "
+        "by exactly one from 0 to 1, or 1 to 2, appending one turn entry. "
+        "If already >=2, stop. Preserve valid JSON. Make exactly one "
+        "GitHub commit to that PR branch and post a PR checkpoint containing "
+        "the commit SHA. Do not change other files, labels, branches, PRs, "
+        "repos, credentials, security controls or production. Do not merge. "
+        "If blocked, comment on this PR and stop."
     )
 
 
@@ -175,6 +186,8 @@ def tick(journal_path: Path, *, live: bool, now: int | None = None):
         raise Blocked("JOURNAL_INVALID")
     if sum(1 for x in history if now - 3600 < x["time"] <= now) >= MAX_PER_HOUR:
         return "RATE_CAP_STOP"
+    if len(history) >= 2:
+        return "PILOT_TWO_SEND_LIMIT_REACHED"
     last = history[-1] if history else None
     # No immediate follow-up even when GitHub HEAD changes while ChatGPT
     # may still be executing. A new commit is not proof the turn finished.
@@ -211,7 +224,7 @@ def main():
     if args.live:
         check_live_configuration()
     location = Path(os.environ.get("BKE_SANDBOX_JOURNAL", 
-                    str(Path.home() / ".local/state/bke-worker/sandbox-f1.json")))
+                    str(Path.home() / ".local/state/bke-worker/pilot-pr148.json")))
     location.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(location.parent, 0o700)
     lock_fd = os.open(str(location) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
