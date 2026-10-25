@@ -5,10 +5,11 @@ import {createServer} from 'node:net';
 import {mkdtemp,rm,mkdir,chmod,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {once} from 'node:events';
+import {once, EventEmitter} from 'node:events';
+import {Readable} from 'node:stream';
 import {authenticatedReadOnlyControllerTransport} from '../controller-transport.mjs';
 import {controllerSignedPayload} from '../controller-admission.mjs';
-import {nativeFrameReader,writeFrame} from '../framing.mjs';
+import {nativeFrameReader,writeFrame,encodeFrame,MAX_FRAME_BYTES} from '../framing.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex');
 function fixture(){
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
@@ -71,4 +72,41 @@ test('missing response, wrong socket, world-readable parent and replayed identit
   await chmod(p.root,0o755);
   await assert.rejects(authenticatedReadOnlyControllerTransport({...p}),/CONTROLLER_SOCKET_DENIED/);
  });
+});
+
+test('native frame buffer bounds reject giant untrusted chunks before copying and validate limits',async()=>{
+ const giant=Buffer.alloc(MAX_FRAME_BYTES*2+9);
+ const reader=nativeFrameReader(Readable.from([giant]));
+ await assert.rejects(reader.next(),/NATIVE_FRAME_OVERFLOW/);
+ assert.throws(()=>nativeFrameReader(Readable.from([]),Number.POSITIVE_INFINITY),/NATIVE_FRAME_LIMIT_INVALID/);
+ assert.throws(()=>nativeFrameReader(Readable.from([]),MAX_FRAME_BYTES+1),/NATIVE_FRAME_LIMIT_INVALID/);
+ const combined=Buffer.concat([encodeFrame({type:'FIRST'}),encodeFrame({type:'SECOND'})]);
+ const bounded=nativeFrameReader(Readable.from([combined]));
+ assert.deepEqual(await bounded.next(),{type:'FIRST'});
+ assert.deepEqual(await bounded.next(),{type:'SECOND'});
+ bounded.close();
+});
+test('native framed backpressure rejects close, finish and error; drain cleans listeners',async()=>{
+ const make=()=>{
+  const stream=new EventEmitter();
+  stream.destroyed=false;
+  stream.writableEnded=false;
+  stream.write=()=>false;
+  return stream;
+ };
+ for(const event of ['close','finish','error']){
+  const stream=make();
+  const pending=writeFrame(stream,{type:'LOCAL_READ_ONLY_PING'});
+  if(event==='error')stream.emit('error',Error('broken pipe'));
+  else stream.emit(event);
+  await assert.rejects(pending,/NATIVE_FRAME_CHANNEL_|broken pipe/);
+  for(const name of ['drain','close','finish','error'])assert.equal(stream.listenerCount(name),0);
+ }
+ const stream=make();
+ const pending=writeFrame(stream,{type:'LOCAL_READ_ONLY_PONG'});
+ stream.emit('drain');
+ await pending;
+ for(const name of ['drain','close','finish','error'])assert.equal(stream.listenerCount(name),0);
+ const closed=make();closed.destroyed=true;
+ await assert.rejects(writeFrame(closed,{type:'HELLO'}),/NATIVE_FRAME_CHANNEL_CLOSED/);
 });
