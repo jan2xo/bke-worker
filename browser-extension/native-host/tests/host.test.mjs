@@ -92,7 +92,7 @@ test("genuine P-256 proof yields only a local possession receipt, not device enr
   assert.doesNotMatch(JSON.stringify(ok),/token|signature|installation|paired|access/i);
 });
 test("approved native policy snapshot cannot be retargeted during an asynchronous HELLO",async()=>{
-  const f=fixture(),original=structuredClone(f.policy);
+  const f=fixture();
   const session=await launch(f);
   // The host validated original pins on entry. Mutating the caller-owned
   // policy during its awaited input must not authorize a different target.

@@ -156,7 +156,7 @@ export async function runNativeProofHost({
       // Not a controller admission: only a one-shot echo on an already
       // P-256-verified native channel, with zero dispatch privileges.
       const gate=createLocalReadOnlyEnvelopeGate({
-        sessionPolicy,localReceipt:receipt,clientNonce:hello.client_nonce,
+        policy:sessionPolicy,localReceipt:receipt,clientNonce:hello.client_nonce,
         serverNonce:issued.server_nonce,clock:now,ttlMs:Math.min(5000,timeoutMs),
       });
       try{
