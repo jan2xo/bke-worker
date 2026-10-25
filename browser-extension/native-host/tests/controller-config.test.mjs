@@ -4,7 +4,7 @@ import {generateKeyPairSync,createHash} from 'node:crypto';
 import {mkdtemp,writeFile,chmod,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {validateReviewedControllerConfig,readPinnedControllerConfig,controllerConfigDigest} from '../controller-config.mjs';
+import {validateReviewedControllerConfig,readPinnedControllerConfig,controllerConfigDigest,ownerGlobalFenceDir} from '../controller-config.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex');
 const T=1_800_000_000_000;
 const origin='chrome-extension://'+'a'.repeat(32)+'/';
@@ -17,7 +17,7 @@ function f(){
  const config={version:1,enabled:true,worker_id:policy.worker_id,
   allowed_origin:policy.allowed_origin,profile_binding_sha256:policy.profile_binding_sha256,
   resources:{...policy.resources},controller_id:'controller-a',public_key:key,
-  socket_path:'/var/private/bke-controller.sock',fence_dir:'/var/private/bke-controller-fence'};
+  socket_path:'/var/private/bke-controller.sock',fence_dir:ownerGlobalFenceDir()};
  return {policy,config};
 }
 async function withDir(run){
@@ -42,7 +42,8 @@ test('cannot elevate a public controller key by mutating pins, identity, permiss
   x=>({...x,public_key:{...x.public_key,crv:'X25519'}}),
   x=>({...x,controller_id:'../escape'}),x=>({...x,token:'secret'}),
   x=>({...x,dispatch_authority:'ACTIVE'}),x=>({...x,socket_path:'/tmp/../untrusted'}),
-  x=>({...x,fence_dir:'relative'}),x=>({...x,enabled:false}),
+  x=>({...x,fence_dir:'relative'}),x=>({...x,fence_dir:'/var/private/isolated-worker-fences'}),
+  x=>({...x,enabled:false}),
   x=>({...x,resources:{...x.resources,secret:'x'}}),
  ]){
   assert.throws(()=>validateReviewedControllerConfig(change(config),policy,T),/CONTROLLER_CONFIG_/);
@@ -73,3 +74,20 @@ test('invalid parent, symlink, malicious JSON, and overlarge file refuse',()=>wi
  await writeFile(file,'X'.repeat(4100));
  await assert.rejects(readPinnedControllerConfig({path:file,expectedSha256:controllerConfigDigest(Buffer.from('X'.repeat(4100))),policy,now:T}),/INTEGRITY_DENIED/);
 }));
+
+test('different worker configs cannot split shared local exclusion into distinct fence roots',()=>{
+ const first=f(),second=f();
+ second.policy.worker_id='worker-b';
+ second.config.worker_id='worker-b';
+ second.config.controller_id='controller-b';
+ const shared=ownerGlobalFenceDir();
+ assert.equal(validateReviewedControllerConfig(first.config,first.policy,T).fenceDir,shared);
+ assert.equal(validateReviewedControllerConfig(second.config,second.policy,T).fenceDir,shared);
+ for(const c of [
+  {...first.config,fence_dir:shared+'/worker-a'},
+  {...second.config,fence_dir:shared+'/worker-b'},
+ ]){
+  const policy=c.worker_id==='worker-a'?first.policy:second.policy;
+  assert.throws(()=>validateReviewedControllerConfig(c,policy,T),/SCOPE_OR_PRINCIPAL_DENIED/);
+ }
+});

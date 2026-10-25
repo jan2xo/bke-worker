@@ -4,7 +4,8 @@
 import {createHash,createPublicKey} from 'node:crypto';
 import {open,lstat,realpath} from 'node:fs/promises';
 import {constants} from 'node:fs';
-import {dirname,resolve} from 'node:path';
+import {dirname,resolve,join} from 'node:path';
+import {userInfo} from 'node:os';
 import {validNativeHostPolicy} from './host.mjs';
 const HASH=/^[0-9a-f]{64}$/u;
 const BASE=['bridge_identity_sha256','browser_profile_sha256','chatgpt_target_sha256'];
@@ -18,6 +19,16 @@ function pathSafe(p){
   !p.includes('//')&&!p.includes('\0')&&
   !/(?:^|\/)\.\.?(?:\/|$)/u.test(p);
 }
+// A configurable per-worker fence root permits duplicate target claims across
+// different roots. Derive ONE root from the OS account identity, not HOME
+// environment variables or owner-supplied controller config. This remains
+// host-local only; it does not replace GitHub-exclusive worker assignment.
+export function ownerGlobalFenceDir(){
+ let home;
+ try{home=userInfo().homedir;}catch{throw Error('CONTROLLER_CONFIG_OWNER_HOME_DENIED');}
+ if(!pathSafe(home)||home==='/')throw Error('CONTROLLER_CONFIG_OWNER_HOME_DENIED');
+ return join(home,'.local','state','bke-worker','controller-fences');
+}
 export function validateReviewedControllerConfig(value,policy,now=Date.now()){
  if(!validNativeHostPolicy(policy,now))throw Error('CONTROLLER_CONFIG_POLICY_DENIED');
  if(exact(value,OFF)&&value.version===1&&value.enabled===false)return null;
@@ -30,6 +41,7 @@ export function validateReviewedControllerConfig(value,policy,now=Date.now()){
     typeof value.controller_id!=='string'||
     !/^[a-z0-9][a-z0-9-]{0,62}$/u.test(value.controller_id)||
     !pathSafe(value.socket_path)||!pathSafe(value.fence_dir)||
+    value.fence_dir!==ownerGlobalFenceDir()||
     value.fence_dir===value.socket_path||
     !exact(value.public_key,['crv','kty','x'])||
     value.public_key.kty!=='OKP'||value.public_key.crv!=='Ed25519'||
