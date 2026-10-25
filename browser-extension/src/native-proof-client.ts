@@ -125,16 +125,28 @@ function channel(port:Port,deadline:number,clock:()=>number){
   const onDisconnect=()=>{failed=true;if(fail){const f=fail;fail=null;wake=null;f();}};
   port.onMessage.addListener(onMessage);
   port.onDisconnect.addListener(onDisconnect);
-  const receive=async()=>{
-    if(failed||closed)throw Error("NATIVE_CHANNEL_UNAVAILABLE");
-    if(queue.length>0)return queue.shift();
+  const remaining=()=>{
     const left=Math.min(deadline-clock(),15_000);
     if(!Number.isSafeInteger(left)||left<=0)throw Error("NATIVE_CHANNEL_TIMEOUT");
+    return left;
+  };
+  const receive=async()=>{
+    if(failed||closed)throw Error("NATIVE_CHANNEL_UNAVAILABLE");
+    // A frame queued before receive() still expires at the same deadline.
+    // Never let queued frames bypass the clock and MV3 suspension bound.
+    const left=remaining();
+    if(queue.length>0)return queue.shift();
     return new Promise<unknown>((resolve,reject)=>{
       const timer=setTimeout(()=>{
         failed=true;wake=null;fail=null;reject(Error("NATIVE_CHANNEL_TIMEOUT"));
       },left);
-      wake=x=>{clearTimeout(timer);resolve(x);};
+      wake=x=>{
+        clearTimeout(timer);
+        // Timers may fire AFTER a queued message callback on a stalled
+        // event loop. Recheck the deadline before granting a positive read.
+        try{remaining();resolve(x);}
+        catch(error){failed=true;reject(error);}
+      };
       fail=()=>{clearTimeout(timer);reject(Error("NATIVE_CHANNEL_DISCONNECTED"));};
     });
   };
@@ -217,6 +229,9 @@ export async function proveLocalNativeHost({
     wire.send({type:"PROOF",version:1,client_nonce:clientNonce,
       server_nonce:incoming.server_nonce,device_signature:proof.device_signature});
     const receipt=await wire.receive();
+    const receiptAt=freshTime(sessionClock);
+    if(receiptAt===null||receiptAt>=incoming.expires_at_ms)
+      return blocked("NATIVE_CLIENT_EXPIRED");
     if(!validReceipt(receipt,workerId,pub.public_key_sha256))
       return blocked("NATIVE_CLIENT_RECEIPT_DENIED");
     if(readOnlyProbe){
@@ -228,8 +243,15 @@ export async function proveLocalNativeHost({
         profileBindingSha256,clientNonce,incoming.server_nonce,
         incoming.expires_at_ms,sessionClock,cryptoImpl))
         return blocked("NATIVE_CLIENT_READ_ONLY_PING_DENIED");
+      const pingExpiry=(ping as {expires_at_ms:number}).expires_at_ms;
+      const echoAt=freshTime(sessionClock);
+      if(echoAt===null||echoAt>=incoming.expires_at_ms||echoAt>=pingExpiry)
+        return blocked("NATIVE_CLIENT_EXPIRED");
       wire.send(ping);
       const pong=await wire.receive();
+      const pongAt=freshTime(sessionClock);
+      if(pongAt===null||pongAt>=incoming.expires_at_ms||pongAt>=pingExpiry)
+        return blocked("NATIVE_CLIENT_EXPIRED");
       if(!validReadOnlyPong(pong,workerId))
         return blocked("NATIVE_CLIENT_READ_ONLY_PONG_DENIED");
       return Object.freeze({state:"LOCAL_READ_ONLY_PONG",

@@ -198,6 +198,42 @@ test("rewound clock after signed PROOF cannot yield a positive local native rece
  assert.equal(port.messages.size,0);
  assert.equal(port.disconnects.size,0);
 });
+test("queued and late native receipts cannot bypass the expired one-shot channel",async()=>{
+ for(const scenario of ["queued-after-deadline","queued-after-proof-expiry","late-event-before-timer"]){
+  const f=await fixture(),start=Date.now();
+  let now=start;
+  const port=scriptedPort(f);
+  const normal=port.postMessage.bind(port);
+  port.postMessage=message=>{
+    if(message.type==="PROOF"){
+      const receipt={
+       type:"LOCAL_PROOF_OK",version:1,worker_id:"worker-a",
+       public_key_sha256:f.key.public_key_sha256,
+       admission_authority:"NONE",dispatch_authority:"NONE",
+      };
+      if(scenario==="queued-after-deadline"){
+        port.emit(receipt); // cached before receive; later clock invalid.
+        now=start+10_001;
+      }else if(scenario==="queued-after-proof-expiry"){
+        port.emit(receipt); // overall deadline still valid, proof expired.
+        now=start+8_500;
+      }else{
+        // Delivery wakes the pending reader while the timer has not run.
+        queueMicrotask(()=>{now=start+10_001;port.emit(receipt);});
+      }
+      return;
+    }
+    normal(message);
+  };
+  const result=await execute(f,port,{clock:()=>now});
+  assert.equal(result.state,"BLOCKED",scenario);
+  assert.equal(result.code,scenario==="queued-after-proof-expiry"
+   ?"NATIVE_CLIENT_EXPIRED":"NATIVE_CLIENT_OUTCOME_UNCERTAIN",scenario);
+  assert.equal(port.connected,false,scenario);
+  assert.equal(port.messages.size,0,scenario);
+  assert.equal(port.disconnects.size,0,scenario);
+ }
+});
 test("fake elevated receipt, wrong key or worker cannot provide authority",async()=>{
   const transforms=[
     r=>({...r,admission_authority:"ACTIVE"}),
