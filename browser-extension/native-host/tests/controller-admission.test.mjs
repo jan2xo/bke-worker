@@ -98,6 +98,34 @@ test('expiry or clock failure during durable fencing never reports admission, lo
    /REPLAY_OR_UNCERTAIN/);
  }
 }));
+test('mutated caller scope cannot redirect signed challenge into different resource fences',async()=>privateDir(async dir=>{
+ const f=setup(),g=f.gate();
+ const signedOriginal=f.respond(g.challenge);
+ // The signature covers target A. Mutating the caller-owned scope then
+ // claiming target B in the envelope must not allow fencing/admission for B.
+ const originalTarget=g.challenge.chatgpt_target_sha256;
+ f.scope.chatgpt_target_sha256=sha('substituted target after challenge');
+ assert.equal(g.challenge.chatgpt_target_sha256,originalTarget);
+ const changedFrame={...signedOriginal,chatgpt_target_sha256:f.scope.chatgpt_target_sha256};
+ await assert.rejects(g.accept(changedFrame,{fenceDir:dir}),/CONTROLLER_ENVELOPE_DENIED/);
+ assert.deepEqual(await readdir(dir),[]);
+ await assert.rejects(g.accept(signedOriginal,{fenceDir:dir}),/REPLAY_OR_UNCERTAIN/);
+
+ // A legitimate signed response still binds the ORIGINAL challenge and
+ // original persistent resource locks, not any subsequently mutated input.
+ const second=setup(),valid=second.gate();
+ const original=valid.challenge.chatgpt_target_sha256;
+ const authentic=second.respond(valid.challenge);
+ second.scope.chatgpt_target_sha256=sha('unreviewed new target');
+ const receipt=await valid.accept(authentic,{fenceDir:dir});
+ assert.equal(receipt.state,'CONTROLLER_AUTH_READ_ONLY');
+ const records=(await readdir(dir)).map(x=>x);
+ assert.equal(records.length,4);
+ const expectedName=sha(JSON.stringify(['bke/f1/fence','target',original]))+'.lock';
+ assert.ok(records.includes(expectedName));
+ const substitutedName=sha(JSON.stringify(['bke/f1/fence','target',second.scope.chatgpt_target_sha256]))+'.lock';
+ assert.ok(!records.includes(substitutedName));
+}));
 test('unreviewed principal, malformed scope, weak nonces rejected',()=>{
  const f=setup();
  for(const patch of [

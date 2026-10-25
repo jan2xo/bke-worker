@@ -59,17 +59,24 @@ export function controllerSignedPayload(challenge,controllerId){
 export function createControllerChallenge({scope,principal,clientNonce,serverNonce,
   clock=()=>Date.now(),nonce=()=>randomBytes(32).toString('hex'),ttlMs=3000}={}){
   const key=principalKey(principal);
+  // Capture the reviewed principal ID once: the caller's mutable object must
+  // never be consulted again after the controller challenge is issued.
+  const controllerId=principal.controller_id;
   const issued=clock();
   if(!validScope(scope)||!HASH.test(clientNonce)||!HASH.test(serverNonce)||
      clientNonce===serverNonce||!Number.isSafeInteger(issued)||issued<=0||
      !Number.isSafeInteger(ttlMs)||ttlMs<100||ttlMs>5000||
      issued>Number.MAX_SAFE_INTEGER-ttlMs)BLOCK('CHALLENGE_INVALID');
+  // All later signature, envelope and persistent fence decisions MUST use
+  // the same immutable snapshot. The incoming object can be mutated between
+  // challenge issuance and the asynchronous acceptance of a signed reply.
+  const boundScope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,scope[k]])));
   const challengeNonce=nonce();
   if(typeof challengeNonce!=='string'||!HASH.test(challengeNonce)||
      challengeNonce===clientNonce||challengeNonce===serverNonce)
     BLOCK('CHALLENGE_INVALID');
   const challenge=Object.freeze({type:'CONTROLLER_CHALLENGE',version:1,
-    ...scope,client_nonce:clientNonce,server_nonce:serverNonce,
+    ...boundScope,client_nonce:clientNonce,server_nonce:serverNonce,
     challenge_nonce:challengeNonce,issued_at_ms:issued,expires_at_ms:issued+ttlMs});
   let consumed=false;
   return Object.freeze({challenge,
@@ -80,12 +87,12 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
       if(!Number.isSafeInteger(at)||at<issued||at>=challenge.expires_at_ms)
         BLOCK('EXPIRED_OR_CLOCK_REWOUND');
       if(!exact(frame,SIGNED)||frame.type!=='CONTROLLER_AUTH_READ_ONLY'||
-         frame.version!==1||frame.controller_id!==principal.controller_id||
-         frame.worker_id!==scope.worker_id||
-         frame.profile_binding_sha256!==scope.profile_binding_sha256||
-         frame.browser_profile_sha256!==scope.browser_profile_sha256||
-         frame.chatgpt_target_sha256!==scope.chatgpt_target_sha256||
-         frame.bridge_identity_sha256!==scope.bridge_identity_sha256||
+         frame.version!==1||frame.controller_id!==controllerId||
+         frame.worker_id!==boundScope.worker_id||
+         frame.profile_binding_sha256!==boundScope.profile_binding_sha256||
+         frame.browser_profile_sha256!==boundScope.browser_profile_sha256||
+         frame.chatgpt_target_sha256!==boundScope.chatgpt_target_sha256||
+         frame.bridge_identity_sha256!==boundScope.bridge_identity_sha256||
          frame.client_nonce!==clientNonce||frame.server_nonce!==serverNonce||
          frame.challenge_nonce!==challengeNonce||
          frame.issued_at_ms!==issued||frame.expires_at_ms!==challenge.expires_at_ms||
@@ -93,11 +100,11 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
         BLOCK('ENVELOPE_DENIED');
       const signature=Buffer.from(frame.signature,'base64url');
       if(signature.length!==64||signature.toString('base64url')!==frame.signature||
-         !verify(null,Buffer.from(controllerSignedPayload(challenge,principal.controller_id)),
+         !verify(null,Buffer.from(controllerSignedPayload(challenge,controllerId)),
            key,signature))BLOCK('SIGNATURE_DENIED');
       // These are LOCAL, conservative isolation reservations, not Github leases.
       // All locks survive a disconnect/crash/clock expiry until owner recovery.
-      await reserveFences(fenceDir,scope,principal.controller_id,challengeNonce);
+      await reserveFences(fenceDir,boundScope,controllerId,challengeNonce);
       // Fsync may complete after the signature's short expiry. Refuse a stale
       // successful receipt but RETAIN all fences as uncertain owner recovery;
       // never roll back or automatically reassign an in-flight reservation.
@@ -106,7 +113,7 @@ export function createControllerChallenge({scope,principal,clientNonce,serverNon
          completedAt>=challenge.expires_at_ms)
         BLOCK('EXPIRED_OR_CLOCK_REWOUND');
       return Object.freeze({state:'CONTROLLER_AUTH_READ_ONLY',
-        worker_id:scope.worker_id,controller_id:principal.controller_id,
+        worker_id:boundScope.worker_id,controller_id:controllerId,
         principal_authentication:'ED25519_SIGNATURE_VERIFIED',
         scope_fencing:'LOCAL_PERSISTENT_OWNER_RECOVERY_REQUIRED',
         github_assignment:'NOT_VERIFIED',chatgpt_target_attestation:'NOT_PROVEN',
