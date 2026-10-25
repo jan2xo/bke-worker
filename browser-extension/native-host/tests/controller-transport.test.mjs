@@ -142,3 +142,24 @@ test('a late complete frame from a noncancelable source is denied after reader c
  await assert.rejects(waiting,/NATIVE_CHANNEL_CLOSED/);
  await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
 });
+
+test('overlapping native frame reads cancel the entire reader without accepting either frame',async()=>{
+ const pipe=new PassThrough(),reader=nativeFrameReader(pipe);
+ const first=reader.next();
+ await assert.rejects(reader.next(),/NATIVE_FRAME_CONCURRENT_READ_DENIED/);
+ await assert.rejects(first,/NATIVE_CHANNEL_CLOSED/);
+ assert.equal(pipe.destroyed,true);
+ await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
+});
+test('noncancelable overlapping reads cannot consume a late frame or reopen reader',async()=>{
+ let deliver;
+ const source={
+  [Symbol.asyncIterator](){return {next(){return new Promise(resolve=>{deliver=resolve;});}};}
+ };
+ const reader=nativeFrameReader(source);
+ const first=reader.next();
+ await assert.rejects(reader.next(),/NATIVE_FRAME_CONCURRENT_READ_DENIED/);
+ deliver({done:false,value:encodeFrame({type:'LATE_CONTROLLER_AUTH'})});
+ await assert.rejects(first,/NATIVE_CHANNEL_CLOSED/);
+ await assert.rejects(reader.next(),/NATIVE_CHANNEL_CLOSED/);
+});

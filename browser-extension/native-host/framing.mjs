@@ -18,6 +18,13 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
   const iterator = stream[Symbol.asyncIterator]();
   let pending = Buffer.alloc(0);
   let closed = false;
+  let reading = false;
+  const cancel=()=>{
+    if(closed)return;
+    closed=true;
+    if(typeof stream.destroy==="function"&&!stream.destroyed)
+      stream.destroy();
+  };
   // The stream is untrusted. Refuse an oversized chunk BEFORE Buffer.concat,
   // not after allocating/copying a potentially unbounded incoming payload.
   const appendBounded = async () => {
@@ -42,31 +49,32 @@ export function nativeFrameReader(stream, maximum = MAX_FRAME_BYTES) {
   return Object.freeze({
     async next() {
       if (closed) throw Error("NATIVE_CHANNEL_CLOSED");
-      while (pending.length < 4) await appendBounded();
-      const length = pending.readUInt32LE(0);
-      if (length === 0 || length > maximum) throw Error("NATIVE_FRAME_OVERSIZE");
-      while (pending.length < length + 4) await appendBounded();
-      const body = pending.subarray(4, length + 4);
-      pending = pending.subarray(length + 4);
-      let decoded;
-      try {
-        const text = new TextDecoder("utf-8", {fatal:true}).decode(body);
-        decoded = JSON.parse(text);
-      } catch { throw Error("NATIVE_FRAME_INVALID_JSON"); }
-      if (decoded===null||typeof decoded!=="object"||Array.isArray(decoded))
-        throw Error("NATIVE_FRAME_INVALID_OBJECT");
-      return decoded;
+      // The buffer and stream iterator are shared mutable state. Two pending
+      // reads are ambiguous, not independent messages: cancel BOTH attempts
+      // rather than guessing which frame belongs to which caller.
+      if(reading){
+        cancel();
+        throw Error("NATIVE_FRAME_CONCURRENT_READ_DENIED");
+      }
+      reading=true;
+      try{
+        while (pending.length < 4) await appendBounded();
+        const length = pending.readUInt32LE(0);
+        if (length === 0 || length > maximum) throw Error("NATIVE_FRAME_OVERSIZE");
+        while (pending.length < length + 4) await appendBounded();
+        const body = pending.subarray(4, length + 4);
+        pending = pending.subarray(length + 4);
+        let decoded;
+        try {
+          const text = new TextDecoder("utf-8", {fatal:true}).decode(body);
+          decoded = JSON.parse(text);
+        } catch { throw Error("NATIVE_FRAME_INVALID_JSON"); }
+        if (decoded===null||typeof decoded!=="object"||Array.isArray(decoded))
+          throw Error("NATIVE_FRAME_INVALID_OBJECT");
+        return decoded;
+      }finally{reading=false;}
     },
-    close() {
-      if (closed) return;
-      closed=true;
-      // A boolean alone strands a pending iterator.next() and may let its
-      // eventual late frame complete. Node Readable.destroy() cancels pending
-      // async iteration; non-destroyable test sources still check closed
-      // immediately after their pending next() returns.
-      if (typeof stream.destroy==="function" && !stream.destroyed)
-        stream.destroy();
-    },
+    close() {cancel();},
   });
 }
 export async function writeFrame(stream,value,timeoutMs=15_000) {
