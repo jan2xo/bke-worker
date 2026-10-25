@@ -176,7 +176,9 @@ def tick(journal_path: Path, *, live: bool, now: int | None = None):
     if sum(1 for x in history if now - 3600 < x["time"] <= now) >= MAX_PER_HOUR:
         return "RATE_CAP_STOP"
     last = history[-1] if history else None
-    if last is not None and last["head"] == head and now - last["time"] < HEARTBEAT_SECONDS:
+    # No immediate follow-up even when GitHub HEAD changes while ChatGPT
+    # may still be executing. A new commit is not proof the turn finished.
+    if last is not None and now - last["time"] < HEARTBEAT_SECONDS:
         return "WAITING_FOR_HEARTBEAT"
     reason = ("first" if last is None else
               "head-change" if last["head"] != head else
