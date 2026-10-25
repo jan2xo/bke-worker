@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { generateKeyPairSync,createHash,sign } from "node:crypto";
-import { mkdtemp,writeFile,rm,chmod,symlink,mkdir,readdir } from "node:fs/promises";
+import { mkdtemp,writeFile,rm,chmod,symlink,mkdir,readdir,link } from "node:fs/promises";
 import {createServer} from "node:net";
 import {controllerSignedPayload} from "../controller-admission.mjs";
 import { tmpdir } from "node:os";
@@ -329,6 +329,40 @@ test("symlinked policy is rejected even when target file is owner-readable",asyn
     const [exit]=await once(child,"exit");
     assert.equal(exit,1);
     assert.equal(Buffer.concat(stdout).length,0);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("native entry refuses shared, aliased or multiply linked policy provenance without frames",async()=>{
+  const f=fixture();
+  const root=await mkdtemp(join(tmpdir(),"bke-native-parent-security-"));
+  const safeDir=join(root,"trusted");
+  const file=join(safeDir,"owner-policy.json");
+  const entry=fileURLToPath(new URL("../entry.mjs",import.meta.url));
+  f.policy.expires_at_ms=Date.now()+30000;
+  const denied=async path=>{
+    const child=spawn(process.execPath,[entry,path,ORIGIN],{stdio:["pipe","pipe","pipe"]});
+    const stdout=[];child.stdout.on("data",b=>stdout.push(b));
+    child.stdin.end();
+    const [exit]=await once(child,"exit");
+    assert.equal(exit,1);
+    assert.equal(Buffer.concat(stdout).length,0);
+  };
+  try{
+    await mkdir(safeDir,{mode:0o700});
+    await writeFile(file,JSON.stringify(f.policy),{mode:0o600});
+    await chmod(safeDir,0o755);
+    await denied(file);
+    await chmod(safeDir,0o700);
+    await symlink(safeDir,join(root,"aliased"));
+    await denied(join(root,"aliased","owner-policy.json"));
+    await denied(join(safeDir,"..","trusted","owner-policy.json"));
+    await chmod(file,0o644);
+    await denied(file);
+    await chmod(file,0o600);
+    const duplicate=join(safeDir,"hardlink-policy.json");
+    await link(file,duplicate);
+    await denied(file);
+    await denied(duplicate);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 

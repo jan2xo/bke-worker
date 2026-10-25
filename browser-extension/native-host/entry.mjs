@@ -2,24 +2,34 @@
 // Native host process. Chrome-standard length-framed stdin/stdout ONLY.
 // NOT registered in Chrome: operator-controlled native manifest/OS origin
 // authorization and server-side host attestation are separate acceptance.
-import { open,constants } from "node:fs/promises";
+import { open,lstat,realpath,constants } from "node:fs/promises";
 import { isAbsolute, resolve,join,dirname } from "node:path";
 import {readPinnedControllerConfig} from "./controller-config.mjs";
 import { fileURLToPath } from "node:url";
 import { runNativeProofHost } from "./host.mjs";
 
 async function readOwnerPinnedPolicy(path) {
-  if(typeof path!=="string"||!isAbsolute(path)||path.includes("\0"))
+  if(typeof path!=="string"||!isAbsolute(path)||resolve(path)!==path||
+     path.includes("//")||path.includes("\0"))
     throw Error("NATIVE_POLICY_PATH_INVALID");
-  // Policy is not a secret, but MUST NOT be writable by other OS accounts
-  // (it pins worker ID, extension origin, public key and target fingerprints).
+  // The installed owner policy pins worker/profile/target identity. A safe
+  // file alone is insufficient if a shared or redirected parent can swap it.
   if(typeof process.getuid!=="function"||!constants.O_NOFOLLOW)
     throw Error("NATIVE_OS_POLICY_NOT_CERTIFIED");
+  const parentPath=dirname(path);
+  let parent;
+  try{
+    parent=await lstat(parentPath);
+    if(!parent.isDirectory()||parent.isSymbolicLink()||
+       parent.uid!==process.getuid()||(parent.mode&0o077)!==0||
+       await realpath(parentPath)!==parentPath)
+      throw Error("bad parent");
+  }catch{throw Error("NATIVE_POLICY_PARENT_DENIED");}
   const handle=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);
   try{
     const info=await handle.stat();
     if(!info.isFile()||info.size<8||info.size>4096||
-      (info.mode&0o022)!==0||
+      (info.mode&0o077)!==0||info.nlink!==1||
       info.uid!==process.getuid())
       throw Error("NATIVE_POLICY_OWNER_INVALID");
     const raw=await handle.readFile({encoding:"utf8"});
