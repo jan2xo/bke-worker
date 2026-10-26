@@ -24,3 +24,18 @@ If prerequisites are missing: `brew install gh jq python` and `brew install --ca
 ## Acceptance is LIVE / NOT_RUN
 
 CI does not prove ChatGPT can perform the task. Actual PR #148 commits and comments, browser restart, and no-duplicate behavior must be observed. A broadly authorized ChatGPT GitHub connector is not technically file-scoped by the prompt; stop if it edits other files. Existing F1-03 source-write safety denial is unchanged.
+
+## Mac sender failure diagnostic (owner-local only)
+
+The previous pilot discarded stdout/stderr from `send-chatgpt-live.sh`.
+The runner now captures one failed/successful send's subprocess output **only
+on the owner's Mac** in `~/.local/state/bke-worker/pilot-pr148.send.log`
+(permission `0600`), and prints the local path and exit code on failure.
+Nothing is uploaded to GitHub or included in the wake prompt. **Inspect the
+file for `ERROR:` messages; redact any tokens, IDs, cookies, or sensitive
+paths before sharing.** Do not paste the entire log blindly.
+
+A failed exit still quarantines the journal as `pending`: a real ChatGPT
+message might have been submitted before the process returned nonzero. The
+owner must inspect the *exact dedicated chat* before any second send. Do not
+clear pending automatically, retry blindly or merge PR #148.

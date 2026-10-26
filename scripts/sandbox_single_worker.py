@@ -155,14 +155,34 @@ def dispatch(message: str):
     # Prevent a general worker env file from overriding the sandbox target.
     environment["BKE_WORKER_ENV_FILE"] = "/dev/null"
     command = ["bash", str(root / "scripts/send-chatgpt-live.sh"), message]
+    # Private, owner-local evidence. Do not dump the browser error into
+    # Github, the ChatGPT prompt, CI, or other shared telemetry.
+    journal = Path(os.environ.get("BKE_SANDBOX_JOURNAL",
+                    str(Path.home() / ".local/state/bke-worker/pilot-pr148.json")))
+    local_log = journal.with_suffix(".send.log")
+    local_log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(local_log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        result = subprocess.run(command, env=environment, timeout=150,
-                                check=False, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        raise Blocked("SEND_OUTCOME_UNCERTAIN") from None
+        with os.fdopen(descriptor, "w", encoding="utf-8") as evidence:
+            try:
+                result = subprocess.run(command, env=environment, timeout=150,
+                                        check=False, stdout=evidence,
+                                        stderr=subprocess.STDOUT)
+            except (OSError, subprocess.TimeoutExpired):
+                print("LOCAL_SEND_ERROR:LAUNCH_OR_TIMEOUT", file=sys.stderr,
+                      flush=True)
+                print("LOCAL_SEND_LOG:" + str(local_log), file=sys.stderr,
+                      flush=True)
+                raise Blocked("SEND_OUTCOME_UNCERTAIN") from None
+    except Blocked:
+        raise
     if result.returncode != 0:
-        # The underlying smoke may have submitted before returning error.
+        print("LOCAL_SEND_EXIT:" + str(result.returncode), file=sys.stderr,
+              flush=True)
+        print("LOCAL_SEND_LOG:" + str(local_log), file=sys.stderr,
+              flush=True)
+        # A failed subprocess might have already submitted the chat turn.
+        # PENDING stays durable until the human verifies the exact chat.
         raise Blocked("SEND_OUTCOME_UNCERTAIN")
 
 

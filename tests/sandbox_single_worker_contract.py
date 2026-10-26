@@ -112,6 +112,22 @@ class PilotTests(unittest.TestCase):
             with self.assertRaisesRegex(pilot.Blocked, "OWNER_RECOVERY_REQUIRED"):
                 pilot.tick(self.journal, live=True, now=5000)
 
+    def test_sender_failure_is_local_log_only_and_unknown_send_quarantined(self):
+        fake = type("Exit", (), {"returncode": 1})()
+        with patch.dict(os.environ, {"BKE_SANDBOX_JOURNAL": str(self.journal)}), patch.object(
+                pilot.subprocess, "run", return_value=fake) as command:
+            with self.assertRaisesRegex(pilot.Blocked, "SEND_OUTCOME_UNCERTAIN"):
+                pilot.dispatch("bounded test message")
+        args, kwargs = command.call_args
+        self.assertEqual(args[0][0], "bash")
+        self.assertEqual(kwargs["stderr"], pilot.subprocess.STDOUT)
+        self.assertNotEqual(kwargs["stdout"], pilot.subprocess.DEVNULL)
+        local_log = self.journal.with_suffix(".send.log")
+        self.assertTrue(local_log.is_file())
+        self.assertEqual(local_log.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("bounded test message", local_log.read_text())
+        self.assertEqual(kwargs["env"]["BKE_WORKER_ENV_FILE"], "/dev/null")
+
     def test_rate_cap_and_no_cross_pr_reassignment(self):
         state = {"assignment": pilot.PR_NUMBER, "pending": None, "sends": [
             {"time": i, "key": "old" + str(i), "head": HEAD}
