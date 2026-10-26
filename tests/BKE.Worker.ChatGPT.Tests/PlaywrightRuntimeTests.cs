@@ -66,6 +66,11 @@ public sealed class PlaywrightRuntimeTests
             var page = await host.GetPage(CancellationToken.None);
             var submitted = await page.EvaluateAsync<string?>("localStorage.getItem('last-prompt')");
             Assert.Equal("CONTINUE FROM THE NOTION CHECKLIST.", submitted);
+            Assert.Equal(
+                "CONTINUE FROM THE NOTION CHECKLIST.",
+                await page.EvaluateAsync<string?>(
+                    "document.querySelector(\"[data-message-author-role='user']\")?.textContent"));
+            Assert.Equal("", await page.EvaluateAsync<string>("document.querySelector('textarea').value"));
 
             await page.EvaluateAsync("document.getElementById('stop').hidden = false");
             Assert.False(await driver.CanSendNextTurn(CancellationToken.None));
@@ -106,6 +111,158 @@ public sealed class PlaywrightRuntimeTests
 
             var submitted = await page.EvaluateAsync<string?>("localStorage.getItem('last-prompt')");
             Assert.Equal("WAIT FOR COMPOSER", submitted);
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            DeleteProfileDirectory(profile);
+        }
+    }
+
+    [Fact]
+    public async Task Send_refuses_existing_draft_without_clearing_or_submitting_it()
+    {
+        await WithOpenSurface(new ComposerDriver(), async (driver, page) =>
+        {
+            await page.EvaluateAsync("document.querySelector('textarea').value = 'EARLIER UNCONFIRMED DRAFT'");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendNotSubmittedException>(() =>
+                driver.Send("NEW INSTRUCTION", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_COMPOSER_HAS_EXISTING_DRAFT", exception.Message);
+            Assert.Equal(
+                "EARLIER UNCONFIRMED DRAFT",
+                await page.EvaluateAsync<string>("document.querySelector('textarea').value"));
+            Assert.Null(await page.EvaluateAsync<string?>("localStorage.getItem('last-prompt')"));
+            Assert.Equal(0, await UserTurnCount(page));
+        });
+    }
+
+    [Fact]
+    public async Task Send_has_no_enter_fallback_when_send_button_is_missing()
+    {
+        await WithOpenSurface(new ComposerDriver(), async (driver, page) =>
+        {
+            await page.EvaluateAsync("document.getElementById('send').remove()");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendNotSubmittedException>(() =>
+                driver.Send("NO BUTTON", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_SEND_BUTTON_UNAVAILABLE", exception.Message);
+            Assert.Null(await page.EvaluateAsync<string?>("localStorage.getItem('enter-pressed')"));
+            Assert.Equal(0, await UserTurnCount(page));
+        });
+    }
+
+    [Fact]
+    public async Task Send_has_no_enter_fallback_when_send_button_stays_disabled()
+    {
+        await WithOpenSurface(new ComposerDriver(), async (driver, page) =>
+        {
+            await page.EvaluateAsync("document.getElementById('send').disabled = true");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendNotSubmittedException>(() =>
+                driver.Send("DISABLED BUTTON", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_SEND_BUTTON_UNAVAILABLE", exception.Message);
+            Assert.Null(await page.EvaluateAsync<string?>("localStorage.getItem('enter-pressed')"));
+        });
+    }
+
+    [Fact]
+    public async Task Send_waits_for_send_button_that_enables_after_input()
+    {
+        await WithOpenSurface(new ComposerDriver(), async (driver, page) =>
+        {
+            await page.EvaluateAsync("""
+                const send = document.getElementById('send');
+                send.disabled = true;
+                document.querySelector('textarea').addEventListener('input', () => {
+                  setTimeout(() => { send.disabled = false; }, 800);
+                });
+                """);
+
+            await driver.Send("LATE BUTTON", CancellationToken.None);
+
+            Assert.Equal(1, await UserTurnCount(page));
+            Assert.Null(await page.EvaluateAsync<string?>("localStorage.getItem('enter-pressed')"));
+        });
+    }
+
+    [Fact]
+    public async Task Click_that_leaves_draft_in_composer_is_unconfirmed_not_dispatched()
+    {
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeSubmitMode = 'retain-draft'");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send("BKE WORKER PERSONAL PILOT", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_SEND_UNCONFIRMED", exception.Message);
+            Assert.Equal(0, await UserTurnCount(page));
+            Assert.Equal(
+                "BKE WORKER PERSONAL PILOT",
+                await page.EvaluateAsync<string>("document.querySelector('textarea').value"));
+        });
+    }
+
+    [Fact]
+    public async Task New_user_turn_with_different_text_is_unconfirmed()
+    {
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeTranscriptOverride = 'SOMETHING ELSE ENTIRELY'");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send("EXPECTED INSTRUCTION", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_SEND_UNCONFIRMED", exception.Message);
+        });
+    }
+
+    [Fact]
+    public async Task Confirmation_requires_a_new_turn_not_an_older_identical_one()
+    {
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("""
+                const old = document.createElement('div');
+                old.setAttribute('data-message-author-role', 'user');
+                old.textContent = 'REPEATED INSTRUCTION';
+                document.getElementById('transcript').appendChild(old);
+                window.bkeSubmitMode = 'retain-draft';
+                """);
+
+            await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send("REPEATED INSTRUCTION", CancellationToken.None));
+            Assert.Equal(1, await UserTurnCount(page));
+        });
+    }
+
+    private static Task<int> UserTurnCount(Microsoft.Playwright.IPage page) =>
+        page.EvaluateAsync<int>("document.querySelectorAll(\"[data-message-author-role='user']\").length");
+
+    private static async Task WithOpenSurface(
+        ComposerDriver composer,
+        Func<ChatGPTWebDriver, Microsoft.Playwright.IPage, Task> body)
+    {
+        await using var server = await LoopbackServer.Start(PageHtml);
+        var profile = CreateProfileDirectory();
+        var host = new ChromiumHost(new ChromiumHostOptions(profile, Headless: true, server.BaseUrl));
+        var driver = new ChatGPTWebDriver(
+            host,
+            new ProjectNavigator(),
+            new ConversationNavigator(),
+            composer);
+
+        try
+        {
+            await driver.OpenContext(
+                ContextTarget.ProjectChat("DUMP", "Engineering Loop"),
+                CancellationToken.None);
+            var page = await host.GetPage(CancellationToken.None);
+            await body(driver, page);
         }
         finally
         {
@@ -223,6 +380,8 @@ public sealed class PlaywrightRuntimeTests
             <a href="#" id="conversation">Engineering Loop</a>
           </section>
 
+          <main id="transcript"></main>
+
           <section id="composer" hidden>
             <textarea aria-label="Prompt"></textarea>
             <button aria-label="Send prompt" id="send">Send</button>
@@ -243,9 +402,23 @@ public sealed class PlaywrightRuntimeTests
               document.getElementById('composer').hidden = false;
             });
 
+            // Mirrors the live surface: a real submit adds a user turn and clears the composer.
+            // Tests flip window.bkeSubmitMode to simulate a click that leaves the draft in place.
+            window.bkeSubmitMode = 'deliver';
             document.getElementById('send').addEventListener('click', () => {
-              const prompt = document.querySelector('textarea').value;
+              const textarea = document.querySelector('textarea');
+              const prompt = textarea.value;
               localStorage.setItem('last-prompt', prompt);
+              if (window.bkeSubmitMode !== 'deliver') return;
+              const turn = document.createElement('div');
+              turn.setAttribute('data-message-author-role', 'user');
+              turn.textContent = window.bkeTranscriptOverride ?? prompt;
+              document.getElementById('transcript').appendChild(turn);
+              textarea.value = '';
+            });
+
+            document.querySelector('textarea').addEventListener('keydown', event => {
+              if (event.key === 'Enter') localStorage.setItem('enter-pressed', 'yes');
             });
           </script>
         </body>

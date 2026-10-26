@@ -79,10 +79,22 @@ try
     await driver.Send(message, CancellationToken.None);
     page = await host.GetPage(CancellationToken.None);
 
-    Console.WriteLine("LIVE CHATGPT SEND SMOKE DISPATCHED");
+    Console.WriteLine("LIVE CHATGPT SEND SMOKE CONFIRMED_IN_TRANSCRIPT");
     Console.WriteLine($"target: {target.Type}");
     Console.WriteLine($"url: {page.Url}");
     return 0;
+}
+catch (ChatGptSendNotSubmittedException ex)
+{
+    // Nothing was clicked. The runner still treats any non-zero exit as uncertain.
+    Console.Error.WriteLine($"ERROR: NOT_SUBMITTED: {ex.Message}");
+    return 4;
+}
+catch (ChatGptSendUnconfirmedException ex)
+{
+    // The send button was clicked but delivery was not proven: UNKNOWN_SEND, owner review.
+    Console.Error.WriteLine($"ERROR: UNKNOWN_SEND: {ex.Message}");
+    return 5;
 }
 catch (Exception ex)
 {
