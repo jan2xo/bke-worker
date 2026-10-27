@@ -67,7 +67,8 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 echo "Dedicated pilot Chrome opened. Authenticate manually if needed."
-echo "Open the EXACT existing pilot conversation; DO NOT send another message."
+echo "In that SAME Chrome tab, open the EXACT existing pilot conversation; do not open a second ChatGPT tab."
+echo "DO NOT send another message."
 echo "The worker process remains stopped. This script inspects only."
 read -r -p "Press Enter after the original SENT turn and idle composer are visible: " _
 read -r -p "Paste the dedicated chat URL (https://chatgpt.com/c/<conversation-id>): " CHAT_URL
