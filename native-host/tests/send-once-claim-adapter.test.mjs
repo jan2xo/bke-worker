@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GitHubSendOnceRestAdapter} from '../dist/send-once-claim-adapter.js';
+import {GitHubSendOnceRestAdapter} from '../dist/native-host/send-once-claim-adapter.js';
 
 const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40), TOKEN = 'super-secret-token-never-log';
 const request = {repository:'jan2xo/bke-worker',prNumber:123,headSha:SHA,
@@ -168,4 +168,45 @@ test('failed authority refresh revokes previous write eligibility',async()=>{
   await throwsCode(()=>f.adapter.readAuthority(),'GITHUB_PR_READ_FAILED');
   await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
   assert.deepEqual(f.requests.map(x=>x.init.method),['GET','GET']);
+});
+
+test('GET timeout aborts and stays GITHUB_TRANSPORT_UNCERTAIN',async()=>{
+  const seen = [];
+  const fetch = async (url,init) => {
+    seen.push(init);
+    return new Promise((_ok,reject)=>{
+      init.signal.addEventListener('abort',()=>reject(Error(TOKEN)),{once:true});
+    });
+  };
+  const a = new GitHubSendOnceRestAdapter(request,fetch,async()=>TOKEN,proof,20);
+  await throwsCode(()=>a.readAuthority(),'GITHUB_TRANSPORT_UNCERTAIN');
+  assert.equal(seen.length,1);
+  assert.equal(seen[0].signal.aborted,true);
+});
+test('POST timeout consumes one attempt and cannot trigger a second POST',async()=>{
+  const seen = [];
+  const fetch = async (_url,init) => {
+    seen.push(init);
+    if (init.method === 'GET') return pullOk;
+    return new Promise((_ok,reject)=>{
+      init.signal.addEventListener('abort',()=>reject(Error(TOKEN)),{once:true});
+    });
+  };
+  const a = new GitHubSendOnceRestAdapter(request,fetch,async()=>TOKEN,proof,20);
+  await a.readAuthority();
+  await throwsCode(()=>a.createRefIfAbsent(REF,SHA),'GITHUB_TRANSPORT_UNCERTAIN');
+  await throwsCode(()=>a.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
+  assert.equal(seen.filter(x=>x.method==='POST').length,1);
+  assert.equal(seen[1].signal.aborted,true);
+});
+test('slow successful JSON body is bounded by the same request deadline',async()=>{
+  const fetch = async (_url,init) => ({status:200,json:()=>new Promise((_ok,reject)=>{
+    init.signal.addEventListener('abort',()=>reject(Error(TOKEN)),{once:true});
+  })});
+  const a = new GitHubSendOnceRestAdapter(request,fetch,async()=>TOKEN,proof,20);
+  await throwsCode(()=>a.readAuthority(),'GITHUB_TRANSPORT_UNCERTAIN');
+});
+test('invalid deadline fails before any HTTP call',async()=>{
+  assert.throws(()=>new GitHubSendOnceRestAdapter(request,async()=>pullOk,async()=>TOKEN,proof,Infinity),
+    /GITHUB_DEADLINE_INVALID/);
 });

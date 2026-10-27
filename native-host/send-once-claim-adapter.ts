@@ -1,11 +1,11 @@
 /** F1-02 GitHub REST transport. Server-private only; never put a token in a browser. */
-import type {ClaimAuthority, SendOnceAttempt, SendOnceGitHub} from './send-once-claim.js';
+import type {ClaimAuthority, SendOnceAttempt, SendOnceGitHub} from '../browser-extension/src/send-once-claim.js';
 
 export interface HttpResponse {
   status: number;
   json(): Promise<unknown>;
 }
-export type HttpFetch = (url: string, init: RequestInit) => Promise<HttpResponse>;
+export type HttpFetch = (url: string, init: RequestInit & {signal: AbortSignal}) => Promise<HttpResponse>;
 export type TokenProvider = () => string | Promise<string>;
 
 /** TODO: supply from independently authenticated installation and ownership reader.
@@ -48,35 +48,54 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
     private readonly fetch: HttpFetch,
     private readonly tokenProvider: TokenProvider,
     private readonly proof: ExplicitAuthorityInputs = {},
+    private readonly timeoutMs: number = 5_000,
   ) {
     if (!request || !REPO.test(request.repository) ||
         !Number.isSafeInteger(request.prNumber) || request.prNumber < 1 ||
         !ATTEMPT.test(request.attemptId) || !SHA.test(request.headSha))
       throw Error('GITHUB_REQUEST_INVALID');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000)
+      throw Error('GITHUB_DEADLINE_INVALID');
     this.root = `https://api.github.com/repos/${request.repository}`;
     this.claimRef = `refs/bke/claims/${request.prNumber}/${request.attemptId}`;
   }
 
+  /** Every network request and successful JSON response has one abortable deadline. */
   private async call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<HttpResponse> {
     let token: string;
     try { token = await this.tokenProvider(); }
     catch { throw Error('GITHUB_AUTH_UNAVAILABLE'); }
     if (typeof token !== 'string' || !token.trim()) throw Error('GITHUB_AUTH_UNAVAILABLE');
-    try {
-      return await this.fetch(this.root + path, {
-        method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          ...(body === undefined ? {} : {'Content-Type':'application/json'}),
-        },
-        ...(body === undefined ? {} : {body: JSON.stringify(body)}),
-      });
-    } catch {
-      // A network/timeout exception may contain a URL, request or token: never echo it.
-      throw Error('GITHUB_TRANSPORT_UNCERTAIN');
-    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(Error('GITHUB_TRANSPORT_UNCERTAIN'));
+      }, this.timeoutMs);
+    });
+    const work = (async (): Promise<HttpResponse> => {
+      let response: HttpResponse;
+      try {
+        response = await this.fetch(this.root + path, {
+          method, signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            ...(body === undefined ? {} : {'Content-Type':'application/json'}),
+          },
+          ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+        });
+      } catch { throw Error('GITHUB_TRANSPORT_UNCERTAIN'); }
+      if (![200, 201, 422].includes(response.status)) return response;
+      let parsed: unknown;
+      try { parsed = await response.json(); }
+      catch { throw Error('GITHUB_RESPONSE_INVALID'); }
+      return {status: response.status, json: async () => parsed};
+    })();
+    try { return await Promise.race([work, deadline]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
   }
   private async json(response: HttpResponse): Promise<Record<string, unknown>> {
     try { return record(await response.json()); }
