@@ -240,6 +240,162 @@ public sealed class PlaywrightRuntimeTests
         });
     }
 
+    [Fact]
+    public async Task Delayed_transcript_appearance_is_confirmed_within_window()
+    {
+        var composer = new ComposerDriver(TimeSpan.FromSeconds(6));
+        await WithOpenSurface(composer, async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeSubmitMode = 'deliver-delayed'");
+
+            await driver.Send("DELAYED BKE INSTRUCTION", CancellationToken.None);
+
+            Assert.Equal(1, await UserTurnCount(page));
+            Assert.NotNull(composer.LastSubmissionDiagnostics);
+            Assert.True(composer.LastSubmissionDiagnostics!.Confirmed);
+            Assert.False(composer.LastSubmissionDiagnostics.TimedOut);
+        });
+    }
+
+    [Fact]
+    public async Task Rerendered_user_turn_node_is_confirmed_not_lost_to_stale_locator()
+    {
+        var composer = new ComposerDriver(TimeSpan.FromSeconds(6));
+        await WithOpenSurface(composer, async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeSubmitMode = 'deliver-replace'");
+
+            await driver.Send("RERENDERED BKE INSTRUCTION", CancellationToken.None);
+
+            Assert.True(composer.LastSubmissionDiagnostics!.Confirmed);
+        });
+    }
+
+    [Fact]
+    public async Task Contenteditable_composer_with_live_like_turn_structure_is_confirmed()
+    {
+        var composer = new ComposerDriver(TimeSpan.FromSeconds(4));
+        await WithOpenSurface(composer, async (driver, page) =>
+        {
+            await page.EvaluateAsync("""
+                const textarea = document.querySelector('textarea');
+                const editor = document.createElement('div');
+                editor.setAttribute('contenteditable', 'true');
+                editor.id = 'prompt-textarea';
+                editor.innerHTML = '<p><br></p>';
+                textarea.replaceWith(editor);
+                """);
+
+            await driver.Send("CONTENTEDITABLE BKE INSTRUCTION", CancellationToken.None);
+
+            Assert.True(composer.LastSubmissionDiagnostics!.Confirmed);
+            Assert.Equal(1, await UserTurnCount(page));
+        });
+    }
+
+    [Fact]
+    public async Task Turn_delivered_but_composer_retaining_instruction_is_unconfirmed_with_predicate()
+    {
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeSubmitMode = 'deliver-retain'");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send("RETAINED BKE INSTRUCTION", CancellationToken.None));
+
+            Assert.Equal("CHATGPT_SEND_UNCONFIRMED", exception.Message);
+            var diagnostics = Assert.IsType<SubmissionDiagnostics>(exception.Diagnostics);
+            Assert.Equal(SubmissionDiagnostics.ComposerRetainsDraft, diagnostics.FailedPredicate);
+            Assert.True(diagnostics.NewUserTurnDetected);
+            Assert.True(diagnostics.FingerprintMatched);
+            Assert.True(diagnostics.ComposerRetainsInstruction);
+            Assert.True(diagnostics.TimedOut);
+        });
+    }
+
+    [Fact]
+    public async Task Unconfirmed_diagnostics_name_the_failing_predicate_without_leaking_text()
+    {
+        const string instruction = "PRIVATE INSTRUCTION TEXT MUST NOT LEAK";
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("window.bkeTranscriptOverride = 'SOMETHING ELSE ENTIRELY'");
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send(instruction, CancellationToken.None));
+
+            var diagnostics = Assert.IsType<SubmissionDiagnostics>(exception.Diagnostics);
+            Assert.Equal(SubmissionDiagnostics.FingerprintMismatch, diagnostics.FailedPredicate);
+            Assert.Equal(0, diagnostics.UserTurnsBefore);
+            Assert.Equal(1, diagnostics.UserTurnsAfter);
+            var line = diagnostics.ToStatusLine();
+            Assert.StartsWith("SEND_ACK_DIAG ", line);
+            Assert.Contains("failed_predicate=NEWEST_USER_TURN_FINGERPRINT_MISMATCH", line);
+            Assert.DoesNotContain("PRIVATE", line);
+            Assert.DoesNotContain("SOMETHING ELSE", line);
+            Assert.DoesNotContain("http", line);
+        });
+    }
+
+    [Fact]
+    public async Task Retained_draft_reports_no_new_turn_and_old_identical_turn_is_not_counted()
+    {
+        await WithOpenSurface(new ComposerDriver(TimeSpan.FromSeconds(2)), async (driver, page) =>
+        {
+            await page.EvaluateAsync("""
+                const old = document.createElement('div');
+                old.setAttribute('data-message-author-role', 'user');
+                old.textContent = 'REPEATED INSTRUCTION';
+                document.getElementById('transcript').appendChild(old);
+                window.bkeSubmitMode = 'retain-draft';
+                """);
+
+            var exception = await Assert.ThrowsAsync<ChatGptSendUnconfirmedException>(() =>
+                driver.Send("REPEATED INSTRUCTION", CancellationToken.None));
+
+            var diagnostics = Assert.IsType<SubmissionDiagnostics>(exception.Diagnostics);
+            Assert.Equal(SubmissionDiagnostics.NoNewUserTurn, diagnostics.FailedPredicate);
+            Assert.Equal(1, diagnostics.UserTurnsBefore);
+            Assert.Equal(1, diagnostics.UserTurnsAfter);
+            Assert.True(diagnostics.ComposerRetainsInstruction);
+            Assert.Equal(1, await UserTurnCount(page));
+        });
+    }
+
+    [Fact]
+    public async Task Delivered_turn_probe_is_read_only_and_reports_predicates()
+    {
+        await WithOpenSurface(new ComposerDriver(), async (driver, page) =>
+        {
+            await page.EvaluateAsync("""
+                const turn = document.createElement('div');
+                turn.setAttribute('data-message-author-role', 'user');
+                turn.setAttribute('data-message-id', 'm-1');
+                turn.textContent = 'ALREADY DELIVERED TURN ONE';
+                document.getElementById('transcript').appendChild(turn);
+                """);
+
+            var hit = await ComposerDriver.InspectDeliveredTurn(page, "ALREADY DELIVERED TURN ONE", CancellationToken.None);
+            var miss = await ComposerDriver.InspectDeliveredTurn(page, "NEVER SENT", CancellationToken.None);
+
+            Assert.True(hit.ComposerFound && hit.ComposerEmpty);
+            Assert.Equal(1, hit.UserRoleElements);
+            Assert.Equal(1, hit.UserRoleElementsWithMessageId);
+            Assert.True(hit.NewestUserRoleMatchesInnerText);
+            Assert.True(hit.NewestUserRoleMatchesTextContent);
+            Assert.True(hit.AnyUserRoleMatchesInnerText);
+            Assert.True(hit.PageTextMatches);
+            Assert.False(miss.NewestUserRoleMatchesInnerText);
+            Assert.False(miss.PageTextMatches);
+            Assert.DoesNotContain("ALREADY", hit.ToStatusLine());
+
+            // Read-only: nothing was typed or clicked.
+            Assert.Null(await page.EvaluateAsync<string?>("localStorage.getItem('last-prompt')"));
+            Assert.Equal("", await page.EvaluateAsync<string>("document.querySelector('textarea').value"));
+            Assert.Equal(1, await UserTurnCount(page));
+        });
+    }
+
     private static Task<int> UserTurnCount(Microsoft.Playwright.IPage page) =>
         page.EvaluateAsync<int>("document.querySelectorAll(\"[data-message-author-role='user']\").length");
 
@@ -403,18 +559,61 @@ public sealed class PlaywrightRuntimeTests
             });
 
             // Mirrors the live surface: a real submit adds a user turn and clears the composer.
-            // Tests flip window.bkeSubmitMode to simulate a click that leaves the draft in place.
+            // Tests flip window.bkeSubmitMode to simulate other post-click outcomes:
+            //   'deliver'          turn appears at once, composer cleared
+            //   'retain-draft'     nothing delivered, draft stays in the composer
+            //   'deliver-delayed'  turn appears only after window.bkeDeliverDelayMs
+            //   'deliver-retain'   turn appears but the composer still holds the instruction
+            //   'deliver-replace'  optimistic turn node is detached and re-rendered (SPA churn)
             window.bkeSubmitMode = 'deliver';
-            document.getElementById('send').addEventListener('click', () => {
-              const textarea = document.querySelector('textarea');
-              const prompt = textarea.value;
-              localStorage.setItem('last-prompt', prompt);
-              if (window.bkeSubmitMode !== 'deliver') return;
+            window.bkeDeliverDelayMs = 1500;
+            const composerBox = () => document.querySelector("textarea, [contenteditable='true']");
+            const readBox = box => box instanceof HTMLTextAreaElement ? box.value : box.innerText;
+            const clearBox = box => {
+              if (box instanceof HTMLTextAreaElement) box.value = '';
+              else box.innerHTML = '<p><br></p>';
+            };
+            // Live-like turn structure: an article wrapper, a screen-reader heading outside the
+            // author-role node, and the text nested inside it.
+            const appendTurn = text => {
+              const article = document.createElement('article');
+              article.setAttribute('data-turn', 'user');
+              const heading = document.createElement('h5');
+              heading.textContent = 'You said:';
+              heading.style.position = 'absolute';
+              heading.style.width = '1px';
+              heading.style.height = '1px';
+              heading.style.overflow = 'hidden';
               const turn = document.createElement('div');
               turn.setAttribute('data-message-author-role', 'user');
-              turn.textContent = window.bkeTranscriptOverride ?? prompt;
-              document.getElementById('transcript').appendChild(turn);
-              textarea.value = '';
+              turn.setAttribute('data-message-id', crypto.randomUUID());
+              const body = document.createElement('div');
+              body.style.whiteSpace = 'pre-wrap';
+              body.textContent = text;
+              turn.appendChild(body);
+              article.append(heading, turn);
+              document.getElementById('transcript').appendChild(article);
+              return article;
+            };
+            document.getElementById('send').addEventListener('click', () => {
+              const box = composerBox();
+              const prompt = readBox(box);
+              localStorage.setItem('last-prompt', prompt);
+              const mode = window.bkeSubmitMode;
+              if (mode === 'retain-draft') return;
+              const text = window.bkeTranscriptOverride ?? prompt;
+              if (mode === 'deliver-delayed') {
+                clearBox(box);
+                setTimeout(() => appendTurn(text), window.bkeDeliverDelayMs);
+                return;
+              }
+              const article = appendTurn(text);
+              if (mode === 'deliver-retain') return;
+              clearBox(box);
+              if (mode === 'deliver-replace') {
+                const swap = () => { article.remove(); setTimeout(() => appendTurn(text), 150); };
+                setTimeout(swap, 30);
+              }
             });
 
             document.querySelector('textarea').addEventListener('keydown', event => {

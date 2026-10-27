@@ -183,6 +183,27 @@ class PilotTests(unittest.TestCase):
                 with self.assertRaisesRegex(pilot.Blocked, "OWNER_LIVE_OPT_IN"):
                     pilot.check_live_configuration()
 
+    def test_send_ack_probe_is_non_sending_and_private(self):
+        root = Path(__file__).resolve().parents[1]
+        tool = (root / "tools/BKE.Worker.ChatGPT.AckProbe/Program.cs").read_text(encoding="utf-8")
+        script = (root / "scripts/probe-pilot-send-ack.sh").read_text(encoding="utf-8")
+        # The probe may only observe: no send, click, fill, typing or key presses.
+        for forbidden in (".Send(", "ClickAsync", "FillAsync", "TypeAsync", "PressAsync",
+                          "Keyboard", "pilot-macos", "send-chatgpt-live"):
+            self.assertNotIn(forbidden, tool)
+            self.assertNotIn(forbidden, script)
+        for forbidden in ("tick(", "dispatch(", "save_journal", "BKE_SANDBOX_LIVE_SEND_ENABLED"):
+            self.assertNotIn(forbidden, script)
+        # The instruction travels on stdin and is never echoed; output is codes only.
+        self.assertIn("Console.In.ReadToEndAsync", tool)
+        self.assertNotIn("Console.WriteLine(instruction", tool)
+        self.assertIn("InspectDeliveredTurn", tool)
+        self.assertIn("NOTHING_SENT", tool)
+        self.assertIn("LOOPBACK_CDP_REQUIRED", script)
+        # The reconstructed instruction is exactly the turn-1 prompt for the turn-1 head.
+        self.assertIn('TURN1_HEAD="3c7de7d9740948c294ea3bbd8bcc5a2d515c82ef"', script)
+        self.assertIn("p.prompt(p.PR_NUMBER, sys.argv[1])", script)
+
 
 if __name__ == "__main__":
     unittest.main()
