@@ -39,6 +39,8 @@ function cleanLabel(value: unknown): string {
 
 export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
   private accessProven = false;
+  private writeAuthorityProven = false;
+  private createAttempted = false;
   private readonly root: string;
   private readonly claimRef: string;
   constructor(
@@ -92,6 +94,8 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
   }
 
   async readAuthority(): Promise<ClaimAuthority> {
+    // A failed refresh must never leave an older write grant active.
+    this.writeAuthorityProven = false;
     const response = await this.call('GET', `/pulls/${this.request.prNumber}`);
     if (response.status !== 200) throw Error('GITHUB_PR_READ_FAILED');
     const pr = await this.json(response);
@@ -114,6 +118,12 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
       throw Error('GITHUB_EXTERNAL_AUTHORITY_REQUIRED');
     const assignedWorkerId = owners[0]!.slice('bke-worker:'.length);
     this.accessProven = true;
+    // Repository reachability is NOT PR/worker send-claim authorization.
+    this.writeAuthorityProven = pr.state === 'open' &&
+      headSha === this.request.headSha &&
+      assignedWorkerId === this.request.workerId &&
+      p.authenticatedWorkerId === this.request.workerId &&
+      p.activeWorkerPrCount === 1 && p.currentAttemptId === this.request.attemptId;
     return {
       repository: this.request.repository,
       installationRepository: p.installationRepository,
@@ -144,8 +154,12 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
   }
 
   async createRefIfAbsent(ref: string, headSha: string): Promise<'CREATED' | 'EXISTS'> {
-    if (ref !== this.claimRef || headSha !== this.request.headSha || !this.accessProven)
+    if (ref !== this.claimRef || headSha !== this.request.headSha ||
+        !this.writeAuthorityProven || this.createAttempted)
       throw Error('GITHUB_REF_WRITE_NOT_AUTHORIZED');
+    // A lost response irrevocably consumes this instance's single POST attempt.
+    this.createAttempted = true;
+    this.writeAuthorityProven = false;
     const response = await this.call('POST', '/git/refs', {ref, sha: headSha});
     if (response.status === 422) {
       const data = await this.json(response);
