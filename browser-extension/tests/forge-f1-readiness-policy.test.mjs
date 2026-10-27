@@ -178,3 +178,13 @@ test("non-object input and malformed readiness session fail closed", () => {
   const e = fixture(); e.readinessSessionId = "x";
   assert.ok(codes(e).includes("READINESS_SESSION_ID_INVALID"));
 });
+
+test("optional nativeMessaging declaration is not misreported as granted or absent", () => {
+  const e=fixture();
+  e.extension.nativeMessagingPermission=null;
+  const r=evaluateF1DesktopReadiness(e);
+  assert.equal(r.real_chrome_status,"REAL_CHROME_READY");
+  assert.equal(r.extension.native_messaging_permission,"OPTIONAL_GRANT_NOT_MEASURED");
+  assert.equal(r.native_host.live_chrome_connection,"NOT_TESTED_OPTIONAL_NATIVE_PERMISSION_UNVERIFIED");
+  assert.equal(r.authority.message_send_authority,"NONE");
+});

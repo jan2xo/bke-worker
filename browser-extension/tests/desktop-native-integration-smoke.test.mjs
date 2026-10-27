@@ -413,9 +413,11 @@ test("the smoke remains source-only and exposes no Chrome permission or authorit
   const popup = readFileSync(join(extensionRoot, "src/popup.ts"), "utf8");
   const client = readFileSync(join(extensionRoot, "src/native-proof-client.ts"), "utf8");
   assert.deepEqual(manifest.permissions, ["storage"]);
-  assert.equal(JSON.stringify(manifest).includes("nativeMessaging"), false);
-  assert.doesNotMatch(serviceWorker, /native-proof-client|connectNative|signNativeProof/);
-  assert.doesNotMatch(popup, /native-proof-client|connectNative|signNativeProof/);
+  assert.deepEqual(manifest.optional_permissions, ["nativeMessaging"]);
+  assert.equal(JSON.stringify(manifest).includes("debugger"), false);
+  assert.match(serviceWorker, /nativeProofAction/);
+  assert.match(serviceWorker, /isTrustedPopup/);
+  assert.match(popup, /permissions.request/);
   assert.match(client, /admission_authority:"NONE"/);
   assert.match(client, /dispatch_authority:"NONE"/);
 });

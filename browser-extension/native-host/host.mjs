@@ -2,6 +2,7 @@
 // key; it does NOT issue Command Center authority, worker assignments or JWTs.
 import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
 import { nativeFrameReader,writeFrame } from "./framing.mjs";
+import { createLocalReadOnlyEnvelopeGate } from "./local-read-only-controller.mjs";
 
 const HOST_AUD = "bke-worker/desktop/native-key-proof/v1";
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -11,8 +12,9 @@ const ORIGIN = /^chrome-extension:\/\/[a-p]{32}\/$/u;
 const FIELDS = "bridge_identity_sha256,browser_profile_sha256,chatgpt_target_sha256";
 const POLICY = "allowed_origin,expires_at_ms,profile_binding_sha256,public_key_sha256,resources,version,worker_id";
 const HELLO = "client_nonce,public_key,resources,type,version,worker_id";
+const PROBE_HELLO = "client_nonce,public_key,read_only_probe,resources,type,version,worker_id";
+const CONTROL_HELLO = "client_nonce,controller_probe,public_key,read_only_probe,resources,type,version,worker_id";
 const PROOF = "client_nonce,device_signature,server_nonce,type,version";
-const MAX_CLOCK_SKEW = 30_000;
 export const HOST_PROOF_AUDIENCE = HOST_AUD;
 const exact=(x,fields)=>x&&typeof x==="object"&&!Array.isArray(x)&&
   Object.keys(x).sort().join(",")===fields;
@@ -50,7 +52,12 @@ export function nativeProofMessage({origin,worker_id,public_key_sha256,
     resources.bridge_identity_sha256,client_nonce,server_nonce,expires_at_ms]);
 }
 function matchesHello(v,policy){
-  if(!exact(v,HELLO)||v.type!=="HELLO"||v.version!==1||
+  const probe=Object.prototype.hasOwnProperty.call(v??{},"read_only_probe");
+  const control=Object.prototype.hasOwnProperty.call(v??{},"controller_probe");
+  if(!exact(v,control?CONTROL_HELLO:probe?PROBE_HELLO:HELLO)||
+     (probe&&v.read_only_probe!==true)||
+     (control&&(v.controller_probe!==true||v.read_only_probe!==true))||
+     v.type!=="HELLO"||v.version!==1||
      v.worker_id!==policy.worker_id||!validPublic(v.public_key)||
      !validResources(v.resources)||!sameResources(v.resources,policy.resources)||
      !isHash(v.client_nonce))return false;
@@ -64,8 +71,11 @@ function decodeP1363(s){
   const bytes=Buffer.from(s,"base64url");
   return bytes.length===64&&bytes.toString("base64url")===s?bytes:null;
 }
-function matchesProof(value,issued,hello,policy,origin,now){
-  if(!exact(value,PROOF)||value.type!=="PROOF"||value.version!==1||
+function matchesProof(value,issued,hello,policy,origin,now,issuedAt){
+  // Clock monotonicity is part of this one-shot proof: a signed response
+  // must not become valid again after wall-clock rollback or invalid time.
+  if(!Number.isSafeInteger(now)||now<issuedAt||
+    !exact(value,PROOF)||value.type!=="PROOF"||value.version!==1||
     value.client_nonce!==hello.client_nonce||
     value.server_nonce!==issued.server_nonce||now>=issued.expires_at_ms)
     return false;
@@ -87,7 +97,7 @@ function matchesProof(value,issued,hello,policy,origin,now){
 export async function runNativeProofHost({
   input,output,policy,claimedOrigin,now=()=>Date.now(),
   nonce=()=>randomBytes(32).toString("hex"),
-  timeoutMs=15_000,
+  timeoutMs=15_000,controllerOptions=null,
 }){
   // A claimed Chrome argv origin is not OS attestation on its own.
   // Browser native host manifest allow_origins / OS registration must be
@@ -97,6 +107,25 @@ export async function runNativeProofHost({
     claimedOrigin!==policy.allowed_origin ||
     !Number.isSafeInteger(timeoutMs)||timeoutMs<100||timeoutMs>15_000)
     throw Error("NATIVE_POLICY_DENIED");
+  // The launcher owns the authoritative policy. Once checked, bind the
+  // entire handshake to ONE immutable snapshot, not a mutable caller object
+  // that could be changed during async reads and writes.
+  const sessionPolicy=Object.freeze({
+    ...policy,resources:Object.freeze({...policy.resources}),
+  });
+  // A local read-only echo is NOT controller admission. Never extend the
+  // owner-pinned policy's lifetime just because the P-256 proof succeeded:
+  // external controller work can begin or finish after the policy expires.
+  let lastPolicyClock=started;
+  const requireCurrentOwnerPolicy=()=>{
+    let at;
+    try{at=now();}
+    catch{throw Error("NATIVE_OWNER_POLICY_CLOCK_DENIED");}
+    if(!Number.isSafeInteger(at)||at<lastPolicyClock||
+       at>=sessionPolicy.expires_at_ms)
+      throw Error("NATIVE_OWNER_POLICY_EXPIRED_OR_CLOCK_REWOUND");
+    lastPolicyClock=at;
+  };
   const reader=nativeFrameReader(input);
   let timer=null;
   const bounded=async()=>{
@@ -110,30 +139,95 @@ export async function runNativeProofHost({
   };
   try {
     const hello=await bounded();
-    if(!matchesHello(hello,policy))throw Error("NATIVE_HELLO_DENIED");
+    if(!matchesHello(hello,sessionPolicy))throw Error("NATIVE_HELLO_DENIED");
     const server_nonce=nonce();
     if(!isHash(server_nonce)||server_nonce===hello.client_nonce)
       throw Error("NATIVE_NONCE_DENIED");
     const moment=now();
-    if(moment<started-MAX_CLOCK_SKEW||moment>=policy.expires_at_ms)
+    if(!Number.isSafeInteger(moment)||moment<started||
+      moment>=sessionPolicy.expires_at_ms)
       throw Error("NATIVE_CLOCK_DENIED");
-    const expires_at_ms=Math.min(moment+timeoutMs,policy.expires_at_ms);
+    const expires_at_ms=Math.min(moment+timeoutMs,sessionPolicy.expires_at_ms);
     const issued={
       type:"CHALLENGE",version:1,server_nonce,
       client_nonce:hello.client_nonce,expires_at_ms,
-      profile_binding_sha256:policy.profile_binding_sha256,
+      profile_binding_sha256:sessionPolicy.profile_binding_sha256,
     };
-    await writeFrame(output,issued);
+    await writeFrame(output,issued,timeoutMs);
     const proof=await bounded();
-    if(!matchesProof(proof,issued,hello,policy,claimedOrigin,now()))
+    if(!matchesProof(proof,issued,hello,sessionPolicy,claimedOrigin,now(),moment))
       throw Error("NATIVE_PROOF_DENIED");
     // Proof of local key possession ONLY; never a bearer token, enrollment
     // grant, authenticated Command Center session, or dispatch authority.
-    await writeFrame(output,{
-      type:"LOCAL_PROOF_OK",version:1,worker_id:policy.worker_id,
-      public_key_sha256:policy.public_key_sha256,
+    const receipt={
+      type:"LOCAL_PROOF_OK",version:1,worker_id:sessionPolicy.worker_id,
+      public_key_sha256:sessionPolicy.public_key_sha256,
       admission_authority:"NONE",dispatch_authority:"NONE",
-    });
+    };
+    await writeFrame(output,receipt,timeoutMs);
+    if(hello.read_only_probe===true){
+      // Not a controller admission: only a one-shot echo on an already
+      // P-256-verified native channel, with zero dispatch privileges.
+      const gate=createLocalReadOnlyEnvelopeGate({
+        policy:sessionPolicy,localReceipt:receipt,clientNonce:hello.client_nonce,
+        serverNonce:issued.server_nonce,clock:now,ttlMs:Math.min(5000,timeoutMs),
+      });
+      try{
+        await writeFrame(output,gate.proposal,timeoutMs);
+        const response=gate.accept(await bounded());
+        if(response.state!=="LOCAL_READ_ONLY_PONG")
+          throw Error("NATIVE_READ_ONLY_ENVELOPE_DENIED");
+        await writeFrame(output,{
+          type:"LOCAL_READ_ONLY_PONG",version:1,
+          worker_id:sessionPolicy.worker_id,
+          admission_authority:"NONE",dispatch_authority:"NONE",
+          message_send_authority:"NONE",
+          controller_authentication:"NOT_ESTABLISHED",
+          external_controller_transport:"NOT_CONNECTED",
+        },timeoutMs);
+      }finally{gate.close();}
+      if(hello.controller_probe===true){
+          // The local echo may have completed at the last valid instant.
+          // Do not start an external controller handshake after policy expiry.
+          requireCurrentOwnerPolicy();
+          // The actual Chrome entry never passes controllerOptions.
+          // Browser messages cannot choose a controller key or socket.
+          if(!controllerOptions||typeof controllerOptions!=="object"||
+             Array.isArray(controllerOptions))
+            throw Error("NATIVE_CONTROLLER_NOT_PROVISIONED");
+          const {authenticatedReadOnlyControllerTransport}=
+            await import("./controller-transport.mjs");
+          const admission=await authenticatedReadOnlyControllerTransport({
+            principal:controllerOptions.principal,
+            socketPath:controllerOptions.socketPath,
+            fenceDir:controllerOptions.fenceDir,
+            clock:now,clientNonce:hello.client_nonce,serverNonce:issued.server_nonce,
+            scope:{
+              worker_id:sessionPolicy.worker_id,allowed_origin:claimedOrigin,
+              profile_binding_sha256:sessionPolicy.profile_binding_sha256,
+              browser_profile_sha256:sessionPolicy.resources.browser_profile_sha256,
+              chatgpt_target_sha256:sessionPolicy.resources.chatgpt_target_sha256,
+              bridge_identity_sha256:sessionPolicy.resources.bridge_identity_sha256,
+            },
+          });
+          if(admission.state!=="CONTROLLER_AUTH_READ_ONLY")
+            throw Error("NATIVE_CONTROLLER_DENIED");
+          // A durable fence may finish after expiry. Preserve uncertainty
+          // but refuse a now-expired positive controller ACK.
+          requireCurrentOwnerPolicy();
+          await writeFrame(output,{
+            type:"CONTROLLER_AUTH_READ_ONLY_ACK",version:1,
+            worker_id:sessionPolicy.worker_id,controller_id:admission.controller_id,
+            principal_authentication:"ED25519_SIGNATURE_VERIFIED",
+            github_assignment:"NOT_VERIFIED",
+            chatgpt_target_attestation:"NOT_PROVEN",
+            scope_fencing:"LOCAL_PERSISTENT_OWNER_RECOVERY_REQUIRED",
+            dispatch_authority:"NONE",message_send_authority:"NONE",
+          },timeoutMs);
+          return "CONTROLLER_AUTH_READ_ONLY";
+        }
+        return "LOCAL_READ_ONLY_PONG";
+    }
     return "LOCAL_PROOF_OK";
   } finally {
     reader.close();

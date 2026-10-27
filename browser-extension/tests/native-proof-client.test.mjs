@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {webcrypto} from "node:crypto";
+import {webcrypto,createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {mkdtemp,writeFile,rm} from "node:fs/promises";
 import {spawn} from "node:child_process";
@@ -180,6 +180,60 @@ test("host challenge nonce, clock, profile and schema tamper fails closed BEFORE
     assert.equal(port.connected,false);
   }
 });
+test("rewound clock after signed PROOF cannot yield a positive local native receipt",async()=>{
+ const f=await fixture(),start=Date.now();
+ let clock=start;
+ const port=scriptedPort(f);
+ const original=port.postMessage.bind(port);
+ port.postMessage=(message)=>{
+   // Adversarial wall-clock rollback AFTER valid local challenge and P-256
+   // signing, before receipt delivery. Earlier client accepted the receipt.
+   if(message.type==="PROOF")clock=start-1000;
+   original(message);
+ };
+ const result=await execute(f,port,{clock:()=>clock});
+ assert.equal(result.state,"BLOCKED");
+ assert.equal(result.code,"NATIVE_CLIENT_OUTCOME_UNCERTAIN");
+ assert.equal(port.connected,false);
+ assert.equal(port.messages.size,0);
+ assert.equal(port.disconnects.size,0);
+});
+test("queued and late native receipts cannot bypass the expired one-shot channel",async()=>{
+ for(const scenario of ["queued-after-deadline","queued-after-proof-expiry","late-event-before-timer"]){
+  const f=await fixture(),start=Date.now();
+  let now=start;
+  const port=scriptedPort(f);
+  const normal=port.postMessage.bind(port);
+  port.postMessage=message=>{
+    if(message.type==="PROOF"){
+      const receipt={
+       type:"LOCAL_PROOF_OK",version:1,worker_id:"worker-a",
+       public_key_sha256:f.key.public_key_sha256,
+       admission_authority:"NONE",dispatch_authority:"NONE",
+      };
+      if(scenario==="queued-after-deadline"){
+        port.emit(receipt); // cached before receive; later clock invalid.
+        now=start+10_001;
+      }else if(scenario==="queued-after-proof-expiry"){
+        port.emit(receipt); // overall deadline still valid, proof expired.
+        now=start+8_500;
+      }else{
+        // Delivery wakes the pending reader while the timer has not run.
+        queueMicrotask(()=>{now=start+10_001;port.emit(receipt);});
+      }
+      return;
+    }
+    normal(message);
+  };
+  const result=await execute(f,port,{clock:()=>now});
+  assert.equal(result.state,"BLOCKED",scenario);
+  assert.equal(result.code,scenario==="queued-after-proof-expiry"
+   ?"NATIVE_CLIENT_EXPIRED":"NATIVE_CLIENT_OUTCOME_UNCERTAIN",scenario);
+  assert.equal(port.connected,false,scenario);
+  assert.equal(port.messages.size,0,scenario);
+  assert.equal(port.disconnects.size,0,scenario);
+ }
+});
 test("fake elevated receipt, wrong key or worker cannot provide authority",async()=>{
   const transforms=[
     r=>({...r,admission_authority:"ACTIVE"}),
@@ -207,19 +261,81 @@ test("mismatched worker/profile, absent host capability or disconnected port fai
   assert.equal((await execute(f,gone)).code,"NATIVE_CLIENT_OUTCOME_UNCERTAIN");
   assert.equal(gone.connected,false);
 });
-test("native client remains unwired from Chrome MV3 service worker, popup and manifest",()=>{
+test("local proof requires user popup and nativeMessaging optional permission only",()=>{
   const sw=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
   const popup=readFileSync(new URL("../src/popup.ts",import.meta.url),"utf8");
   const manifest=JSON.parse(readFileSync(new URL("../manifest.json",import.meta.url),"utf8"));
   assert.deepEqual(manifest.permissions,["storage"]);
-  assert.doesNotMatch(sw,/native-proof-client|connectNative|signNativeProof/);
-  assert.doesNotMatch(popup,/native-proof-client|connectNative|signNativeProof/);
-  assert.doesNotMatch(JSON.stringify(manifest),/nativeMessaging/);
+  assert.deepEqual(manifest.optional_permissions,["nativeMessaging"]);
+  assert.match(sw,/nativeProofAction/);
+  assert.match(sw,/isTrustedPopup\(sender\)/);
+  assert.match(sw,/permissions\.contains/);
+  assert.match(popup,/permissions\.request/);
+  assert.match(popup,/native-policy-file/);
+  assert.doesNotMatch(JSON.stringify(manifest),/cookies|debugger|identity|webRequest/);
 });
 
+test("tampered post-proof read-only ping and pong never become controller admission",async()=>{
+  for(const scenario of ["bad-ping","bad-pong"]){
+    const f=await fixture();
+    let hello;
+    let challengeFrame;
+    const port=new FakePort((sent,port)=>{
+      if(sent.type==="HELLO"){
+        hello=sent;
+        challengeFrame={
+          type:"CHALLENGE",version:1,
+          client_nonce:sent.client_nonce,server_nonce:H("6"),
+          profile_binding_sha256:profile,expires_at_ms:Date.now()+8000,
+        };
+        queueMicrotask(()=>port.emit(challengeFrame));
+      }
+      if(sent.type==="PROOF"){
+        const receipt={
+          type:"LOCAL_PROOF_OK",version:1,worker_id:"worker-a",
+          public_key_sha256:f.key.public_key_sha256,
+          admission_authority:"NONE",dispatch_authority:"NONE",
+        };
+        const expires=Date.now()+3000;
+        const binding=createHash("sha256").update(JSON.stringify([
+          "bke-worker/desktop/local-controller/read-only/v1",
+          "worker-a",ORIGIN,f.key.public_key_sha256,profile,
+          resources().chatgpt_target_sha256,resources().bridge_identity_sha256,
+          hello.client_nonce,challengeFrame.server_nonce,expires,
+        ])).digest("hex");
+        const ping={
+          type:"LOCAL_READ_ONLY_PING",version:1,sequence:1,
+          worker_id:"worker-a",profile_binding_sha256:profile,
+          chatgpt_target_sha256:resources().chatgpt_target_sha256,
+          bridge_identity_sha256:resources().bridge_identity_sha256,
+          client_nonce:hello.client_nonce,server_nonce:challengeFrame.server_nonce,
+          proof_binding_sha256:scenario==="bad-ping"?H("e"):binding,
+          expires_at_ms:expires,
+        };
+        queueMicrotask(()=>port.emit(receipt));
+        queueMicrotask(()=>port.emit(ping));
+      }
+      if(sent.type==="LOCAL_READ_ONLY_PING"){
+        queueMicrotask(()=>port.emit({
+          type:"LOCAL_READ_ONLY_PONG",version:1,worker_id:"worker-a",
+          admission_authority:"NONE",dispatch_authority:"NONE",
+          message_send_authority:scenario==="bad-pong"?"ACTIVE":"NONE",
+          controller_authentication:"NOT_ESTABLISHED",
+          external_controller_transport:"NOT_CONNECTED",
+        }));
+      }
+    });
+    const result=await execute(f,port,{readOnlyProbe:true});
+    assert.equal(result.state,"BLOCKED");
+    assert.equal(result.code,scenario==="bad-ping"?
+      "NATIVE_CLIENT_READ_ONLY_PING_DENIED":"NATIVE_CLIENT_READ_ONLY_PONG_DENIED");
+    assert.equal(port.connected,false);
+    assert.equal(port.sent.some(x=>x.type==="SEND_CHATGPT_MESSAGE"),false);
+  }
+});
 // Genuine Node host subprocess with Chrome binary framing, driven through an
 // injected runtime port. NOT an installed/authorized Chrome extension.
-test("real PR #106 host child-process P-256 handshake matches TypeScript native client",async()=>{
+test("real Node host subprocess verifies P-256 then performs one-shot read-only native ping",async()=>{
   const f=await fixture(),root=await mkdtemp(join(tmpdir(),"bke-native-proof-client-"));
   const policyPath=join(root,"policy.json");
   const now=Date.now();
@@ -261,10 +377,13 @@ test("real PR #106 host child-process P-256 handshake matches TypeScript native 
       onMessage:{addListener:fn=>messages.add(fn),removeListener:fn=>messages.delete(fn)},
       onDisconnect:{addListener:fn=>disconnects.add(fn),removeListener:fn=>disconnects.delete(fn)},
     };
-    const result=await execute(f,port);
-    assert.equal(result.state,"LOCAL_PROOF_OK",JSON.stringify(result));
+    const result=await execute(f,port,{readOnlyProbe:true});
+    assert.equal(result.state,"LOCAL_READ_ONLY_PONG",JSON.stringify(result));
     assert.equal(result.admission_authority,"NONE");
     assert.equal(result.dispatch_authority,"NONE");
+    assert.equal(result.message_send_authority,"NONE");
+    assert.equal(result.controller_authentication,"NOT_ESTABLISHED");
+    assert.equal(result.external_controller_transport,"NOT_CONNECTED");
     const [exit]=await exits;
     assert.equal(exit,0);
   }finally{

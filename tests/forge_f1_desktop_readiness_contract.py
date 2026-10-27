@@ -28,7 +28,7 @@ for token in (
     "CHATGPT_AUTHENTICATED_AND_IDLE",
     "THIS_IS_THE_ONLY_F1_EXPERIMENT_PROFILE",
     "PREPARE_USER_LEVEL_CHROME_NATIVE_HOST",
-    "nativeMessagingPermission\":False",
+    "nativeMessagingPermission\":None",
     "NOT_CREATED_NO_SEND_OCCURRED",
     "BKE_F1_CHROME_RUNTIME_SHA256",
     "umask 077",
@@ -49,20 +49,35 @@ for forbidden in (
 ):
     assert forbidden not in script, forbidden
 
-assert '"nativeMessaging"' in script  # deny-list, never permission grant
-assert "nativeMessaging" not in manifest
+# Check optional permission only; the F1-01 script cannot measure the
+# separate human runtime grant, and must never claim one is absent.
+import json
+manifest_contract=json.loads(manifest)
+assert manifest_contract["permissions"]==["storage"]
+assert manifest_contract["optional_permissions"]==["nativeMessaging"]
+assert "permissions.request" not in script
 assert 'extension.permissions[0] !== "storage"' in policy
 assert "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH" in policy
 assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
 assert "PROFILE_PATH_UNSAFE" in policy
 assert "MESSAGE_SEND_NOT_PROVEN_ABSENT" in policy
 assert "SOURCE_SMOKE_PASS" in policy and "REAL_CHROME_READY" in policy
-assert "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN" in policy
+assert "NOT_TESTED_OPTIONAL_NATIVE_PERMISSION_UNVERIFIED" in policy
 assert "linux_chrome_binary_for_launcher" in helper
 assert "ps_line_matches_profile" in helper
 assert "PROFILE_CHAIN_UNSAFE" in helper
 assert "EXTENSION_MISSING_OR_DUPLICATE" in helper
-assert "python3 tests/forge_f1_chrome_readiness_test.py" in workflow
+# An imported module plus unconditional PASS is not a valid security test.
+# Require the isolated executable suite AND the independent injected-failure
+# subprocess contract, in the same required PR-Guard job.
+assert "python3 -I tests/forge_f1_chrome_readiness_test.py" in workflow
+assert "python3 -I tests/forge_f1_process_test_harness_contract.py" in workflow
+assert "python3 -I tests/forge_f1_pr_head_mac_readonly_test.py" in workflow
+assert (root / "scripts/forge_f1_pr_head_mac_readonly.py").is_file()
+assert (root / "docs/f1-03-pr-head-readonly-physical.md").is_file()
+harness_contract = (root / "tests/forge_f1_process_test_harness_contract.py").read_text(encoding="utf-8")
+assert "test_all_twenty_cases_run_with_named_darwin_cases" in harness_contract
+assert "test_injected_assertion_must_fail_ci_and_never_print_pass" in harness_contract
 
 for command in (
     ["bash", "-n", str(script_path)],

@@ -102,7 +102,7 @@ data={
  "sourceSmoke":{"status":v("SOURCE_SMOKE_STATUS"),"sourceSha":v("SOURCE_SMOKE_SHA")},
  "browser":{"installed":b("CHROME_INSTALLED"),"platform":v("OS"),"name":"Google Chrome" if b("CHROME_INSTALLED") else "UNKNOWN","version":v("CHROME_VERSION"),"binarySha256":v("CHROME_SHA256"),"nodeVersion":v("NODE_VERSION"),"nodeBinarySha256":v("NODE_SHA256")},
  "profile":{"path":v("PROFILE_DIR"),"exists":b("PROFILE_EXISTS"),"pathCanonical":b("PROFILE_CANONICAL"),"ownerMatches":b("PROFILE_OWNER_MATCHES"),"privateMode":b("PROFILE_PRIVATE"),"dedicated":b("PROFILE_DEDICATED"),"activeProcess":b("PROFILE_ACTIVE"),"exclusiveOwnerAttested":b("PROFILE_EXCLUSIVE")},
- "extension":{"id":v("EXTENSION_ID"),"version":v("EXTENSION_VERSION"),"manifestVersion":int(v("EXTENSION_MANIFEST_VERSION","0") or 0),"matchCount":int(v("EXTENSION_COUNT","0") or 0),"enabled":b("EXTENSION_ENABLED"),"path":v("EXTENSION_PATH"),"pathMatches":b("EXTENSION_PATH_MATCHES"),"versionMatches":b("EXTENSION_VERSION_MATCHES"),"permissions":a("EXTENSION_PERMISSIONS"),"hostPermissions":a("EXTENSION_HOST_PERMISSIONS"),"nativeMessagingPermission":False},
+ "extension":{"id":v("EXTENSION_ID"),"version":v("EXTENSION_VERSION"),"manifestVersion":int(v("EXTENSION_MANIFEST_VERSION","0") or 0),"matchCount":int(v("EXTENSION_COUNT","0") or 0),"enabled":b("EXTENSION_ENABLED"),"path":v("EXTENSION_PATH"),"pathMatches":b("EXTENSION_PATH_MATCHES"),"versionMatches":b("EXTENSION_VERSION_MATCHES"),"permissions":a("EXTENSION_PERMISSIONS"),"hostPermissions":a("EXTENSION_HOST_PERMISSIONS"),"nativeMessagingPermission":None},
  "nativeHost":{"status":v("HOST_STATUS"),"name":v("HOST_NAME"),"origin":v("HOST_ORIGIN"),"policyVerified":b("HOST_POLICY_VERIFIED")},
  "chatgpt":{"targetCount":int(v("TARGET_COUNT","0") or 0),"exclusivityAttested":b("CHATGPT_EXCLUSIVE"),"authenticatedAndIdle":b("CHATGPT_AUTH_IDLE")},
  "safety":{"messageSendAttempted":b("SEND_ATTEMPTED"),"profileSecretsRead":b("PROFILE_SECRETS_READ"),"otherProfilesTouched":b("OTHER_PROFILES_TOUCHED"),"credentialsWritten":b("CREDENTIALS_WRITTEN")},
@@ -238,9 +238,10 @@ PROFILE_EXCLUSIVE_ATTESTED=true
 EXTENSION_META="$(node --input-type=module - "$EXTENSION_PATH/manifest.json" <<'NODE'
 import {readFileSync} from "node:fs";
 const p=JSON.parse(readFileSync(process.argv[2],"utf8"));
-const deny=["nativeMessaging","cookies","debugger","history","identity","webRequest"];
+const deny=["cookies","debugger","history","identity","webRequest"];
 if(p.manifest_version!==3||p.name!=="BKE Worker Browser Bridge"||typeof p.version!=="string"||
  Number(p.minimum_chrome_version)<116||JSON.stringify(p.permissions)!==JSON.stringify(["storage"])||
+ JSON.stringify(p.optional_permissions)!==JSON.stringify(["nativeMessaging"])||
  JSON.stringify(p.host_permissions)!==JSON.stringify(["https://chatgpt.com/*"])||
  deny.some(v=>JSON.stringify(p).includes(v))) process.exit(2);
 process.stdout.write(JSON.stringify({version:p.version,mv:p.manifest_version,permissions:p.permissions,hosts:p.host_permissions}));
@@ -292,7 +293,7 @@ printf 'BKE_F1_CHROME_RUNTIME_SHA256=%s\n' "$CHROME_SHA256"
 printf 'BKE_F1_EXTENSION_ID=%s\n' "$EXTENSION_ID"
 printf 'BKE_F1_EXTENSION_VERSION=%s\n' "$EXTENSION_VERSION"
 printf 'BKE_F1_NATIVE_HOST=VERIFIED_REGISTRATION_ONLY\n'
-printf 'BKE_F1_LIVE_NATIVE_MESSAGING=NOT_TESTED_PERMISSION_ABSENT_BY_DESIGN\n'
+printf 'BKE_F1_LIVE_NATIVE_MESSAGING=NOT_TESTED_OPTIONAL_GRANT_UNVERIFIED\n'
 printf 'BKE_F1_WORKER_ASSIGNMENT=UNENROLLED\n'
 printf 'BKE_F1_CHATGPT_CONVERSATION_ID=NOT_CREATED_NO_SEND_OCCURRED\n'
 exit 0

@@ -4,7 +4,9 @@ import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { generateKeyPairSync,createHash,sign } from "node:crypto";
-import { mkdtemp,writeFile,rm,chmod,symlink } from "node:fs/promises";
+import { mkdtemp,writeFile,rm,chmod,symlink,mkdir,readdir,link } from "node:fs/promises";
+import {createServer} from "node:net";
+import {controllerSignedPayload} from "../controller-admission.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,11 +58,11 @@ function replyProof(f,challenge){
     device_signature:sign("sha256",Buffer.from(payload),
       {key:f.key.privateKey,dsaEncoding:"ieee-p1363"}).toString("base64url")};
 }
-async function launch(f,{origin=ORIGIN,now=()=>T,serverNonce=H("6"),timeoutMs=1000}={}){
+async function launch(f,{origin=ORIGIN,now=()=>T,serverNonce=H("6"),timeoutMs=1000,controllerOptions=null}={}){
   const input=new PassThrough(),output=new PassThrough();
   const handle=runNativeProofHost({
     input,output,claimedOrigin:origin,policy:f.policy,now,
-    nonce:()=>serverNonce,timeoutMs,
+    nonce:()=>serverNonce,timeoutMs,controllerOptions,
   });
   const response=nativeFrameReader(output);
   const send=v=>input.write(encodeFrame(v));
@@ -88,6 +90,84 @@ test("genuine P-256 proof yields only a local possession receipt, not device enr
     admission_authority:"NONE",dispatch_authority:"NONE",
   });
   assert.doesNotMatch(JSON.stringify(ok),/token|signature|installation|paired|access/i);
+});
+test("approved native policy snapshot cannot be retargeted during an asynchronous HELLO",async()=>{
+  const f=fixture();
+  const session=await launch(f);
+  // The host validated original pins on entry. Mutating the caller-owned
+  // policy during its awaited input must not authorize a different target.
+  const different=H("e");
+  f.policy.resources.chatgpt_target_sha256=different;
+  session.send({...f.hello,resources:{
+    ...f.hello.resources,chatgpt_target_sha256:different,
+  }});
+  await assert.rejects(session.handle,/NATIVE_HELLO_DENIED/);
+  session.input.destroy();
+
+  // The original signed identity must continue to work despite a later
+  // mutation of the object supplied by an embedding caller.
+  const g=fixture(),approved=structuredClone(g.policy),s=await launch(g);
+  g.policy.worker_id="substituted-worker";
+  g.policy.resources.chatgpt_target_sha256=H("f");
+  s.send(g.hello);
+  const challenge=await s.response.next();
+  const proof=replyProof({...g,policy:approved},challenge);
+  s.send(proof);
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  assert.equal(await s.handle,"LOCAL_PROOF_OK");
+});
+
+test("one-shot post-signature native envelope echoes only scoped read-only proof",async()=>{
+  const f=fixture(),s=await launch(f);
+  s.send({...f.hello,read_only_probe:true});
+  const challenge=await s.response.next();
+  s.send(replyProof(f,challenge));
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  const ping=await s.response.next();
+  assert.equal(ping.type,"LOCAL_READ_ONLY_PING");
+  assert.equal(ping.worker_id,f.policy.worker_id);
+  assert.equal(ping.profile_binding_sha256,f.policy.profile_binding_sha256);
+  s.send(ping);
+  assert.deepEqual(await s.response.next(),{
+    type:"LOCAL_READ_ONLY_PONG",version:1,worker_id:f.policy.worker_id,
+    admission_authority:"NONE",dispatch_authority:"NONE",
+    message_send_authority:"NONE",controller_authentication:"NOT_ESTABLISHED",
+    external_controller_transport:"NOT_CONNECTED",
+  });
+  assert.equal(await s.handle,"LOCAL_READ_ONLY_PONG");
+});
+test("effectful, tampered and extra-key native read-only envelopes fail closed",async()=>{
+  for(const change of [
+    x=>({...x,type:"SEND_CHATGPT_MESSAGE"}),
+    x=>({...x,worker_id:"worker-b"}),
+    x=>({...x,proof_binding_sha256:H("e")}),
+    x=>({...x,command:"please send"}),
+  ]){
+    const f=fixture(),s=await launch(f);
+    s.send({...f.hello,read_only_probe:true});
+    s.send(replyProof(f,await s.response.next()));
+    assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+    s.send(change(await s.response.next()));
+    await assert.rejects(s.handle,/NATIVE_READ_ONLY_ENVELOPE_DENIED/);
+    s.input.destroy();
+  }
+});
+test("probe opt-in cannot bypass signed proof or inject arbitrary HELLO fields",async()=>{
+  const f=fixture();
+  for(const hello of [
+    {...f.hello,read_only_probe:false},
+    {...f.hello,read_only_probe:true,permission:"dispatch"},
+  ]){
+    const s=await launch(f);s.send(hello);
+    await assert.rejects(s.handle,/NATIVE_HELLO_DENIED/);
+    s.input.destroy();
+  }
+  const s=await launch(f);
+  s.send({...f.hello,read_only_probe:true});
+  const proof=replyProof(f,await s.response.next());
+  s.send({...proof,device_signature:"A".repeat(86)});
+  await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
+  s.input.destroy();
 });
 test("all pinned policy fields are required; origin and host expiry cannot be invented by a device",async()=>{
   const f=fixture();
@@ -188,6 +268,43 @@ test("host deadline expires with no proof; does not silently grant authorization
   await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
   s.input.destroy();
 });
+test("signed local P-256 proof refuses challenge/proof clock rollback and invalid proof time",async()=>{
+  const f=fixture();
+  // Date.now can jump backwards due to wall-clock correction; a freshly
+  // signed PROOF must not escape that fail-closed uncertainty.
+  for(const rewind of [T-1,NaN]){
+    let current=T;
+    const s=await launch(f,{now:()=>current});
+    s.send(f.hello);
+    const challenge=await s.response.next();
+    current=rewind;
+    s.send(replyProof(f,challenge));
+    await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);
+    s.input.destroy();
+  }
+  // Clock rollback after host start but before the issued challenge also denies.
+  let current=T;
+  const q=await launch(f,{now:()=>current});
+  current=T-1;
+  q.send(f.hello);
+  await assert.rejects(q.handle,/NATIVE_CLOCK_DENIED/);
+  q.input.destroy();
+});
+test("native proof does not hang when output remains open but never drains",async()=>{
+ const f=fixture(),input=new PassThrough();
+ const {EventEmitter}=await import("node:events");
+ const output=new EventEmitter();
+ output.destroyed=false;output.writableEnded=false;output.write=()=>false;
+ const work=runNativeProofHost({
+   input,output,claimedOrigin:ORIGIN,policy:f.policy,
+   now:()=>T,nonce:()=>H("6"),timeoutMs:120,
+ });
+ input.write(encodeFrame(f.hello));
+ await assert.rejects(work,/NATIVE_FRAME_BACKPRESSURE_TIMEOUT/);
+ for(const name of ["drain","close","finish","error"])
+   assert.equal(output.listenerCount(name),0);
+ input.destroy();
+});
 test("native executable performs real child-process Chrome wire framing with owner policy",async()=>{
   const f=fixture();
   // This does not install any Chrome native host manifest or browser permissions.
@@ -254,4 +371,169 @@ test("symlinked policy is rejected even when target file is owner-readable",asyn
     assert.equal(exit,1);
     assert.equal(Buffer.concat(stdout).length,0);
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("native entry refuses shared, aliased or multiply linked policy provenance without frames",async()=>{
+  const f=fixture();
+  const root=await mkdtemp(join(tmpdir(),"bke-native-parent-security-"));
+  const safeDir=join(root,"trusted");
+  const file=join(safeDir,"owner-policy.json");
+  const entry=fileURLToPath(new URL("../entry.mjs",import.meta.url));
+  f.policy.expires_at_ms=Date.now()+30000;
+  const denied=async path=>{
+    const child=spawn(process.execPath,[entry,path,ORIGIN],{stdio:["pipe","pipe","pipe"]});
+    const stdout=[];child.stdout.on("data",b=>stdout.push(b));
+    child.stdin.end();
+    const [exit]=await once(child,"exit");
+    assert.equal(exit,1);
+    assert.equal(Buffer.concat(stdout).length,0);
+  };
+  try{
+    await mkdir(safeDir,{mode:0o700});
+    await writeFile(file,JSON.stringify(f.policy),{mode:0o600});
+    await chmod(safeDir,0o755);
+    await denied(file);
+    await chmod(safeDir,0o700);
+    await symlink(safeDir,join(root,"aliased"));
+    await denied(join(root,"aliased","owner-policy.json"));
+    await denied(join(safeDir,"..","trusted","owner-policy.json"));
+    await chmod(file,0o644);
+    await denied(file);
+    await chmod(file,0o600);
+    const duplicate=join(safeDir,"hardlink-policy.json");
+    await link(file,duplicate);
+    await denied(file);
+    await denied(duplicate);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("owner policy expiry or clock rewind after local read-only echo cannot start controller admission",async()=>{
+ for(const mode of ["expired","rewound"]){
+  const f=fixture();
+  f.policy.expires_at_ms=T+500;
+  let reads=0;
+  const clock=()=>++reads<=5?T:(mode==="expired"?T+500:T-1);
+  const s=await launch(f,{now:clock,timeoutMs:1000});
+  s.send({...f.hello,read_only_probe:true,controller_probe:true});
+  const challenge=await s.response.next();
+  assert.equal(challenge.expires_at_ms,T+500);
+  s.send(replyProof(f,challenge));
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  const ping=await s.response.next();
+  s.send(ping);
+  assert.equal((await s.response.next()).type,"LOCAL_READ_ONLY_PONG");
+  await assert.rejects(s.handle,/NATIVE_OWNER_POLICY_EXPIRED_OR_CLOCK_REWOUND/);
+  assert.equal(reads,6);
+  s.input.destroy();
+ }
+});
+test("explicit controller probe denies missing owner provisioning after local cryptographic proof",async()=>{
+  const f=fixture(),s=await launch(f);
+  s.send({...f.hello,read_only_probe:true,controller_probe:true});
+  const challenge=await s.response.next();s.send(replyProof(f,challenge));
+  assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+  const ping=await s.response.next();s.send(ping);
+  assert.equal((await s.response.next()).type,"LOCAL_READ_ONLY_PONG");
+  await assert.rejects(s.handle,/NATIVE_CONTROLLER_NOT_PROVISIONED/);
+  s.input.destroy();
+});
+test("separately signed Unix controller is verified only after signed native and strict read-only proof",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"bke-host-controller-"));
+  const fenceDir=join(root,"fences"),socketPath=join(root,"controller.sock");
+  await mkdir(fenceDir,{mode:0o700});
+  const {publicKey,privateKey}=generateKeyPairSync("ed25519");
+  const principal={controller_id:"controller-a",public_key:publicKey.export({format:"jwk"})};
+  const server=createServer(async socket=>{
+    try{
+      const challenge=await nativeFrameReader(socket,4096).next();
+      const frame={
+        type:"CONTROLLER_AUTH_READ_ONLY",version:1,controller_id:principal.controller_id,
+        worker_id:challenge.worker_id,profile_binding_sha256:challenge.profile_binding_sha256,
+        browser_profile_sha256:challenge.browser_profile_sha256,
+        chatgpt_target_sha256:challenge.chatgpt_target_sha256,
+        bridge_identity_sha256:challenge.bridge_identity_sha256,
+        client_nonce:challenge.client_nonce,server_nonce:challenge.server_nonce,
+        challenge_nonce:challenge.challenge_nonce,
+        issued_at_ms:challenge.issued_at_ms,expires_at_ms:challenge.expires_at_ms,
+        signature:sign(null,Buffer.from(controllerSignedPayload(challenge,principal.controller_id)),
+          privateKey).toString("base64url"),
+      };
+      await writeFrame(socket,frame);socket.end();
+    }catch{socket.destroy();}
+  });
+  try{
+    server.listen(socketPath);await once(server,"listening");
+    const f=fixture(),s=await launch(f,{controllerOptions:{principal,socketPath,fenceDir}});
+    s.send({...f.hello,read_only_probe:true,controller_probe:true});
+    s.send(replyProof(f,await s.response.next()));
+    assert.equal((await s.response.next()).type,"LOCAL_PROOF_OK");
+    s.send(await s.response.next());
+    assert.equal((await s.response.next()).type,"LOCAL_READ_ONLY_PONG");
+    assert.deepEqual(await s.response.next(),{
+      type:"CONTROLLER_AUTH_READ_ONLY_ACK",version:1,
+      worker_id:f.policy.worker_id,controller_id:principal.controller_id,
+      principal_authentication:"ED25519_SIGNATURE_VERIFIED",
+      github_assignment:"NOT_VERIFIED",chatgpt_target_attestation:"NOT_PROVEN",
+      scope_fencing:"LOCAL_PERSISTENT_OWNER_RECOVERY_REQUIRED",
+      dispatch_authority:"NONE",message_send_authority:"NONE",
+    });
+    assert.equal(await s.handle,"CONTROLLER_AUTH_READ_ONLY");
+    assert.equal((await readdir(fenceDir)).length,4);
+    const again=await launch(f,{controllerOptions:{principal,socketPath,fenceDir}});
+    again.send({...f.hello,read_only_probe:true,controller_probe:true});
+    again.send(replyProof(f,await again.response.next()));
+    assert.equal((await again.response.next()).type,"LOCAL_PROOF_OK");
+    again.send(await again.response.next());
+    assert.equal((await again.response.next()).type,"LOCAL_READ_ONLY_PONG");
+    await assert.rejects(again.handle,/FENCE_CONFLICT_OR_IO_UNCERTAIN/);
+    again.input.destroy();
+  }finally{
+    await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true});
+  }
+});
+test("controller HELLO cannot skip read-only opt-in or P-256 signature",async()=>{
+  const f=fixture();
+  for(const hello of [
+    {...f.hello,controller_probe:true},
+    {...f.hello,read_only_probe:false,controller_probe:true},
+    {...f.hello,read_only_probe:true,controller_probe:false},
+  ]){
+    const s=await launch(f);s.send(hello);
+    await assert.rejects(s.handle,/NATIVE_HELLO_DENIED/);s.input.destroy();
+  }
+  const s=await launch(f);
+  s.send({...f.hello,read_only_probe:true,controller_probe:true});
+  const challenge=await s.response.next();
+  s.send({...replyProof(f,challenge),device_signature:"A".repeat(86)});
+  await assert.rejects(s.handle,/NATIVE_PROOF_DENIED/);s.input.destroy();
+});
+
+test("real entry requires exact owner-reviewed controller config bytes before reading Chrome frames",async()=>{
+  const f=fixture(),dir=await mkdtemp(join(tmpdir(),"bke-entry-controller-pin-"));
+  const policy=join(dir,"owner-policy.json"),config=join(dir,"controller-config.json");
+  const entry=fileURLToPath(new URL("../entry.mjs",import.meta.url));
+  f.policy.expires_at_ms=Date.now()+30000;
+  try{
+    await writeFile(policy,JSON.stringify(f.policy),{mode:0o600});
+    const bytes=Buffer.from('{"enabled":false,"version":1}\n');
+    await writeFile(config,bytes,{mode:0o600});
+    const digest=createHash("sha256").update(bytes).digest("hex");
+    for(const expectedHash of [H("b"),"invalid"]){
+      const child=spawn(process.execPath,[entry,policy,ORIGIN,expectedHash],{
+        stdio:["pipe","pipe","pipe"]});
+      const output=[];child.stdout.on("data",x=>output.push(x));child.stdin.end();
+      const [code]=await once(child,"exit");
+      assert.equal(code,1);assert.equal(Buffer.concat(output).length,0);
+    }
+    const child=spawn(process.execPath,[entry,policy,ORIGIN,digest],{
+      stdio:["pipe","pipe","pipe"]});
+    const wire=nativeFrameReader(child.stdout);
+    child.stdin.write(encodeFrame(f.hello));
+    const challenge=await wire.next();
+    child.stdin.write(encodeFrame(replyProof(f,challenge)));
+    assert.equal((await wire.next()).type,"LOCAL_PROOF_OK");
+    child.stdin.end();
+    assert.equal((await once(child,"exit"))[0],0);
+  }finally{await rm(dir,{recursive:true,force:true});}
 });
