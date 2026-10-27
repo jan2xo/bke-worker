@@ -283,6 +283,18 @@ Do not let one worker actively own both a blocked parent PR and its dependency P
 
 Detailed rules and failure semantics are documented in `docs/autonomous-gatekeeper.md`.
 
+## 9A. MVP SCOPE GATE (LEASH)
+
+Until the desktop WebExtension MVP is accepted (issue #149, task 6), every PR must serve exactly one open issue labeled `bke:mvp`, declared in the PR body as a line `MVP-Task: #<issue>`. The `MVP scope gate` job in `.github/workflows/pr-guard.yml` enforces this and fails a PR that:
+
+- has no `MVP-Task: #` line, or names an issue that is closed or lacks `bke:mvp`;
+- changes more than 500 lines, unless the owner adds the label `bke:oversize-ok`;
+- touches a frozen surface (`cloudflare-relay/`, `android-gecko/`, `src/`, `deploy/`, `BKE.Worker.sln`, `Directory.Build.props`) that the task issue does not name;
+- touches `.github/` without the owner's label `bke:gate-change`;
+- adds a new Markdown file the task issue does not name.
+
+Executor rules (ChatGPT and any worker): do not open issues, create or apply labels, open PRs outside the `bke:mvp` list, or edit this gate. Propose new work as a comment on #149; only the owner turns it into an issue. The owner labels `bke:oversize-ok` and `bke:gate-change` are owner-only. An executor that applies them has broken the contract and must stop.
+
 ## 10. CI IS INTENTIONAL
 
 PRs are ledgers, not heavy-CI triggers.
