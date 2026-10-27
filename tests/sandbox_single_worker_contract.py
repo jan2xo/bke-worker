@@ -199,7 +199,17 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("Console.WriteLine(instruction", tool)
         self.assertIn("InspectDeliveredTurn", tool)
         self.assertIn("NOTHING_SENT", tool)
-        self.assertIn("LOOPBACK_CDP_REQUIRED", script)
+        self.assertIn("CDP_PORT_ALREADY_ACTIVE", script)
+        self.assertIn("IMPLEMENTATION_HEAD_NOT_EXACT", script)
+        self.assertIn("BKE_WORKER_CHATGPT_OVERRIDE_URL=\"$CHAT_URL\"", script)
+        self.assertIn('read -r -p "Paste the dedicated chat URL', script)
+        self.assertIn('open -n -a "$APP" --args', script)
+        self.assertIn("--remote-debugging-address=127.0.0.1", script)
+        # The script must be a single syntactically valid non-sending operator entrypoint.
+        import subprocess
+        result = subprocess.run(["bash", "-n", str(root / "scripts/probe-pilot-send-ack.sh")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         # The reconstructed instruction is exactly the turn-1 prompt for the turn-1 head.
         self.assertIn('TURN1_HEAD="3c7de7d9740948c294ea3bbd8bcc5a2d515c82ef"', script)
         self.assertIn("p.prompt(p.PR_NUMBER, sys.argv[1])", script)
