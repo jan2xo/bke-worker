@@ -311,7 +311,8 @@ jobs:
             // Leash: every PR must serve one open `bke:mvp` issue, stay small,
             // and stay out of frozen surfaces unless that issue names them.
             const {owner, repo} = context.repo;
-            const pr = context.payload.pull_request;
+            // Read the PR live, so re-runs see current body and labels (re-runs reuse the old event payload).
+            const pr = (await github.rest.pulls.get({owner, repo, pull_number: context.payload.pull_request.number})).data;
             const fail = [];
             const prLabels = (pr.labels || []).map(l => l.name);
             const body = pr.body || "";
