@@ -139,6 +139,8 @@ jobs:
               "prompt **inside the script, at the point of need**",
               "without automating credentials",
               "docs/operator-entrypoints.md",
+              "MVP SCOPE GATE (LEASH)",
+              "MVP-Task: #",
           ]:
               if token not in canonical:
                   raise SystemExit(
@@ -176,6 +178,7 @@ jobs:
               "fresh branch",
               "next independent wave",
               "PR comments = durable BKE execution ledger",
+              "MVP-Task: #",
           ]
           missing = [token for token in required if token not in template]
           if missing:
@@ -292,3 +295,80 @@ jobs:
       - name: Diff hygiene
         if: steps.paths.outputs.run == 'true'
         run: git diff --check
+
+  mvp-scope-gate:
+    name: MVP scope gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Enforce MVP scope (issue #149)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Leash: every PR must serve one open `bke:mvp` issue, stay small,
+            // and stay out of frozen surfaces unless that issue names them.
+            const {owner, repo} = context.repo;
+            const pr = context.payload.pull_request;
+            const fail = [];
+            const prLabels = (pr.labels || []).map(l => l.name);
+            const body = pr.body || "";
+            const m = body.match(/^\s*MVP-Task:\s*#(\d+)\s*$/m);
+            if (!m) {
+              core.setFailed("MVP scope gate: PR body needs a line `MVP-Task: #<issue>` naming an open `bke:mvp` issue (see #149).");
+              return;
+            }
+            const taskNo = Number(m[1]);
+            let task;
+            try {
+              task = (await github.rest.issues.get({owner, repo, issue_number: taskNo})).data;
+            } catch (e) {
+              core.setFailed(`MVP scope gate: issue #${taskNo} not found.`);
+              return;
+            }
+            const taskLabels = task.labels.map(l => typeof l === "string" ? l : l.name);
+            if (task.pull_request) fail.push(`#${taskNo} is a PR, not an issue.`);
+            if (task.state !== "open") fail.push(`#${taskNo} is not open.`);
+            if (!taskLabels.includes("bke:mvp")) fail.push(`#${taskNo} is not labeled bke:mvp.`);
+            const taskText = (task.body || "") + "\n" + task.title;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number, per_page: 100,
+            });
+            const MAX = 500;
+            const changed = files.reduce((n, f) => n + f.additions + f.deletions, 0);
+            if (changed > MAX && !prLabels.includes("bke:oversize-ok")) {
+              fail.push(`${changed} changed lines > ${MAX}. Split the PR, or the owner adds label bke:oversize-ok.`);
+            }
+
+            // Frozen surfaces: allowed only when the task issue names the path prefix.
+            const frozen = [
+              "cloudflare-relay/", "android-gecko/", "src/", "deploy/",
+              "BKE.Worker.sln", "Directory.Build.props",
+            ];
+            for (const f of files) {
+              const hit = frozen.find(p => f.filename.startsWith(p));
+              if (hit && !taskText.includes(hit)) {
+                fail.push(`${f.filename}: frozen surface ${hit} not listed in #${taskNo}.`);
+              }
+            }
+
+            // The gate itself and CI: owner-only change.
+            if (files.some(f => f.filename.startsWith(".github/")) && !prLabels.includes("bke:gate-change")) {
+              fail.push("Touches .github/ (CI or this gate). Owner must add label bke:gate-change.");
+            }
+
+            // No new markdown ledgers unless the task names the exact file.
+            for (const f of files) {
+              if (f.status === "added" && f.filename.toLowerCase().endsWith(".md") && !taskText.includes(f.filename)) {
+                fail.push(`New doc ${f.filename} is not named in #${taskNo}.`);
+              }
+            }
+
+            if (fail.length) {
+              core.setFailed("MVP scope gate FAILED:\n- " + fail.join("\n- "));
+            } else {
+              core.info(`MVP scope gate PASS: serves #${taskNo}, ${changed} changed lines, ${files.length} files.`);
+            }
