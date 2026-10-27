@@ -130,12 +130,12 @@ class PilotTests(unittest.TestCase):
 
     def test_confirmed_first_turn_recovery_is_parseable_and_backup_first(self):
         import subprocess
-        script = PATH.with_name("reconcile-pilot-confirmed-turn-one.sh")
+        script = PATH.parents[1] / "scripts/reconcile-pilot-confirmed-turn-one.sh"
         self.assertTrue(script.exists())
         result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         text = script.read_text(encoding="utf-8")
-        body = text.split("python3 - <<'PY'\\n", 1)[-1].rsplit("\\nPY\\n", 1)[0]
+        body = text.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0]
         compile(body, str(script), "exec")
         for guard in (
                 "PILOT_HEAD_OR_BRANCH_MISMATCH",
