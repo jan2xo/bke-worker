@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GitHubSendOnceRestAdapter} from '../dist/native-host/send-once-claim-adapter.js';
+import {GitHubSendOnceRestAdapter} from '../dist/native-host/claim/send-once-claim-adapter.js';
 
 const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40), TOKEN = 'super-secret-token-never-log';
 const request = {repository:'jan2xo/bke-worker',prNumber:123,headSha:SHA,

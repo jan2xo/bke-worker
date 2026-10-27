@@ -7,7 +7,7 @@
       "ES2022",
       "DOM"
     ],
-    "rootDir": "..",
+    "rootDir": "../..",
     "outDir": "dist",
     "strict": true,
     "noUncheckedIndexedAccess": true,

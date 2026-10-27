@@ -1,5 +1,5 @@
 /** F1-02 GitHub REST transport. Server-private only; never put a token in a browser. */
-import type {ClaimAuthority, SendOnceAttempt, SendOnceGitHub} from '../browser-extension/src/send-once-claim.js';
+import type {ClaimAuthority, SendOnceAttempt, SendOnceGitHub} from '../../src/send-once-claim.js';
 
 export interface HttpResponse {
   status: number;
