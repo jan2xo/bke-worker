@@ -210,3 +210,15 @@ test('invalid deadline fails before any HTTP call',async()=>{
   assert.throws(()=>new GitHubSendOnceRestAdapter(request,async()=>pullOk,async()=>TOKEN,proof,Infinity),
     /GITHUB_DEADLINE_INVALID/);
 });
+
+test('hanging token provider obeys deadline and cannot issue a late POST',async()=>{
+  let resolveToken;
+  const delayedToken = new Promise(resolve=>{resolveToken=resolve;});
+  const requests = [];
+  const fetch = async (_url,init)=>{requests.push(init);return claimReceipt;};
+  const a = new GitHubSendOnceRestAdapter(request,fetch,async()=>delayedToken,proof,20);
+  await throwsCode(()=>a.readAuthority(),'GITHUB_TRANSPORT_UNCERTAIN');
+  resolveToken(TOKEN);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.length,0);
+});
