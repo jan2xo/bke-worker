@@ -62,10 +62,6 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
 
   /** Every network request and successful JSON response has one abortable deadline. */
   private async call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<HttpResponse> {
-    let token: string;
-    try { token = await this.tokenProvider(); }
-    catch { throw Error('GITHUB_AUTH_UNAVAILABLE'); }
-    if (typeof token !== 'string' || !token.trim()) throw Error('GITHUB_AUTH_UNAVAILABLE');
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -75,6 +71,12 @@ export class GitHubSendOnceRestAdapter implements SendOnceGitHub {
       }, this.timeoutMs);
     });
     const work = (async (): Promise<HttpResponse> => {
+      let token: string;
+      try { token = await this.tokenProvider(); }
+      catch { throw Error('GITHUB_AUTH_UNAVAILABLE'); }
+      if (typeof token !== 'string' || !token.trim()) throw Error('GITHUB_AUTH_UNAVAILABLE');
+      // A late token resolution after the deadline must NEVER start a POST.
+      if (controller.signal.aborted) throw Error('GITHUB_TRANSPORT_UNCERTAIN');
       let response: HttpResponse;
       try {
         response = await this.fetch(this.root + path, {
