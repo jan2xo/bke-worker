@@ -42,10 +42,53 @@ try
     await driver.OpenContext(ContextTarget.OverrideLink(overrideUrl), CancellationToken.None);
     var page = await host.GetPage(CancellationToken.None);
 
-    // Read-only wait for the transcript to hydrate. Readiness is only observed, never acted on.
-    await composer.WaitUntilCanSendNextTurn(page, CancellationToken.None, TimeSpan.FromSeconds(15));
-    var probe = await ComposerDriver.InspectDeliveredTurn(page, instruction, CancellationToken.None);
+    // Confirm the actual DOM page has the exact requested conversation route.
+    // Do not output the target URL, profile path, transcript, or instruction.
+    var expectedUri = new Uri(overrideUrl, UriKind.Absolute);
+    var actualUri = new Uri(page.Url, UriKind.Absolute);
+    var routeMatches = string.Equals(expectedUri.Scheme, actualUri.Scheme,
+                           StringComparison.OrdinalIgnoreCase)
+        && string.Equals(expectedUri.Host, actualUri.Host,
+                         StringComparison.OrdinalIgnoreCase)
+        && string.Equals(expectedUri.AbsolutePath.TrimEnd('/'),
+                         actualUri.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
+    var chatTabs = page.Context.Pages.Count(tab =>
+        !tab.IsClosed && Uri.TryCreate(tab.Url, UriKind.Absolute, out var tabUri)
+        && string.Equals(tabUri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase));
+
+    Console.WriteLine(
+        "ACK_PROBE_TARGET route_matches=" + (routeMatches ? "1" : "0") +
+        " chatgpt_tabs=" + chatTabs);
+    if (!routeMatches || chatTabs != 1)
+    {
+        Console.Error.WriteLine("BLOCKED:ACK_PROBE_TARGET_NOT_UNIQUE_OR_MISMATCHED");
+        Console.WriteLine("ACK_PROBE_COMPLETE:NOTHING_SENT");
+        return 2;
+    }
+
+    // A sendable composer may hydrate before the transcript. Observe passively
+    // for up to 20 seconds; no composer action, wake, or journal mutation occurs.
+    // These probes contain only counts, booleans, and status codes.
+    DeliveredTurnProbe? probe = null;
+    for (var attempt = 0; attempt < 20; attempt++)
+    {
+        probe = await ComposerDriver.InspectDeliveredTurn(
+            page, instruction, CancellationToken.None);
+        if (probe.PageTextMatches || probe.AnyUserRoleMatchesInnerText)
+            break;
+        if (attempt < 19)
+            await Task.Delay(TimeSpan.FromSeconds(1));
+    }
+
+    if (probe is null)
+        throw new InvalidOperationException("ACK_PROBE_NO_OBSERVATIONS");
     Console.WriteLine(probe.ToStatusLine());
+    Console.WriteLine("ACK_PROBE_TRANSCRIPT_STATE:" +
+        (probe.AnyUserRoleMatchesInnerText || probe.PageTextMatches
+            ? "PRIOR_INSTRUCTION_VISIBLE"
+            : probe.UserRoleElements == 0 && probe.UserTurnArticles == 0
+                ? "NO_MESSAGE_TURNS_VISIBLE"
+                : "TURNS_VISIBLE_INSTRUCTION_NOT_MATCHED"));
     Console.WriteLine("ACK_PROBE_COMPLETE:NOTHING_SENT");
     return 0;
 }
