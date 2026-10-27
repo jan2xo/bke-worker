@@ -128,6 +128,36 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("bounded test message", local_log.read_text())
         self.assertEqual(kwargs["env"]["BKE_WORKER_ENV_FILE"], "/dev/null")
 
+    def test_confirmed_first_turn_recovery_is_parseable_and_backup_first(self):
+        import subprocess
+        script = PATH.with_name("reconcile-pilot-confirmed-turn-one.sh")
+        self.assertTrue(script.exists())
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = script.read_text(encoding="utf-8")
+        body = text.split("python3 - <<'PY'\\n", 1)[-1].rsplit("\\nPY\\n", 1)[0]
+        compile(body, str(script), "exec")
+        for guard in (
+                "PILOT_HEAD_OR_BRANCH_MISMATCH",
+                "PILOT_ASSIGNMENT_AMBIGUOUS",
+                "CONFLICTING_PILOT_ASSIGNMENT",
+                "FIRST_TURN_COMMIT_HISTORY_MISMATCH",
+                "FIRST_TURN_SCOPE_MISMATCH",
+                "FIXTURE_NOT_EXACTLY_TURN_ONE",
+                "VERIFIED_FIRST_TURN_CHECKPOINT_MISSING_OR_AMBIGUOUS",
+                "JOURNAL_NOT_ONE_UNCONFIRMED_FIRST_SEND",
+                "PENDING_SEND_DOES_NOT_MATCH_FIRST_TURN",
+                "PILOT_RUNTIME_LOCK_HELD",
+                "OWNER_ATTESTATION_REQUIRED",
+                "BACKUP_READBACK_MISMATCH",
+                "NO_LIVE_RESTART:TURN2_NOT_CERTIFIED",
+        ):
+            self.assertIn(guard, text)
+        self.assertLess(text.index("BACKUP_READBACK_MISMATCH"),
+                        text.index("os.replace(tmp, path)"))
+        self.assertIn('"time": pending["time"]', text)
+        self.assertNotIn("scripts/send-chatgpt-live.sh", text)
+
     def test_rate_cap_and_no_cross_pr_reassignment(self):
         state = {"assignment": pilot.PR_NUMBER, "pending": None, "sends": [
             {"time": i, "key": "old" + str(i), "head": HEAD}
