@@ -1,6 +1,12 @@
 {
   "pilot": "personal-single-worker-two-turns",
   "purpose": "Demonstrate one GitHub-labelled PR receiving two separate autonomous ChatGPT commits",
-  "completed_turns": 0,
-  "turns": []
+  "completed_turns": 1,
+  "turns": [
+    {
+      "turn": 1,
+      "starting_head_sha": "3c7de7d9740948c294ea3bbd8bcc5a2d515c82ef",
+      "recorded_on": "2026-10-27"
+    }
+  ]
 }
