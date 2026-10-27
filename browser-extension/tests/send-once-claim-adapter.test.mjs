@@ -135,3 +135,37 @@ test('wrong claim ref or SHA cannot escape PR attempt scope',async()=>{
   await throwsCode(()=>f.adapter.readRef('refs/heads/main'),'GITHUB_REF_OUT_OF_SCOPE');
   assert.equal(f.requests.length,1);
 });
+
+test('repository access alone permits missing-ref read, never a claim write',async()=>{
+  const f=fixture([repoOk,missing]);
+  await f.adapter.proveRepositoryAccess();
+  assert.equal(await f.adapter.readRef(REF),null);
+  await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
+  assert.equal(f.requests.length,2);
+});
+test('stale head and mismatched owner cannot authorize direct REST writes',async()=>{
+  for(const delta of [
+    {head:{sha:OTHER}},
+    {labels:[{name:'bke-worker:other-worker'}]},
+    {state:'closed'},
+  ]) {
+    const f=fixture([response(200,{...pull,...delta})]);
+    await f.adapter.readAuthority();
+    await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
+    assert.equal(f.requests.length,1);
+  }
+});
+test('lost POST response consumes adapter attempt without a second HTTP POST',async()=>{
+  const f=fixture([pullOk,Error(TOKEN+' timeout')]);
+  await f.adapter.readAuthority();
+  await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_TRANSPORT_UNCERTAIN');
+  await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
+  assert.deepEqual(f.requests.map(x=>x.init.method),['GET','POST']);
+});
+test('failed authority refresh revokes previous write eligibility',async()=>{
+  const f=fixture([pullOk,response(403,{message:TOKEN})]);
+  await f.adapter.readAuthority();
+  await throwsCode(()=>f.adapter.readAuthority(),'GITHUB_PR_READ_FAILED');
+  await throwsCode(()=>f.adapter.createRefIfAbsent(REF,SHA),'GITHUB_REF_WRITE_NOT_AUTHORIZED');
+  assert.deepEqual(f.requests.map(x=>x.init.method),['GET','GET']);
+});
