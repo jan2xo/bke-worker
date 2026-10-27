@@ -120,10 +120,18 @@ def recover():
         print("HISTORICAL_SEND: one old unverified first dispatch")
         print("CONFIRM: original pilot instruction absent from BOTH sent messages")
         print("and composer, in the EXACT dedicated human-authenticated ChatGPT chat.")
+        # Python is launched with a heredoc, so sys.stdin is the Python source,
+        # not the operator terminal. Read the explicit owner attestation from
+        # the controlling TTY instead; never auto-confirm or read piped input.
         try:
-            answer = input("Type RECOVER FALSE SEND to confirm: ").strip()
-        except EOFError:
+            with open("/dev/tty", "r", encoding="utf-8") as terminal:
+                print("Type RECOVER FALSE SEND to confirm: ", end="", flush=True)
+                answer = terminal.readline()
+        except (OSError, UnicodeError):
+            stop("OWNER_INTERACTIVE_TTY_REQUIRED")
+        if not answer:
             stop("OWNER_CONFIRMATION_REQUIRED")
+        answer = answer.strip()
         if answer != "RECOVER FALSE SEND":
             stop("OWNER_DECLINED")
         verify_github()
