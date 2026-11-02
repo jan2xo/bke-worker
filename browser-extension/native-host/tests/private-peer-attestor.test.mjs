@@ -147,7 +147,7 @@ test("bounded lifetime refuses signing after nonce budget consumed",async()=>{
  await assert.rejects(sign(LINK,request(OTHER)),/REQUEST_DENIED/);
 });
 
-test("source remains dormant: no Chrome host invocation, no manifest grant or installer changes",()=>{
+test("private peer attestor remains unused while owner-optional P256 native proof is enabled",()=>{
  const entry=readFileSync(new URL("../entry.mjs",import.meta.url),"utf8");
  const host=readFileSync(new URL("../host.mjs",import.meta.url),"utf8");
  const manifest=readFileSync(new URL("../../manifest.json",import.meta.url),"utf8");
@@ -155,6 +155,6 @@ test("source remains dormant: no Chrome host invocation, no manifest grant or in
  for(const source of [entry,host,installer]){
   assert.doesNotMatch(source,/createPrivatePeerEvidenceSigner|private-peer-attestor/u);
  }
- assert.doesNotMatch(manifest,/"nativeMessaging"/u);
+ assert.deepEqual(JSON.parse(manifest).optional_permissions,["nativeMessaging"]);
  assert.deepEqual(JSON.parse(manifest).permissions,["storage"]);
 });
