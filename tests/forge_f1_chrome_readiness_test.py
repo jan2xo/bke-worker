@@ -252,10 +252,15 @@ def test_darwin_codesign_pins_google_team_and_running_pid_not_only_disk_path():
     with patch.object(module.subprocess, "run", side_effect=call):
         assert module._darwin_codesign(411, verify=True) == "VERIFIED"
         assert module._darwin_codesign(411, verify=False) == "a" * 40
-    assert recorded[0][0] == "/usr/bin/codesign"
-    assert recorded[0][-1] == "411"
-    assert 'identifier "com.google.Chrome"' in recorded[0][-2]
-    assert "EQHXZ8M8AV" in recorded[0][-2]
+    assert recorded[0] == [
+        "/usr/bin/codesign", "--verify", "--strict",
+        "-R=" + module._DARWIN_CHROME_REQUIREMENT, "411",
+    ]
+    assert recorded[1] == ["/usr/bin/codesign", "--display", "--verbose=4", "411"]
+    assert recorded[0][3] == (
+        '-R=anchor apple generic and identifier "com.google.Chrome" '
+        'and certificate leaf[subject.OU] = "EQHXZ8M8AV"'
+    )
     with patch.object(module.subprocess, "run", return_value=CompletedProcess([], 1, "", "")):
         assert module._darwin_codesign(411, verify=True) is None
     with patch.object(module.subprocess, "run", side_effect=OSError):
