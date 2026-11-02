@@ -263,7 +263,7 @@ def _darwin_codesign(target: int | str, *, verify: bool) -> Optional[str]:
     elif not isinstance(target, str) or not os.path.isabs(target):
         return None
     args = (["/usr/bin/codesign", "--verify", "--strict",
-             "-R", "=" + _DARWIN_CHROME_REQUIREMENT, str(target)]
+             "-R=" + _DARWIN_CHROME_REQUIREMENT, str(target)]
             if verify else
             ["/usr/bin/codesign", "--display", "--verbose=4", str(target)])
     try:
