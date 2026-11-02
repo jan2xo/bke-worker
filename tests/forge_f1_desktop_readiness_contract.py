@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import subprocess
+import tempfile
 
 root = Path(__file__).resolve().parents[1]
 script_path = root / "scripts/forge-f1-desktop-readiness.sh"
@@ -28,7 +29,7 @@ for token in (
     "CHATGPT_AUTHENTICATED_AND_IDLE",
     "THIS_IS_THE_ONLY_F1_EXPERIMENT_PROFILE",
     "PREPARE_USER_LEVEL_CHROME_NATIVE_HOST",
-    "nativeMessagingPermission\":False",
+    "nativeMessagingPermission\":\"NOT_CHECKED\"",
     "NOT_CREATED_NO_SEND_OCCURRED",
     "BKE_F1_CHROME_RUNTIME_SHA256",
     "umask 077",
@@ -49,7 +50,7 @@ for forbidden in (
 ):
     assert forbidden not in script, forbidden
 
-assert '"nativeMessaging"' in script  # deny-list, never permission grant
+assert 'JSON.stringify(p.optional_permissions)!==JSON.stringify(["nativeMessaging"])' in script
 import json
 extension_manifest = json.loads(manifest)
 assert extension_manifest["permissions"] == ["storage"]
@@ -60,12 +61,34 @@ assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
 assert "PROFILE_PATH_UNSAFE" in policy
 assert "MESSAGE_SEND_NOT_PROVEN_ABSENT" in policy
 assert "SOURCE_SMOKE_PASS" in policy and "REAL_CHROME_READY" in policy
-assert "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN" in policy
+assert 'live_chrome_connection: "NOT_TESTED"' in policy
 assert "linux_chrome_binary_for_launcher" in helper
 assert "ps_line_matches_profile" in helper
 assert "PROFILE_CHAIN_UNSAFE" in helper
 assert "EXTENSION_MISSING_OR_DUPLICATE" in helper
 assert "python3 tests/forge_f1_chrome_readiness_test.py" in workflow
+
+# Exercise the real inline validator, including security-negative manifest cases.
+validator = 'import {readFileSync} from "node:fs";' + script.split(
+    'import {readFileSync} from "node:fs";', 1
+)[1].split("\nNODE\n", 1)[0]
+with tempfile.TemporaryDirectory() as temporary:
+    fixture_path = Path(temporary) / "manifest.json"
+    for mutate, should_pass in (
+        (lambda m: None, True),
+        (lambda m: m.update(permissions=["storage", "nativeMessaging"]), False),
+        (lambda m: m.update(optional_permissions=[]), False),
+        (lambda m: m.update(optional_permissions=["nativeMessaging", "debugger"]), False),
+        (lambda m: m.update(host_permissions=["<all_urls>"]), False),
+    ):
+        candidate = json.loads(manifest)
+        mutate(candidate)
+        fixture_path.write_text(json.dumps(candidate), encoding="utf-8")
+        result = subprocess.run(
+            ["node", "--input-type=module", "-", str(fixture_path)],
+            input=validator, text=True, capture_output=True,
+        )
+        assert (result.returncode == 0) == should_pass, (candidate, result.stderr)
 
 for command in (
     ["bash", "-n", str(script_path)],

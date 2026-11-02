@@ -29,8 +29,8 @@ function fixture() {
       id: extensionId, version: "0.1.0", manifestVersion: 3, matchCount: 1,
       enabled: true, path: "/Users/test/source/browser-extension",
       pathMatches: true, versionMatches: true,
-      permissions: ["storage"], hostPermissions: ["https://chatgpt.com/*"],
-      nativeMessagingPermission: false,
+      permissions: ["storage"], optionalPermissions: ["nativeMessaging"],
+      hostPermissions: ["https://chatgpt.com/*"], nativeMessagingPermission: "NOT_CHECKED",
     },
     nativeHost: {
       status: "VERIFIED_REGISTRATION_ONLY", name: "bke.worker.desktop",
@@ -54,10 +54,11 @@ test("complete owner-attested evidence yields readiness but no worker or send au
   assert.equal(report.authority.worker_assignment, "UNENROLLED");
   assert.equal(report.authority.message_send_authority, "NONE");
   assert.equal(report.chatgpt.conversation_id, "NOT_CREATED_NO_SEND_OCCURRED");
-  assert.equal(report.extension.native_messaging_permission, "ABSENT_BY_DESIGN");
+  assert.equal(report.extension.native_messaging_permission, "NOT_CHECKED");
+  assert.equal(report.extension.native_messaging_optional_declared, true);
   assert.equal(report.extension.identity_evidence_source, "OWNER_VISUAL_ATTESTATION");
   assert.equal(report.extension.loaded_enabled_from_canonical_source_owner_attested, true);
-  assert.equal(report.native_host.live_chrome_connection, "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN");
+  assert.equal(report.native_host.live_chrome_connection, "NOT_TESTED");
 });
 
 test("source-only pass remains distinct from missing real Chrome readiness", () => {
@@ -125,7 +126,13 @@ test("invalid extension IDs and permission drift fail closed", () => {
   assert.ok(codes(e).includes("EXTENSION_ID_INVALID_OR_MISSING"));
   const p = fixture(); p.extension.permissions = ["storage", "nativeMessaging"]; p.extension.nativeMessagingPermission = true;
   assert.ok(codes(p).includes("EXTENSION_PERMISSION_BOUNDARY_DRIFT"));
-  assert.ok(codes(p).includes("UNAUTHORIZED_NATIVE_MESSAGING_PERMISSION"));
+  assert.ok(codes(p).includes("NATIVE_MESSAGING_PERMISSION_EVIDENCE_INVALID"));
+  for (const optional of [[], ["nativeMessaging", "debugger"], ["cookies"]]) {
+    const drift = fixture(); drift.extension.optionalPermissions = optional;
+    assert.ok(codes(drift).includes("EXTENSION_OPTIONAL_PERMISSION_BOUNDARY_DRIFT"));
+  }
+  const absentClaim = fixture(); absentClaim.extension.nativeMessagingPermission = false;
+  assert.ok(codes(absentClaim).includes("NATIVE_MESSAGING_PERMISSION_EVIDENCE_INVALID"));
 });
 
 test("unsupported OS/browser versions and malformed runtime digests fail closed", () => {

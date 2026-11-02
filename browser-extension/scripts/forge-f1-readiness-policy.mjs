@@ -94,7 +94,12 @@ export function evaluateF1DesktopReadiness(evidence) {
   add(blockers, !Array.isArray(extension.hostPermissions) ||
     extension.hostPermissions.length !== 1 || extension.hostPermissions[0] !== "https://chatgpt.com/*",
   "EXTENSION_HOST_PERMISSION_BOUNDARY_DRIFT");
-  add(blockers, extension.nativeMessagingPermission !== false, "UNAUTHORIZED_NATIVE_MESSAGING_PERMISSION");
+  add(blockers, !Array.isArray(extension.optionalPermissions) ||
+    extension.optionalPermissions.length !== 1 || extension.optionalPermissions[0] !== "nativeMessaging",
+  "EXTENSION_OPTIONAL_PERMISSION_BOUNDARY_DRIFT");
+  // Runtime permission grants are not inspected by this owner-readiness script.
+  add(blockers, extension.nativeMessagingPermission !== "NOT_CHECKED",
+    "NATIVE_MESSAGING_PERMISSION_EVIDENCE_INVALID");
 
   add(blockers, host.status !== "VERIFIED_REGISTRATION_ONLY", "NATIVE_HOST_REGISTRATION_NOT_VERIFIED");
   add(blockers, host.name !== "bke.worker.desktop", "NATIVE_HOST_IDENTITY_MISMATCH");
@@ -150,8 +155,9 @@ export function evaluateF1DesktopReadiness(evidence) {
       identity_evidence_source: "OWNER_VISUAL_ATTESTATION",
       loaded_enabled_from_canonical_source_owner_attested: extension.enabled === true &&
         extension.pathMatches === true && extension.versionMatches === true && extension.matchCount === 1,
-      native_messaging_permission: extension.nativeMessagingPermission === false
-        ? "ABSENT_BY_DESIGN" : "UNEXPECTED_OR_UNVERIFIED",
+      native_messaging_optional_declared: Array.isArray(extension.optionalPermissions) &&
+        extension.optionalPermissions.length === 1 && extension.optionalPermissions[0] === "nativeMessaging",
+      native_messaging_permission: "NOT_CHECKED",
       allowed_host_permissions: Array.isArray(extension.hostPermissions) &&
         extension.hostPermissions.length === 1 && extension.hostPermissions[0] === "https://chatgpt.com/*"
         ? ["https://chatgpt.com/*"] : [],
@@ -161,7 +167,7 @@ export function evaluateF1DesktopReadiness(evidence) {
       status: host.status || "NOT_CHECKED",
       extension_origin_matches: host.origin === expectedOrigin && !!expectedOrigin,
       owner_policy_verified: host.policyVerified === true,
-      live_chrome_connection: "NOT_TESTED_NATIVE_MESSAGING_PERMISSION_ABSENT_BY_DESIGN",
+      live_chrome_connection: "NOT_TESTED",
     },
     chatgpt: {
       open_target_count: Number.isInteger(chatgpt.targetCount) ? chatgpt.targetCount : null,

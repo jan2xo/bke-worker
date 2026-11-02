@@ -25,7 +25,7 @@ When no isolated profile exists, creating and launching one requires the exact i
 - REAL_CHROME_READY is an operator-side readiness checkpoint: the live Chrome executable, dedicated profile/process, extension ID/version/path, native-host registration/policy, one chatgpt.com target, and human authentication/idle attestations met the checks.
 - BLOCKED includes stable reason codes. Do not interpret it as a pass or bypass it.
 
-The manifest deliberately still has only storage permission and https://chatgpt.com/* host permission. Consequently, this task does not prove a Chrome-launched native-messaging handshake: nativeMessaging remains absent by design and the report explicitly labels the live connection NOT_TESTED. Pairing/transport, GitHub assignment authority, first-message submission, conversation-ID reconciliation, autonomous wake and enrollment remain absent.
+The manifest requires only `storage` and the `https://chatgpt.com/*` host permission, and permits **only** optional `nativeMessaging` following an explicit owner popup click. The readiness script does **not** request this permission or inspect whether it was granted; the report records `native_messaging_permission: NOT_CHECKED` and `live_chrome_connection: NOT_TESTED`. Native-host registration verification is not a Chrome-launched signed handshake. Pairing/transport, GitHub assignment authority, first-message submission, conversation-ID reconciliation, autonomous wake and enrollment remain absent.
 
 ## Privacy and authority
 
