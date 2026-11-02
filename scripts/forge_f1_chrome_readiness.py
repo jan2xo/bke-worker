@@ -229,27 +229,119 @@ def _linux_process_probe(launcher_path: str, profile: str, expected_version: str
     return None
 
 
+# Apple documents PID-based dynamic code-signature verification via codesign(1).
+# This checks a *running* Google-signed process, not browser/profile attestation.
+_DARWIN_CHROME_REQUIREMENT = (
+    'anchor apple generic and identifier "com.google.Chrome" '
+    'and certificate leaf[subject.OU] = "EQHXZ8M8AV"'
+)
+
+
+def _darwin_pid_executable(pid: int) -> Optional[str]:
+    """Obtain the OS process's executable from libproc, never ps argv[0]."""
+    if not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        import ctypes
+        proc = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidpath
+        proc.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        proc.restype = ctypes.c_int
+        buf = ctypes.create_string_buffer(4096)
+        read = proc(pid, buf, ctypes.sizeof(buf))
+        if read <= 0 or read >= len(buf):
+            return None
+        return os.fsdecode(buf.value)
+    except (OSError, AttributeError, ValueError, TypeError):
+        return None
+
+
+def _darwin_codesign(target: int | str, *, verify: bool) -> Optional[str]:
+    """Apple-supported codesign path/PID operation; no fallback to disk-only PID proof."""
+    if isinstance(target, int):
+        if target <= 1:
+            return None
+    elif not isinstance(target, str) or not os.path.isabs(target):
+        return None
+    args = (["/usr/bin/codesign", "--verify", "--strict",
+             "-R=" + _DARWIN_CHROME_REQUIREMENT, str(target)]
+            if verify else
+            ["/usr/bin/codesign", "--display", "--verbose=4", str(target)])
+    try:
+        out = subprocess.run(
+            args, capture_output=True, text=True, check=False, timeout=30,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    if verify:
+        return "VERIFIED"
+    hashes = re.findall(r"^CDHash=([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
+                        out.stdout + "\n" + out.stderr, re.MULTILINE)
+    return hashes[0].lower() if len(hashes) == 1 else None
+
+
+def _darwin_matching_pids(executable: str, profile: str) -> Optional[list[int]]:
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,uid=,command="],
+            capture_output=True, text=True, check=False, timeout=8,
+            env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    found = []
+    for line in out.stdout.splitlines():
+        row = line.strip().split(maxsplit=2)
+        if (len(row) == 3 and row[0].isdecimal() and row[1].isdecimal()
+                and int(row[1]) == os.getuid()
+                and ps_line_matches_profile(row[2], executable, profile)):
+            found.append(int(row[0]))
+    return found
+
+
+def _darwin_process_probe(executable: str, profile: str) -> Optional[str]:
+    """Signed Chrome process observation, NOT a trusted browser-profile identity.
+
+    The profile argument remains owner-attested launch evidence. Without a
+    separately authenticated Chrome/native channel it cannot be remote trust.
+    """
+    if (not os.path.isabs(executable) or os.path.realpath(executable) != executable
+            or not private_profile_chain_is_safe(os.environ.get("HOME", ""), profile)):
+        return None
+    candidates = _darwin_matching_pids(executable, profile)
+    if candidates is None or len(candidates) != 1:
+        return None
+    pid = candidates[0]
+    if _darwin_pid_executable(pid) != executable:
+        return None
+    if _darwin_codesign(pid, verify=True) != "VERIFIED":
+        return None
+    live_hash = _darwin_codesign(pid, verify=False)
+    if not live_hash or _darwin_codesign(executable, verify=False) != live_hash:
+        return None
+    digest = _hash_open_binary(executable)
+    if not digest or not _SHA256.fullmatch(digest):
+        return None
+    # Recheck the process, signature, code identity and unique candidate.
+    # PID reuse cannot be ruled out without a trusted live peer channel;
+    # no authenticated profile/session claim is returned by this probe.
+    if (_darwin_matching_pids(executable, profile) != [pid]
+            or _darwin_pid_executable(pid) != executable
+            or _darwin_codesign(pid, verify=True) != "VERIFIED"
+            or _darwin_codesign(pid, verify=False) != live_hash):
+        return None
+    return digest
+
+
 def active_chrome_runtime_sha256(platform: str, launcher_path: str, profile: str, version: str) -> Optional[str]:
     if platform == "Linux":
         return _linux_process_probe(launcher_path, profile, version)
     if platform == "Darwin":
-        try:
-            result = subprocess.run(
-                ["ps", "-axo", "uid=,command="], capture_output=True, text=True,
-                timeout=8, check=False, env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if result.returncode != 0:
-            return None
-        for line in result.stdout.splitlines():
-            columns = line.strip().split(maxsplit=1)
-            if len(columns) != 2 or not columns[0].isdecimal() or int(columns[0]) != os.getuid():
-                continue
-            if ps_line_matches_profile(columns[1], launcher_path, profile):
-                digest = _hash_open_binary(launcher_path)
-                if digest and _SHA256.fullmatch(digest):
-                    return digest
+        return _darwin_process_probe(launcher_path, profile)
     return None
 
 

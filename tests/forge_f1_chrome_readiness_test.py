@@ -153,4 +153,124 @@ def test_extension_match_count_requires_exactly_one():
         assert blocked.returncode != 0
         assert "EXTENSION_MISSING_OR_DUPLICATE" in blocked.stderr
 
-print("BKE F1 Chrome process/profile regression tests: PASS")
+# Source-only macOS fixtures exercise the real readiness receiver. A successful
+# signed-PID check remains owner-attested profile evidence, not remote trust.
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
+
+
+def _mac_fixture(*, candidates=None, image=None, signed=True,
+                 live="a" * 40, disk="a" * 40, digest="b" * 64,
+                 after=None):
+    executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    profile = "/Users/operator/.bke-worker/f1/chrome-profile"
+    if candidates is None:
+        candidates = [411]
+    if image is None:
+        image = executable
+    if after is None:
+        after = candidates
+    observed = [candidates, after]
+    def pids(*_):
+        return observed.pop(0)
+    def codesign(target, *, verify):
+        if verify:
+            return "VERIFIED" if signed else None
+        return disk if isinstance(target, str) else live
+    with patch.object(module, "private_profile_chain_is_safe", return_value=True), \
+         patch.object(module, "_darwin_matching_pids", side_effect=pids), \
+         patch.object(module, "_darwin_pid_executable", return_value=image), \
+         patch.object(module, "_darwin_codesign", side_effect=codesign), \
+         patch.object(module, "_hash_open_binary", return_value=digest):
+        result = module.active_chrome_runtime_sha256("Darwin", executable, profile, "130.0.0.0")
+    return result
+
+
+def test_darwin_signed_process_passes_readiness_receiver_without_profile_authority():
+    assert _mac_fixture() == "b" * 64
+    # The existing receiving CLI calls active_chrome_runtime_sha256; no
+    # policy, GitHub claim or controller session is issued.
+    with patch.object(module, "_darwin_process_probe", return_value="b" * 64):
+        out = StringIO()
+        with redirect_stdout(out):
+            assert module._main(["--check-process", "Darwin", "/signed/chrome",
+                                 "/private/profile", "130.0.0.0"]) == 0
+        assert out.getvalue().strip() == "b" * 64
+
+
+def test_darwin_multiple_candidates_replacement_and_wrong_process_fail_closed():
+    assert _mac_fixture(candidates=[411, 412]) is None
+    assert _mac_fixture(after=[412]) is None
+    assert _mac_fixture(image="/tmp/forged") is None
+    assert _mac_fixture(signed=False) is None
+    assert _mac_fixture(live="a" * 40, disk="c" * 40) is None
+    assert _mac_fixture(live="") is None
+    assert _mac_fixture(digest=None) is None
+
+
+def test_darwin_disconnected_process_and_unsafe_profile_do_not_fallback():
+    executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    profile = "/Users/operator/.bke-worker/f1/chrome-profile"
+    with patch.object(module, "private_profile_chain_is_safe", return_value=False), \
+         patch.object(module, "_darwin_matching_pids") as pids:
+        assert module._darwin_process_probe(executable, profile) is None
+        pids.assert_not_called()
+    with patch.object(module, "private_profile_chain_is_safe", return_value=True), \
+         patch.object(module, "_darwin_matching_pids", return_value=None):
+        assert module._darwin_process_probe(executable, profile) is None
+    with patch.object(module, "_darwin_process_probe", return_value=None):
+        assert module._main(["--check-process", "Darwin", executable,
+                             profile, "130.0.0.0"]) == 1
+
+
+def test_darwin_ps_candidates_are_unique_and_exact():
+    from subprocess import CompletedProcess
+    executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    profile = "/Users/operator/.bke-worker/f1/chrome-profile"
+    command = executable + ' --user-data-dir="' + profile + '" --profile-directory=Default'
+    uid = os.getuid()
+    result = CompletedProcess([], 0,
+        f"411 {uid} {command}\n412 {uid} {command}\n"
+        f"413 {uid} {executable} --user-data-dir=/tmp/other\n", "")
+    with patch.object(module.subprocess, "run", return_value=result) as run:
+        assert module._darwin_matching_pids(executable, profile) == [411, 412]
+        assert run.call_args.args[0] == ["/bin/ps", "-axo", "pid=,uid=,command="]
+    result.returncode = 1
+    with patch.object(module.subprocess, "run", return_value=result):
+        assert module._darwin_matching_pids(executable, profile) is None
+
+
+def test_darwin_codesign_pins_google_team_and_running_pid_not_only_disk_path():
+    from subprocess import CompletedProcess
+    recorded = []
+    def call(args, **_):
+        recorded.append(args)
+        if "--verify" in args:
+            return CompletedProcess(args, 0, "", "")
+        return CompletedProcess(args, 0, "", "CDHash=" + "a" * 40 + "\n")
+    with patch.object(module.subprocess, "run", side_effect=call):
+        assert module._darwin_codesign(411, verify=True) == "VERIFIED"
+        assert module._darwin_codesign(411, verify=False) == "a" * 40
+    assert recorded[0] == [
+        "/usr/bin/codesign", "--verify", "--strict",
+        "-R=" + module._DARWIN_CHROME_REQUIREMENT, "411",
+    ]
+    assert recorded[1] == ["/usr/bin/codesign", "--display", "--verbose=4", "411"]
+    assert recorded[0][3] == (
+        '-R=anchor apple generic and identifier "com.google.Chrome" '
+        'and certificate leaf[subject.OU] = "EQHXZ8M8AV"'
+    )
+    with patch.object(module.subprocess, "run", return_value=CompletedProcess([], 1, "", "")):
+        assert module._darwin_codesign(411, verify=True) is None
+    with patch.object(module.subprocess, "run", side_effect=OSError):
+        assert module._darwin_codesign(411, verify=False) is None
+
+
+if __name__ == "__main__":
+    # The PR Guard runs this file as a script, not via unittest discovery.
+    # Actually call every regression test; never print unconditional PASS.
+    for name, fn in sorted(globals().copy().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+    print("BKE F1 Chrome process/profile regression tests: PASS")
