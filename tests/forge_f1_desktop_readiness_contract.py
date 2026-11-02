@@ -50,7 +50,10 @@ for forbidden in (
     assert forbidden not in script, forbidden
 
 assert '"nativeMessaging"' in script  # deny-list, never permission grant
-assert "nativeMessaging" not in manifest
+import json
+extension_manifest = json.loads(manifest)
+assert extension_manifest["permissions"] == ["storage"]
+assert extension_manifest["optional_permissions"] == ["nativeMessaging"]
 assert 'extension.permissions[0] !== "storage"' in policy
 assert "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH" in policy
 assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
