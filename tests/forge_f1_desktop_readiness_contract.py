@@ -51,6 +51,8 @@ for forbidden in (
     assert forbidden not in script, forbidden
 
 assert 'JSON.stringify(p.optional_permissions)!==JSON.stringify(["nativeMessaging"])' in script
+assert 'F1_EXTENSION_OPTIONAL_PERMISSIONS="$EXTENSION_OPTIONAL_PERMISSIONS"' in script
+assert '"optionalPermissions":a("EXTENSION_OPTIONAL_PERMISSIONS")' in script
 import json
 extension_manifest = json.loads(manifest)
 assert extension_manifest["permissions"] == ["storage"]
