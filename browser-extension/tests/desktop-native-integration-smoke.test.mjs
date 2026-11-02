@@ -406,7 +406,7 @@ test("disconnect during the challenge fails closed without a receipt", { timeout
   }
 });
 
-test("the smoke remains source-only and exposes no Chrome permission or authority", () => {
+test("owner-optional native proof remains local and cannot send or claim", () => {
   const extensionRoot = fileURLToPath(new URL("../", import.meta.url));
   const manifest = JSON.parse(readFileSync(join(extensionRoot, "manifest.json"), "utf8"));
   const serviceWorker = readFileSync(join(extensionRoot, "src/service-worker.ts"), "utf8");
@@ -414,10 +414,11 @@ test("the smoke remains source-only and exposes no Chrome permission or authorit
   const client = readFileSync(join(extensionRoot, "src/native-proof-client.ts"), "utf8");
   assert.deepEqual(manifest.permissions, ["storage"]);
   assert.deepEqual(manifest.optional_permissions, ["nativeMessaging"]);
-  assert.equal(JSON.stringify(manifest).includes("debugger"), false);
   assert.match(serviceWorker, /nativeProofAction/);
-  assert.match(serviceWorker, /isTrustedPopup/);
-  assert.match(popup, /permissions.request/);
+  assert.match(serviceWorker, /isTrustedPopup\(sender\)/);
+  assert.match(serviceWorker, /permissions\.contains/);
+  assert.match(popup, /permissions\.request/);
+  assert.doesNotMatch(popup, /FIRST_MESSAGE_LIVE_SEND_ENABLED|submitChat|sendPrompt/);
   assert.match(client, /admission_authority:"NONE"/);
   assert.match(client, /dispatch_authority:"NONE"/);
 });

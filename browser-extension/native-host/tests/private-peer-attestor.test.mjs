@@ -147,7 +147,7 @@ test("bounded lifetime refuses signing after nonce budget consumed",async()=>{
  await assert.rejects(sign(LINK,request(OTHER)),/REQUEST_DENIED/);
 });
 
-test("private peer signer stays dormant; optional owner-controlled local proof is separate",()=>{
+test("source remains dormant: no Chrome host invocation, no manifest grant or installer changes",()=>{
  const entry=readFileSync(new URL("../entry.mjs",import.meta.url),"utf8");
  const host=readFileSync(new URL("../host.mjs",import.meta.url),"utf8");
  const manifest=readFileSync(new URL("../../manifest.json",import.meta.url),"utf8");
@@ -155,9 +155,6 @@ test("private peer signer stays dormant; optional owner-controlled local proof i
  for(const source of [entry,host,installer]){
   assert.doesNotMatch(source,/createPrivatePeerEvidenceSigner|private-peer-attestor/u);
  }
- const parsed=JSON.parse(manifest);
- assert.deepEqual(parsed.permissions,["storage"]);
- assert.deepEqual(parsed.optional_permissions,["nativeMessaging"]);
- assert.doesNotMatch(entry,/createPrivatePeerEvidenceSigner|private-peer-attestor/u);
- assert.doesNotMatch(host,/createPrivatePeerEvidenceSigner|private-peer-attestor/u);
+ assert.doesNotMatch(manifest,/"nativeMessaging"/u);
+ assert.deepEqual(JSON.parse(manifest).permissions,["storage"]);
 });
