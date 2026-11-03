@@ -18,7 +18,7 @@ for token in (
 manifest_src = (root / "browser-extension/manifest.json").read_text(encoding="utf-8")
 import json
 manifest = json.loads(manifest_src)
-assert manifest["permissions"] == ["storage"]
+assert manifest["permissions"] == ["storage", "webNavigation"]
 assert manifest["optional_permissions"] == ["nativeMessaging"]
 assert manifest["host_permissions"] == ["https://chatgpt.com/*"]
 assert "wrangler deploy" not in text and "gh workflow run" not in text
