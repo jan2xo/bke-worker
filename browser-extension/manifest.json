@@ -5,7 +5,8 @@
   "description": "Account-isolated browser bridge foundation for BKE Worker ChatGPT sessions.",
   "minimum_chrome_version": "116",
   "permissions": [
-    "storage"
+    "storage",
+    "webNavigation"
   ],
   "optional_permissions": [
     "nativeMessaging"

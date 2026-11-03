@@ -128,5 +128,5 @@ test("witness remains unwired from Chrome runtime, installer and private attesto
  const installer=readFileSync(new URL("../../../scripts/prepare-chrome-native-host.sh",import.meta.url),"utf8");
  for(const s of [entry,host,signer,installer])
   assert.doesNotMatch(s,/verifyOwnerPinnedChromeInstallation|installation-witness/u);
- assert.deepEqual(JSON.parse(manifest).permissions,["storage"]);
+ assert.deepEqual(JSON.parse(manifest).permissions,["storage","webNavigation"]);
 });

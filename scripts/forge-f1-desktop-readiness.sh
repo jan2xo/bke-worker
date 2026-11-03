@@ -240,7 +240,7 @@ import {readFileSync} from "node:fs";
 const p=JSON.parse(readFileSync(process.argv[2],"utf8"));
 const deny=["cookies","debugger","history","identity","webRequest"];
 if(p.manifest_version!==3||p.name!=="BKE Worker Browser Bridge"||typeof p.version!=="string"||
- Number(p.minimum_chrome_version)<116||JSON.stringify(p.permissions)!==JSON.stringify(["storage"])||
+ Number(p.minimum_chrome_version)<116||JSON.stringify(p.permissions)!==JSON.stringify(["storage","webNavigation"])||
  JSON.stringify(p.optional_permissions)!==JSON.stringify(["nativeMessaging"])||
  JSON.stringify(p.host_permissions)!==JSON.stringify(["https://chatgpt.com/*"])||
  deny.some(v=>JSON.stringify(p).includes(v))) process.exit(2);

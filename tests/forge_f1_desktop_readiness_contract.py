@@ -55,9 +55,9 @@ assert 'F1_EXTENSION_OPTIONAL_PERMISSIONS="$EXTENSION_OPTIONAL_PERMISSIONS"' in 
 assert '"optionalPermissions":a("EXTENSION_OPTIONAL_PERMISSIONS")' in script
 import json
 extension_manifest = json.loads(manifest)
-assert extension_manifest["permissions"] == ["storage"]
+assert extension_manifest["permissions"] == ["storage", "webNavigation"]
 assert extension_manifest["optional_permissions"] == ["nativeMessaging"]
-assert 'extension.permissions[0] !== "storage"' in policy
+assert 'extension.permissions[1] !== "webNavigation"' in policy
 assert "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH" in policy
 assert "CHATGPT_TARGET_COUNT_NOT_ONE" in policy
 assert "PROFILE_PATH_UNSAFE" in policy
@@ -78,6 +78,7 @@ with tempfile.TemporaryDirectory() as temporary:
     fixture_path = Path(temporary) / "manifest.json"
     for mutate, should_pass in (
         (lambda m: None, True),
+        (lambda m: m.update(permissions=["storage"]), False),
         (lambda m: m.update(permissions=["storage", "nativeMessaging"]), False),
         (lambda m: m.update(optional_permissions=[]), False),
         (lambda m: m.update(optional_permissions=["nativeMessaging", "debugger"]), False),

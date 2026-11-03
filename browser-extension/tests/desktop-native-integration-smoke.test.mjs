@@ -412,7 +412,7 @@ test("owner-optional native proof remains local and cannot send or claim", () =>
   const serviceWorker = readFileSync(join(extensionRoot, "src/service-worker.ts"), "utf8");
   const popup = readFileSync(join(extensionRoot, "src/popup.ts"), "utf8");
   const client = readFileSync(join(extensionRoot, "src/native-proof-client.ts"), "utf8");
-  assert.deepEqual(manifest.permissions, ["storage"]);
+  assert.deepEqual(manifest.permissions, ["storage", "webNavigation"]);
   assert.deepEqual(manifest.optional_permissions, ["nativeMessaging"]);
   assert.match(serviceWorker, /nativeProofAction/);
   assert.match(serviceWorker, /isTrustedPopup\(sender\)/);
