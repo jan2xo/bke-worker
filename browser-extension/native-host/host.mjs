@@ -30,14 +30,20 @@ function publicThumbprint(jwk){
     crv:"P-256",kty:"EC",x:jwk.x,y:jwk.y,
   })).digest("hex");
 }
+// Keep the host's local policy admission predicate aligned with the
+// extension popup's checkOwnerNativePolicy. A policy that only the host accepts
+// cannot be a coherent owner-approved local proof, even source-only.
 export function validNativeHostPolicy(p,at=Date.now()){
-  return exact(p,POLICY)&&p.version===1&&
+  return Number.isSafeInteger(at)&&at>0&&
+    exact(p,POLICY)&&p.version===1&&
     typeof p.allowed_origin==="string"&&ORIGIN.test(p.allowed_origin)&&
     typeof p.worker_id==="string"&&WORKER.test(p.worker_id)&&
     isHash(p.public_key_sha256)&&isHash(p.profile_binding_sha256)&&
     validResources(p.resources)&&
     Number.isSafeInteger(p.expires_at_ms)&&p.expires_at_ms>at&&
-    p.expires_at_ms<=at+90*24*60*60*1000;
+    p.expires_at_ms<=at+30*86400000&&
+    new Set([p.public_key_sha256,p.profile_binding_sha256,
+      ...Object.values(p.resources)]).size===5;
 }
 function sameResources(a,b){
   return Object.keys(a).length===3&&FIELDS.split(",").every(k=>a[k]===b[k]);
