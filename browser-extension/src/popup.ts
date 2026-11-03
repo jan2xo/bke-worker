@@ -17,6 +17,7 @@ const controllerUrlInput =
   document.querySelector<HTMLInputElement>("#controller-url")!;
 const saveButton = document.querySelector<HTMLButtonElement>("#save")!;
 const probeButton = document.querySelector<HTMLButtonElement>("#probe")!;
+const selectTargetButton = document.querySelector<HTMLButtonElement>("#select-target")!;
 const initializeIdentityButton = document.querySelector<HTMLButtonElement>("#initialize-identity")!;
 const feedback = document.querySelector<HTMLElement>("#feedback")!;
 const policyFile = document.querySelector<HTMLInputElement>("#native-policy-file")!;
@@ -146,6 +147,19 @@ probeButton.addEventListener("click", async () => {
   await new Promise((resolve) => setTimeout(resolve, 250));
   await refresh();
   feedback.textContent = "Probe complete.";
+});
+
+selectTargetButton.addEventListener("click", async () => {
+  selectTargetButton.disabled=true;
+  feedback.textContent="Selecting one tab for local, read-only status…";
+  try{
+    const result=await chrome.runtime.sendMessage({type:"bke.chatgpt.target.select"});
+    feedback.textContent=result?.state==="OWNER_TAB_SELECTED_OBSERVATION_ONLY"
+      ? "Single tab selected. Awaiting browser-verified document status. No pairing or send."
+      : (result?.code??"Target selection blocked.");
+    await refresh();
+  }catch{feedback.textContent="Target selection unavailable.";}
+  finally{selectTargetButton.disabled=false;}
 });
 
 initializeIdentityButton.addEventListener("click", async () => {
