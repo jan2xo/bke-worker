@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {createChatGptTargetBinding} from "../dist/target-binding.js";
 const EXT="a".repeat(32),KEY="b".repeat(64);
 const D1="11111111-1111-4111-8111-111111111111",D2="22222222-2222-4222-8222-222222222222";
@@ -186,4 +187,87 @@ test("F1-160-02 navigation during pending owner selection cannot commit stale ta
     assert.equal((await binding.observe(observed(),sender({documentId:D2}),
       "worker-a",KEY)).code,"TARGET_NOT_SELECTED");
   }
+});
+
+test("F1-03 local proof requires a selected browser-verified owner document",async()=>{
+  const f=fixture();let invoked=0;
+  const proof=async()=>{invoked++;return {state:"LOCAL_PROOF_OK",admission_authority:"NONE",dispatch_authority:"NONE"};};
+  const run=()=>f.binding.withCurrentTargetObservation("worker-a",KEY,proof);
+  assert.equal((await run()).code,"TARGET_NATIVE_OBSERVATION_UNAVAILABLE");
+  await f.binding.select("worker-a",KEY);
+  assert.equal((await run()).code,"TARGET_NATIVE_OBSERVATION_UNAVAILABLE");
+  assert.equal(invoked,0,"no selected document means no native proof attempt");
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  assert.equal((await f.binding.withCurrentTargetObservation("worker-b",KEY,proof)).ok,false);
+  assert.equal(invoked,0,"worker identity conflict cannot invoke native host");
+  // Wrong worker invalidates the selection; the owner must reselect.
+  await f.binding.select("worker-a",KEY);
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  assert.deepEqual(await run(),{ok:true,value:{
+    state:"LOCAL_PROOF_OK",admission_authority:"NONE",dispatch_authority:"NONE",
+  }});
+  assert.equal(invoked,1);
+});
+
+test("F1-03 invalid tab/document/URL before local proof denies without native call",async()=>{
+  for(const change of [
+    f=>f.binding.tabChanged(7),
+    f=>f.setTabs([{id:7,url:URL,incognito:false},{id:8,url:URL,incognito:false}]),
+    f=>f.setFrame({url:"https://chatgpt.com/c/new",documentId:D1,
+      documentLifecycle:"active",frameType:"outermost_frame",parentFrameId:-1}),
+    f=>f.failFrame(),
+  ]){
+    const f=fixture();await f.binding.select("worker-a",KEY);
+    await f.binding.observe(observed(),sender(),"worker-a",KEY);
+    change(f);let called=0;
+    const outcome=await f.binding.withCurrentTargetObservation("worker-a",KEY,async()=>{
+      called++;return "LOCAL_PROOF_OK";
+    });
+    assert.equal(outcome.ok,false);
+    assert.equal(called,0,"no native host action on stale browser observation");
+  }
+  // Fresh MV3 background service worker loses in-memory selection.
+  const f=fixture(),fresh=fixture();
+  await f.binding.select("worker-a",KEY);
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  assert.equal((await fresh.binding.withCurrentTargetObservation("worker-a",KEY,
+    async()=>{throw Error("should not run");})).code,"TARGET_NATIVE_OBSERVATION_UNAVAILABLE");
+});
+
+test("F1-03 in-flight local proof is revoked on navigation, reselect or status replacement",async()=>{
+  for(const mutation of ["navigate","reselect","new-status","owner-config-change"]){
+    const f=fixture();await f.binding.select("worker-a",KEY);
+    await f.binding.observe(observed(),sender(),"worker-a",KEY);
+    let release,entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    const pending=f.binding.withCurrentTargetObservation("worker-a",KEY,()=>{
+      entered();
+      return new Promise(resolve=>{release=resolve;});
+    });
+    await started; // The guarded callback is actually in flight.
+    if(mutation==="navigate")f.binding.tabChanged(7);
+    if(mutation==="owner-config-change")f.binding.invalidate();
+    if(mutation==="reselect"){
+      await f.binding.select("worker-a",KEY);
+      await f.binding.observe(observed(),sender(),"worker-a",KEY);
+    }
+    if(mutation==="new-status")await f.binding.observe(observed(),sender(),"worker-a",KEY);
+    release({state:"LOCAL_PROOF_OK",admission_authority:"NONE",dispatch_authority:"NONE"});
+    const outcome=await pending;
+    assert.deepEqual(outcome,{ok:false,code:"TARGET_NATIVE_OBSERVATION_REVOKED"},mutation);
+  }
+});
+
+test("F1-03 native proof timeout/exception never yields a successful receipt",async()=>{
+  const f=fixture();await f.binding.select("worker-a",KEY);
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  const outcome=await f.binding.withCurrentTargetObservation("worker-a",KEY,
+    async()=>{throw Error("uncertain native transport");});
+  assert.deepEqual(outcome,{ok:false,code:"TARGET_NATIVE_PROOF_UNCERTAIN"});
+});
+
+test("F1-03 service worker gates local proof on owner target; no new controller/send path",()=>{
+  const source=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
+  assert.match(source,/targetBinding\.withCurrentTargetObservation\(/);
+  assert.match(source,/\(\)=>proveLocalNativeHost\(/);
 });
