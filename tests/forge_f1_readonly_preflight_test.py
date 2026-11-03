@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Source-only adversarial checks for F1-01's read-only operator entrypoint.
+"""Executable adversarial F1-01 preflight tests using a REAL disposable Git repo.
 
-All external Git/Node/OS/browser signals are simulated in private fixtures.
-No real Chrome, user profile, native host, credential helper or GitHub login runs.
+The fixture copy changes ONLY platform identity and the network test endpoint:
+macOS id/uname are simulated on Linux CI, and a local bare Git remote replaces
+GitHub for deterministic offline tests. All local Git inspection runs unmodified
+through the real /usr/bin/git, including hostile config/environment scenarios.
+No real Chrome process, browser profile, host, login or provider is used.
 """
 import os
 from pathlib import Path
@@ -11,142 +14,193 @@ import subprocess
 import tempfile
 
 SOURCE = Path(__file__).resolve().parents[1] / "scripts/forge-f1-desktop-readiness.sh"
-SHA = "a" * 40
+GIT = "/usr/bin/git"
+assert Path(GIT).is_file(), "real Git executable required"
 
 
-def stub(directory, name, code):
-    target = directory / name
-    target.write_text("#!/bin/sh\n" + code, encoding="utf-8")
-    target.chmod(0o700)
+def stub(directory, name, body):
+    file = directory / name
+    file.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    file.chmod(0o700)
+    return file
 
 
-with tempfile.TemporaryDirectory(prefix="bke-f1-readonly-fixture-") as temporary:
+with tempfile.TemporaryDirectory(prefix="bke-f1-real-git-") as temporary:
     base = Path(temporary)
-    root = base / "repo"
-    script = root / "scripts/forge-f1-desktop-readiness.sh"
-    script.parent.mkdir(parents=True)
-    shutil.copyfile(SOURCE, script)
+    root, bare, home = base / "repo", base / "remote.git", base / "home"
+    root.mkdir()
+    home.mkdir()
     bin_dir = base / "bin"
     bin_dir.mkdir()
-    home = base / "home"
-    home.mkdir()
-    calls = base / "calls"
+    marker = base / "EXECUTED_UNTRUSTED_CONFIG"
+    calls = base / "unexpected_calls"
+    stub(bin_dir, "git", 'echo git-injected >> "$BKE_UNEXPECTED_CALLS"\nexit 99\n')
+    stub(bin_dir, "uname", 'printf "Darwin\\n"\n')
+    stub(bin_dir, "id", 'printf "501\\n"\n')
+    stub(bin_dir, "node", 'printf "%s\\n" "$BKE_NODE_VERSION"\n')
+    for cmd in ("npm", "python3"):
+        stub(bin_dir, cmd, 'echo tool-invoked >> "$BKE_UNEXPECTED_CALLS"\nexit 99\n')
+
+    fixture_env = {
+        **os.environ,
+        "HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "BKE_NODE_VERSION": "v22.9.0", "BKE_UNEXPECTED_CALLS": str(calls),
+    }
+    def git(*args):
+        result = subprocess.run([GIT, *args], env={
+            **os.environ, "HOME": str(home), "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }, text=True, capture_output=True, timeout=10)
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return result.stdout.strip()
+
+    git("init", "-q", str(root))
+    git("-C", str(root), "symbolic-ref", "HEAD", "refs/heads/main")
+    git("init", "--bare", "-q", str(bare))
+    script = root / "scripts/forge-f1-desktop-readiness.sh"
+    script.parent.mkdir()
+    script_text = SOURCE.read_text(encoding="utf-8")
+    assert 'preflight_git -C / ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main' in script_text
+    # Controlled test-only substitutions, never pushed to actual PR.
+    script_text = script_text.replace("$(/usr/bin/id -u)", "$(id -u)")
+    script_text = script_text.replace("$(/usr/bin/uname -s)", "$(uname -s)")
+    script_text = script_text.replace(
+        "preflight_git -C / ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main",
+        f"preflight_git -C / ls-remote file://{bare} refs/heads/main",
+    )
+    script.write_text(script_text, encoding="utf-8")
+    git("-C", str(root), "remote", "add", "origin", "https://github.com/jan2xo/bke-worker.git")
+    git("-C", str(root), "add", "scripts/forge-f1-desktop-readiness.sh")
+    git("-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "disposable F1 source fixture")
+    git("-C", str(root), "push", "-q", str(bare), "HEAD:refs/heads/main")
+
     chrome = home / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     chrome.parent.mkdir(parents=True)
-    chrome.write_text("#!/bin/sh\necho CHROME_INVOKED >> \"$BKE_TEST_CALLS\"\nexit 98\n")
+    chrome.write_text("#!/bin/sh\necho Chrome-must-not-run >> \"$BKE_UNEXPECTED_CALLS\"\nexit 99\n")
     chrome.chmod(0o700)
     policy = home / ".config/bke-worker/native-host/owner-policy.json"
     policy.parent.mkdir(parents=True)
-    policy.write_text("PRIVATE_POLICY_CONTENT_NOT_FOR_OUTPUT", encoding="utf-8")
+    policy.write_text("POLICY_SECRET_MUST_NOT_BE_READ", encoding="utf-8")
+    git_config = root / ".git/config"
+    git_index = root / ".git/index"
+    clean_config = git_config.read_bytes()
 
-    stub(bin_dir, "git", r'''
-echo "git:$*" >> "$BKE_TEST_CALLS"
-case " $* " in
-  *" rev-parse --show-toplevel "*) printf '%s\n' "$BKE_TEST_ROOT" ;;
-  *" remote get-url origin "*) printf '%s\n' "$BKE_TEST_ORIGIN" ;;
-  *" branch --show-current "*) printf '%s\n' "$BKE_TEST_BRANCH" ;;
-  *" status --porcelain --untracked-files=all "*) printf '%s' "$BKE_TEST_DIRTY" ;;
-  *" rev-parse --verify HEAD "*) printf '%s\n' "$BKE_TEST_HEAD" ;;
-  *" ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main "*)
-    [ "$BKE_TEST_REMOTE_FAIL" != "1" ] || exit 2
-    printf '%s\trefs/heads/main\n' "$BKE_TEST_REMOTE" ;;
-  *) exit 91 ;;
-esac
-''')
-    stub(bin_dir, "node", r'''
-echo "node:$*" >> "$BKE_TEST_CALLS"
-[ "$1" = "--version" ] || exit 98
-printf '%s\n' "$BKE_TEST_NODE"
-''')
-    stub(bin_dir, "uname", r'''
-echo "uname:$*" >> "$BKE_TEST_CALLS"
-[ "$1" = "-s" ] || exit 98
-printf '%s\n' "$BKE_TEST_OS"
-''')
-    stub(bin_dir, "id", r'''
-echo "id:$*" >> "$BKE_TEST_CALLS"
-[ "$1" = "-u" ] || exit 98
-echo 501
-''')
-    for forbidden in ("npm", "python3"):
-        stub(bin_dir, forbidden, 'echo FORBIDDEN_TOOL_INVOKED >> "$BKE_TEST_CALLS"\nexit 98\n')
-
-    defaults = {
-        "HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin",
-        "BKE_TEST_ROOT": str(root), "BKE_TEST_CALLS": str(calls),
-        "BKE_TEST_ORIGIN": "https://github.com/jan2xo/bke-worker.git",
-        "BKE_TEST_BRANCH": "main", "BKE_TEST_DIRTY": "",
-        "BKE_TEST_HEAD": SHA, "BKE_TEST_REMOTE": SHA,
-        "BKE_TEST_REMOTE_FAIL": "0", "BKE_TEST_NODE": "v22.3.0",
-        "BKE_TEST_OS": "Darwin",
-        # Must not cause preflight to inspect arbitrary locations or profile files.
-        "BKE_NATIVE_HOST_POLICY_PATH": str(home / ".bke-worker/f1/chrome-profile/Preferences"),
-    }
-
-    def verify(expected, **overrides):
-        calls.write_text("", encoding="utf-8")
-        env = os.environ.copy()
-        env.update(defaults)
-        env.update(overrides)
+    def check(expected, extra=None):
+        calls.unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
+        before_config, before_index = git_config.read_bytes(), git_index.read_bytes()
         result = subprocess.run(
             ["/bin/bash", str(script), "--preflight-readonly"],
-            env=env, text=True, capture_output=True, timeout=10,
+            env={**fixture_env, **(extra or {})},
+            text=True, capture_output=True, timeout=15,
         )
         output = result.stdout + result.stderr
-        trace = calls.read_text(encoding="utf-8")
         if expected == "READ_ONLY_PASS":
-            assert result.returncode == 0, (result.returncode, output)
-            assert "BKE_F1_PREFLIGHT=READ_ONLY_PASS" in output
-            assert f"BKE_F1_HEAD_SHA={SHA}" in output
-            assert "BKE_F1_OWNER_POLICY=EXISTS_UNVERIFIED" in output
-            assert "BKE_F1_CHROME_APP_PATH=FOUND_UNVERIFIED" in output
+            assert result.returncode == 0, (expected, result.returncode, output)
+            assert "BKE_F1_PREFLIGHT=READ_ONLY_PASS" in output, output
+            assert git("-C", str(root), "rev-parse", "HEAD") in output
         else:
-            assert result.returncode == 2, (expected, result.returncode, output)
-            assert f"reason={expected}" in output, (expected, output)
-        assert "BKE_F1_SOURCE_SMOKE=NOT_RUN" in output
-        assert "BKE_F1_REAL_CHROME=NOT_TESTED" in output
-        assert "BKE_F1_NATIVE_HANDSHAKE=NOT_RUN" in output
-        assert "PRIVATE_POLICY_CONTENT_NOT_FOR_OUTPUT" not in output
-        assert str(home) not in output and str(root) not in output
-        assert "FORBIDDEN_TOOL_INVOKED" not in trace
-        assert "CHROME_INVOKED" not in trace
-        assert "git:" in trace
-        assert "fetch " not in trace and " clone " not in trace
-        assert " push " not in trace and " checkout " not in trace
-        return trace
+            assert result.returncode == 2 and f"reason={expected}" in output, (
+                expected, result.returncode, output)
+        for evidence in ("BKE_F1_SOURCE_SMOKE=NOT_RUN",
+                         "BKE_F1_REAL_CHROME=NOT_TESTED",
+                         "BKE_F1_NATIVE_HANDSHAKE=NOT_RUN"):
+            assert evidence in output, (evidence, output)
+        assert str(root) not in output and str(home) not in output, output
+        assert "POLICY_SECRET_MUST_NOT_BE_READ" not in output
+        assert not marker.exists(), "malicious Git configuration executed"
+        assert not calls.exists(), "PATH hijack or forbidden command executed"
+        assert git_config.read_bytes() == before_config
+        assert git_index.read_bytes() == before_index, "preflight wrote Git index"
+        assert not (root / ".git/index.lock").exists()
+        return output
 
-    trace = verify("READ_ONLY_PASS")
-    assert " -C / ls-remote https://github.com/jan2xo/bke-worker.git " in trace
-    assert "core.fsmonitor=false" in trace, "local Git fsmonitor must stay disabled"
-    assert "-c credential.helper=" in trace, "anonymous remote must disable helpers"
-    verify("CHECKOUT_NOT_MAIN", BKE_TEST_BRANCH="feature")
-    verify("CHECKOUT_DIRTY", BKE_TEST_DIRTY=" M important-file")
-    trace = verify("ORIGIN_REPOSITORY_UNTRUSTED", BKE_TEST_ORIGIN="https://example.com/fake.git")
-    assert "ls-remote" not in trace
-    verify("NODE_22_OR_NEWER_REQUIRED", BKE_TEST_NODE="v20.0.0")
-    verify("MACOS_REQUIRED", BKE_TEST_OS="Linux")
-    verify("STALE_CHECKOUT", BKE_TEST_REMOTE="b" * 40)
-    verify("REMOTE_MAIN_QUERY_FAILED", BKE_TEST_REMOTE_FAIL="1")
-    verify("REMOTE_MAIN_SHA_INVALID", BKE_TEST_REMOTE="not-a-sha")
-    verify("HEAD_SHA_INVALID", BKE_TEST_HEAD="not-a-sha")
+    check("READ_ONLY_PASS")
+    evil = stub(bin_dir, "evil", f'echo executed > "{marker}"\n')
+    poisoned_global = home / "malicious.gitconfig"
+    poisoned_global.write_text(
+        f'[core]\n\tfsmonitor = {evil}\n'
+        f'[credential]\n\thelper = !{evil}\n'
+        f'[url "file://{base}/redirect/"]\n\tinsteadOf = file://{bare}\n',
+        encoding="utf-8",
+    )
+    attacker = base / "attacker"
+    git("init", "-q", str(attacker))
+    poisoned = {
+        "GIT_DIR": str(attacker / ".git"),
+        "GIT_WORK_TREE": str(attacker),
+        "GIT_INDEX_FILE": str(base / "stolen-index"),
+        "GIT_COMMON_DIR": str(attacker / ".git"),
+        "GIT_CONFIG_GLOBAL": str(poisoned_global),
+        "GIT_CONFIG_SYSTEM": str(poisoned_global),
+        "GIT_CONFIG_COUNT": "3",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": str(evil),
+        "GIT_CONFIG_KEY_1": f"url.file://{base}/redirect/.insteadof",
+        "GIT_CONFIG_VALUE_1": f"file://{bare}",
+        "GIT_CONFIG_KEY_2": "credential.helper",
+        "GIT_CONFIG_VALUE_2": f"!{evil}",
+        "GIT_EXEC_PATH": str(bin_dir),
+        "GIT_SSH_COMMAND": str(evil), "GIT_ASKPASS": str(evil),
+        "GIT_CONFIG_PARAMETERS": "'core.fsmonitor=malicious'",
+    }
+    check("READ_ONLY_PASS", poisoned)
+    cases = [
+        ("core.fsmonitor", str(evil)),
+        ("credential.helper", f"!{evil}"),
+        ("url.file:///tmp/redirect.insteadof", "https://github.com/"),
+        ("include.path", str(poisoned_global)),
+        ("core.worktree", str(attacker)),
+        ("filter.inject.clean", str(evil)),
+        ("remote.origin.proxy", str(evil)),
+        ("alias.status", f"!{evil}"),
+    ]
+    for key, value in cases:
+        git_config.write_bytes(clean_config)
+        git("-C", str(root), "config", "--local", key, value)
+        check("GIT_CONFIG_UNSAFE")
+    git_config.write_bytes(clean_config)
+    check("READ_ONLY_PASS", poisoned)
+
+    git("-C", str(root), "remote", "set-url", "origin", "https://example.invalid/forged")
+    check("ORIGIN_REPOSITORY_UNTRUSTED")
+    git_config.write_bytes(clean_config)
+    git("-C", str(root), "symbolic-ref", "HEAD", "refs/heads/other")
+    check("CHECKOUT_NOT_MAIN")
+    git("-C", str(root), "symbolic-ref", "HEAD", "refs/heads/main")
+    script.write_text(script.read_text() + "\n# dirty fixture\n")
+    check("CHECKOUT_DIRTY")
+    script.write_text(script.read_text().replace("\n# dirty fixture\n", "\n"))
+    check("READ_ONLY_PASS")
 
     chrome.unlink()
-    verify("GOOGLE_CHROME_APP_PATH_NOT_FOUND")
-    chrome.write_text("#!/bin/sh\necho CHROME_INVOKED >> \"$BKE_TEST_CALLS\"\n")
+    check("GOOGLE_CHROME_APP_PATH_NOT_FOUND")
+    chrome.write_text("#!/bin/sh\nexit 99\n")
     chrome.chmod(0o700)
     policy.unlink()
-    verify("OWNER_POLICY_FILE_MISSING")
-    policy.symlink_to(base / "elsewhere-policy")
-    verify("OWNER_POLICY_PATH_SYMLINK")
+    check("OWNER_POLICY_FILE_MISSING")
+    policy.symlink_to(base / "outside-secret")
+    check("OWNER_POLICY_PATH_SYMLINK")
     policy.unlink()
-    policy.write_text("PRIVATE_POLICY_CONTENT_NOT_FOR_OUTPUT")
+    policy.write_text("POLICY_SECRET_MUST_NOT_BE_READ")
+    check("NODE_22_OR_NEWER_REQUIRED", {"BKE_NODE_VERSION": "v20.0.0"})
 
-    calls.write_text("", encoding="utf-8")
+    git_config.unlink()
+    git_config.symlink_to(poisoned_global)
+    result = subprocess.run(
+        ["/bin/bash", str(script), "--preflight-readonly"],
+        env=fixture_env, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 2 and "reason=GIT_DIRECTORY_UNSAFE" in result.stdout
+    git_config.unlink()
+    git_config.write_bytes(clean_config)
+    calls.unlink(missing_ok=True)
     result = subprocess.run(
         ["/bin/bash", str(script), "--preflight-readonly", "--unexpected"],
-        env={**os.environ, **defaults}, text=True, capture_output=True, timeout=10,
+        env=fixture_env, capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 2 and "UNKNOWN_ARGUMENT" in result.stderr
-    assert calls.read_text(encoding="utf-8") == "", "extra arguments reached discovery"
+    assert not calls.exists()
 
-print("BKE F1 read-only Mac preflight: 13 adversarial fixture cases PASS")
+print("BKE F1 preflight real-Git adversarial test: PASS (offline fixture)")
