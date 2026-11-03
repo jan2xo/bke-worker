@@ -94,5 +94,5 @@ test("kernel witness stays dormant in native entrypoint, signer, installer and e
  for(const source of [entry,host,signer,installer]){
    assert.doesNotMatch(source,/witnessLinuxImmediateBrowserParent|linux-parent-provenance/u);
  }
- assert.deepEqual(manifest.permissions,["storage"]);
+ assert.deepEqual(manifest.permissions,["storage","webNavigation"]);
 });
