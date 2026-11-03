@@ -115,7 +115,10 @@ echo 501
         assert " push " not in trace and " checkout " not in trace
         return trace
 
-    verify("READ_ONLY_PASS")
+    trace = verify("READ_ONLY_PASS")
+    assert " -C / ls-remote https://github.com/jan2xo/bke-worker.git " in trace
+    assert "core.fsmonitor=false" in trace, "local Git fsmonitor must stay disabled"
+    assert "-c credential.helper=" in trace, "anonymous remote must disable helpers"
     verify("CHECKOUT_NOT_MAIN", BKE_TEST_BRANCH="feature")
     verify("CHECKOUT_DIRTY", BKE_TEST_DIRTY=" M important-file")
     trace = verify("ORIGIN_REPOSITORY_UNTRUSTED", BKE_TEST_ORIGIN="https://example.com/fake.git")
