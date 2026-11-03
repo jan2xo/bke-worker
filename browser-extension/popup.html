@@ -28,6 +28,7 @@
       <div class="buttons">
         <button id="save" type="button">Save</button>
         <button id="probe" type="button">Probe</button>
+        <button id="select-target" type="button">Select single ChatGPT tab (read-only)</button>
         <button id="initialize-identity" type="button">Create device identity</button>
       </div>
 
@@ -44,6 +45,7 @@
         </p>
       </section>
       <p id="feedback" class="feedback"></p>
+      <p class="boundary">Selecting a target binds browser-provided tab/document status to the local worker key until navigation, tab replacement, config change or extension-worker restart. It does not establish OS profile attestation or grant send authority.</p>
       <p class="boundary">Device identity creation is local to this browser profile. It does not pair or activate a worker.</p>
       <section id="status" aria-live="polite"></section>
 
