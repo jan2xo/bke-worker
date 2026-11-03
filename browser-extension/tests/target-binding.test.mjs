@@ -169,3 +169,21 @@ test("incoming stale same-document status is rejected against Chrome frame truth
     "TARGET_CENSUS_CHANGED");
   assert.equal(await f.binding.current("worker-a",KEY),null);
 });
+
+test("F1-160-02 navigation during pending owner selection cannot commit stale tab",async()=>{
+  for(const tabId of [7,9]){
+    let finishCensus;
+    const binding=createChatGptTargetBinding(
+      ()=>new Promise(resolve=>{finishCensus=resolve;}),EXT,
+      async()=>({url:URL,documentId:D2,documentLifecycle:"active",
+        frameType:"outermost_frame",parentFrameId:-1}));
+    const pending=binding.select("worker-a",KEY);
+    // Browser event arrives before tabs.query resolves and before selected exists.
+    binding.tabChanged(tabId);
+    finishCensus([{id:7,url:URL,incognito:false}]);
+    assert.equal((await pending).code,"TARGET_SELECTION_STALE");
+    assert.equal(await binding.current("worker-a",KEY),null);
+    assert.equal((await binding.observe(observed(),sender({documentId:D2}),
+      "worker-a",KEY)).code,"TARGET_NOT_SELECTED");
+  }
+});
