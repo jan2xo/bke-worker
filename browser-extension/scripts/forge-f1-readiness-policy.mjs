@@ -89,7 +89,8 @@ export function evaluateF1DesktopReadiness(evidence) {
   add(blockers, extension.versionMatches !== true, "EXTENSION_VERSION_MISMATCH");
   add(blockers, extension.manifestVersion !== 3, "EXTENSION_MANIFEST_VERSION_UNSUPPORTED");
   add(blockers, !Array.isArray(extension.permissions) ||
-    extension.permissions.length !== 1 || extension.permissions[0] !== "storage",
+    extension.permissions.length !== 2 || extension.permissions[0] !== "storage" ||
+     extension.permissions[1] !== "webNavigation",
   "EXTENSION_PERMISSION_BOUNDARY_DRIFT");
   add(blockers, !Array.isArray(extension.hostPermissions) ||
     extension.hostPermissions.length !== 1 || extension.hostPermissions[0] !== "https://chatgpt.com/*",
