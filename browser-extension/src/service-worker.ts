@@ -224,13 +224,21 @@ async function nativeProofAction(rawPolicy: unknown) {
     if (tabs.length !== 1 || !Number.isInteger(tabs[0]?.id) ||
         tabs[0]?.incognito === true)
       return {state:"BLOCKED",code:"NATIVE_PROOF_TARGET_AMBIGUOUS"};
-    return await proveLocalNativeHost({
-      runtime:chrome.runtime,
-      identity:bridge,
-      workerId:config.workerId,
-      resources:policy.resources,
-      profileBindingSha256:policy.profileBindingSha256,
-    });
+    // A one-tab census alone is not a worker-selected document binding.
+    // Gate local key proof on a current browser-verified owner selection;
+    // reject its result if the tab/document/worker observation changes while
+    // awaiting nativeMessaging. Neither check authenticates owner policy pins.
+    const guarded=await targetBinding.withCurrentTargetObservation(
+      config.workerId,publicKey.public_key_sha256,
+      ()=>proveLocalNativeHost({
+        runtime:chrome.runtime,
+        identity:bridge,
+        workerId:config.workerId,
+        resources:policy.resources,
+        profileBindingSha256:policy.profileBindingSha256,
+      }),
+    );
+    return guarded.ok?guarded.value:{state:"BLOCKED",code:guarded.code};
   } catch {
     return {state:"BLOCKED",code:"NATIVE_PROOF_OUTCOME_UNCERTAIN"};
   } finally {

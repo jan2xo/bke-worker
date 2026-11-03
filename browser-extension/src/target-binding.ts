@@ -103,11 +103,30 @@ export function createChatGptTargetBinding(
     if(generation!==started||selected!==snapshot)return null;
     return seen;
   }
+  // One popup-initiated local proof may run only while this exact
+  // browser-owned tab/document observation and worker key remain selected.
+  // Re-selection, newer observations, navigation, or MV3 restart invalidate
+  // the pending result. This is not a trusted policy-pin derivation or admission.
+  async function withCurrentTargetObservation<T>(
+    workerId:string,keySha256:string,run:()=>Promise<T>,
+  ) {
+    const snapshot=selected,seen=status,started=generation;
+    if(!snapshot||!seen||!await current(workerId,keySha256)||
+      snapshot!==selected||status!==seen||generation!==started)
+      return blocked("TARGET_NATIVE_OBSERVATION_UNAVAILABLE");
+    let value:T;
+    try{value=await run();}
+    catch{return blocked("TARGET_NATIVE_PROOF_UNCERTAIN");}
+    const after=await current(workerId,keySha256);
+    if(!after||after!==seen||snapshot!==selected||status!==seen||generation!==started)
+      return blocked("TARGET_NATIVE_OBSERVATION_REVOKED");
+    return {ok:true as const,value};
+  }
   function tabChanged(tabId:number){
     // All browser navigation events advance the epoch even before selection
     // commits. Unrelated tabs conservatively abort an in-flight selection.
     navigationEpoch++;
     if(selected?.tabId===tabId)invalidate();
   }
-  return Object.freeze({select,observe,current,invalidate,tabChanged});
+  return Object.freeze({select,observe,current,withCurrentTargetObservation,invalidate,tabChanged});
 }
