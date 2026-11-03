@@ -169,9 +169,10 @@ with tempfile.TemporaryDirectory(prefix="bke-f1-real-git-") as temporary:
     git("-C", str(root), "symbolic-ref", "HEAD", "refs/heads/other")
     check("CHECKOUT_NOT_MAIN")
     git("-C", str(root), "symbolic-ref", "HEAD", "refs/heads/main")
-    script.write_text(script.read_text() + "\n# dirty fixture\n")
+    pristine_script = script.read_bytes()
+    script.write_bytes(pristine_script + b"\n# dirty fixture\n")
     check("CHECKOUT_DIRTY")
-    script.write_text(script.read_text().replace("\n# dirty fixture\n", "\n"))
+    script.write_bytes(pristine_script)
     check("READ_ONLY_PASS")
 
     chrome.unlink()
