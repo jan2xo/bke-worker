@@ -8,6 +8,8 @@ through the real /usr/bin/git, including hostile config/environment scenarios.
 No real Chrome process, browser profile, host, login or provider is used.
 """
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from pathlib import Path
 import shutil
 import subprocess
@@ -161,6 +163,77 @@ with tempfile.TemporaryDirectory(prefix="bke-f1-real-git-") as temporary:
         git("-C", str(root), "config", "--local", key, value)
         check("GIT_CONFIG_UNSAFE")
     git_config.write_bytes(clean_config)
+    check("READ_ONLY_PASS", poisoned)
+
+    # A file:// remote cannot provoke Git credential lookup. Prove the real
+    # credential-helper execution path with loopback HTTP Basic auth, then prove
+    # this preflight rejects that identical challenge WITHOUT invoking helper.
+    # The HTTP endpoint and all repository commits exist only in this fixture.
+    challenges = []
+    class DenyAuth(BaseHTTPRequestHandler):
+        def do_GET(self):
+            challenges.append(self.path)
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="bke-test-only"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DenyAuth)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        auth_url = f"http://127.0.0.1:{server.server_port}/git-auth-probe"
+        # Positive control: an unguarded real Git invocation MUST call our
+        # harmless marker helper on HTTP 401. Without this, the negative test
+        # would not establish credential-helper suppression.
+        marker.unlink(missing_ok=True)
+        control = subprocess.run(
+            [GIT, "-c", f"credential.helper=!{evil}",
+             "ls-remote", auth_url, "refs/heads/main"],
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin",
+                 "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_TERMINAL_PROMPT": "0"},
+            capture_output=True, text=True, timeout=10,
+        )
+        assert control.returncode != 0 and marker.exists(), (
+            "real HTTP 401 did not exercise credential-helper code path")
+        assert challenges, "loopback authentication challenge not reached"
+        marker.unlink()
+
+        # The same challenge now reaches the real preflight Git invocation.
+        # Only the disposable test copy's URL changes; production stays literal
+        # GitHub HTTPS, and test commits/pushes target a local bare repository.
+        local_remote_cmd = (
+            f"preflight_git -C / ls-remote file://{bare} refs/heads/main")
+        assert local_remote_cmd in script_text
+        http_script = script_text.replace(
+            local_remote_cmd,
+            f"preflight_git -C / ls-remote {auth_url} refs/heads/main")
+        assert http_script != script_text
+        script.write_text(http_script, encoding="utf-8")
+        git("-C", str(root), "add", "scripts/forge-f1-desktop-readiness.sh")
+        git("-C", str(root), "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "disposable auth challenge fixture")
+        git("-C", str(root), "push", "-q", str(bare), "HEAD:refs/heads/main")
+        hits_before = len(challenges)
+        check("REMOTE_MAIN_QUERY_FAILED", poisoned)
+        assert len(challenges) > hits_before, (
+            "preflight failed before reaching the real HTTP auth challenge")
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+    # Restore the earlier disposable source fixture byte for byte.
+    script.write_text(script_text, encoding="utf-8")
+    git("-C", str(root), "add", "scripts/forge-f1-desktop-readiness.sh")
+    git("-C", str(root), "-c", "user.name=Test",
+        "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "restore disposable file-remote fixture")
+    git("-C", str(root), "push", "-q", str(bare), "HEAD:refs/heads/main")
     check("READ_ONLY_PASS", poisoned)
 
     git("-C", str(root), "remote", "set-url", "origin", "https://example.invalid/forged")
