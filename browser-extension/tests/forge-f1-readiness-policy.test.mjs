@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { evaluateF1DesktopReadiness } from "../scripts/forge-f1-readiness-policy.mjs";
 
 const head = "a".repeat(40);
@@ -227,5 +231,83 @@ test("actual owner-entered zero or duplicate ChatGPT tabs still fail", () => {
     assert.ok(!r.blocker_codes.includes("CHATGPT_TARGET_NOT_EVALUATED"));
     assert.equal(r.chatgpt.open_target_count, count);
     assert.equal(r.chatgpt.target_count_source, "OWNER_VISUAL_ATTESTATION");
+  }
+});
+
+test("sequential prompts preserve unasked confirmation states after a count failure", () => {
+  for (const count of [0, 2]) {
+    const e = fixture();
+    e.chatgpt = { targetCount: count, exclusivityAttested: null, authenticatedAndIdle: null };
+    e.profile.exclusiveOwnerAttested = true;
+    const r = evaluateF1DesktopReadiness(e);
+    assert.ok(r.blocker_codes.includes("CHATGPT_TARGET_COUNT_NOT_ONE"));
+    assert.ok(!r.blocker_codes.includes("CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED"));
+    assert.ok(!r.blocker_codes.includes("CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE"));
+    assert.equal(r.chatgpt.target_exclusivity_attested, null);
+    assert.equal(r.chatgpt.target_exclusivity_evidence_source, "NOT_EVALUATED");
+    assert.equal(r.chatgpt.authenticated_and_idle, null);
+    assert.equal(r.chatgpt.authentication_evidence_source, "NOT_EVALUATED");
+    assert.equal(r.real_chrome_status, "BLOCKED");
+  }
+});
+
+test("target uniqueness and authentication report their own evaluated states", () => {
+  const pending = fixture();
+  pending.chatgpt = {targetCount: 1, exclusivityAttested: true, authenticatedAndIdle: null};
+  let r = evaluateF1DesktopReadiness(pending);
+  assert.ok(r.blocker_codes.includes("CHATGPT_AUTH_IDLE_NOT_EVALUATED"));
+  assert.equal(r.chatgpt.target_exclusivity_attested, true);
+  assert.equal(r.chatgpt.authenticated_and_idle, null);
+  const declined = fixture();
+  declined.chatgpt = {targetCount: 1, exclusivityAttested: true, authenticatedAndIdle: false};
+  r = evaluateF1DesktopReadiness(declined);
+  assert.ok(r.blocker_codes.includes("CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE"));
+  assert.equal(r.chatgpt.authentication_evidence_source, "OWNER_CONFIRMATION_FAILED");
+  const missing = fixture();
+  missing.chatgpt = {targetCount: 1, exclusivityAttested: null, authenticatedAndIdle: null};
+  r = evaluateF1DesktopReadiness(missing);
+  assert.ok(r.blocker_codes.includes("CHATGPT_TARGET_EXCLUSIVITY_NOT_EVALUATED"));
+  assert.equal(r.real_chrome_status, "BLOCKED");
+});
+
+test("actual embedded shell Python report producer preserves absent, invalid and completed stages", () => {
+  const shell=readFileSync(new URL("../../scripts/forge-f1-desktop-readiness.sh",import.meta.url),"utf8");
+  const startMarker='python3 - "$EVIDENCE_FILE" <<\'PY\'\n';
+  const first=shell.indexOf(startMarker);
+  assert.notEqual(first,-1,"actual embedded report producer exists");
+  const begin=first+startMarker.length, end=shell.indexOf("\nPY\n",begin);
+  assert.ok(end>begin);
+  const producer=shell.slice(begin,end);
+  const tmp=mkdtempSync(join(tmpdir(),"bke-f1-python-report-"));
+  try {
+    const cases=[
+      {name:"before-count",count:"",exclusive:"",auth:"",countExpected:null,authExpected:null,code:"CHATGPT_TARGET_NOT_EVALUATED"},
+      {name:"count-zero",count:"0",exclusive:"",auth:"",countExpected:0,authExpected:null,code:"CHATGPT_TARGET_COUNT_NOT_ONE"},
+      {name:"count-duplicate",count:"2",exclusive:"",auth:"",countExpected:2,authExpected:null,code:"CHATGPT_TARGET_COUNT_NOT_ONE"},
+      {name:"count-invalid",count:"bad",exclusive:"",auth:"",countExpected:"INVALID",authExpected:null,code:"CHATGPT_TARGET_COUNT_NOT_ONE"},
+      {name:"count-then-interrupted",count:"1",exclusive:"true",auth:"",countExpected:1,authExpected:null,code:"CHATGPT_AUTH_IDLE_NOT_EVALUATED"},
+      {name:"auth-not-confirmed",count:"1",exclusive:"true",auth:"false",countExpected:1,authExpected:false,code:"CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE"},
+      {name:"all-confirmed",count:"1",exclusive:"true",auth:"true",countExpected:1,authExpected:true,code:null},
+    ];
+    for(const c of cases){
+      const path=join(tmp,c.name+".json");
+      const p=spawnSync("python3",["-",path],{input:producer,encoding:"utf8",
+        env:{...process.env,F1_TARGET_COUNT:c.count,F1_CHATGPT_EXCLUSIVE:c.exclusive,
+          F1_CHATGPT_AUTH_IDLE:c.auth,F1_EXTENSION_MANIFEST_VERSION:"3"}});
+      assert.equal(p.status,0,c.name+": "+(p.stderr||"no stderr"));
+      const produced=JSON.parse(readFileSync(path,"utf8"));
+      assert.equal(produced.chatgpt.targetCount,c.countExpected,c.name);
+      assert.equal(produced.chatgpt.authenticatedAndIdle,c.authExpected,c.name);
+      const e=fixture();
+      e.chatgpt=produced.chatgpt;
+      const report=evaluateF1DesktopReadiness(e);
+      if(c.code)assert.ok(report.blocker_codes.includes(c.code),c.name);
+      else assert.equal(report.real_chrome_status,"REAL_CHROME_READY");
+      if(c.authExpected===null)assert.equal(report.chatgpt.authentication_evidence_source,"NOT_EVALUATED",c.name);
+      if(c.countExpected!==1)assert.equal(report.chatgpt.target_exclusivity_attested,null,c.name);
+      assert.equal(report.authority.message_send_authority,"NONE");
+    }
+  } finally {
+    rmSync(tmp,{recursive:true,force:true});
   }
 });
