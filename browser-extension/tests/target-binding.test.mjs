@@ -267,7 +267,7 @@ test("F1-03 native proof timeout/exception never yields a successful receipt",as
 });
 
 test("F1-03 service worker gates local proof on owner target; no new controller/send path",()=>{
-  const source=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
+  const source=readFileSync(new globalThis.URL("../src/service-worker.ts",import.meta.url),"utf8");
   assert.match(source,/targetBinding\.withCurrentTargetObservation\(/);
   assert.match(source,/\(\)=>proveLocalNativeHost\(/);
 });
