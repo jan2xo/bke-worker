@@ -9,12 +9,18 @@ const observed=()=>({protocolVersion:1,observedAt:"2026-11-03T00:00:00Z",
 const sender=(overrides={})=>({id:EXT,frameId:0,documentLifecycle:"active",
   documentId:D1,url:URL,tab:{id:7,url:URL,incognito:false},...overrides});
 function fixture(){
-  let tabs=[{id:7,url:URL,incognito:false}],fail=false;
+  let tabs=[{id:7,url:URL,incognito:false}],fail=false,failFrame=false;
+  let frame={url:URL,documentId:D1,documentLifecycle:"active",
+    frameType:"outermost_frame",parentFrameId:-1,errorOccurred:false};
   const binding=createChatGptTargetBinding(async()=>{
     if(fail)throw Error("tab provider offline");
     return tabs;
-  },EXT);
-  return {binding,setTabs:x=>{tabs=x;},fail:()=>{fail=true;}};
+  },EXT,async tabId=>{
+    if(failFrame)throw Error("webNavigation unavailable");
+    return tabId===7?frame:null;
+  });
+  return {binding,setTabs:x=>{tabs=x;},setFrame:x=>{frame=x;},
+    fail:()=>{fail=true;},failFrame:()=>{failFrame=true;}};
 }
 test("owner selects one target; only top-level browser document status is exposed",async()=>{
   const {binding}=fixture();
@@ -86,7 +92,9 @@ test("tab events, config invalidation and new MV3 worker lose selection",async()
   await f.binding.select("worker-a",KEY);
   f.binding.invalidate();
   assert.equal(await f.binding.current("worker-a",KEY),null);
-  const restarted=createChatGptTargetBinding(async()=>[{id:7,url:URL,incognito:false}],EXT);
+  const restarted=createChatGptTargetBinding(async()=>[{id:7,url:URL,incognito:false}],EXT,
+    async()=>({url:URL,documentId:D1,documentLifecycle:"active",
+      frameType:"outermost_frame",parentFrameId:-1}));
   assert.equal(await restarted.current("worker-a",KEY),null);
 });
 test("owner selection refuses ambiguous, incognito, foreign or unkeyed target",async()=>{
@@ -104,10 +112,60 @@ test("owner selection refuses ambiguous, incognito, foreign or unkeyed target",a
 });
 test("async stale tab reads cannot resurrect revoked owner selection",async()=>{
   let unblock;
-  const binding=createChatGptTargetBinding(()=>new Promise(resolve=>{unblock=resolve;}),EXT);
+  const binding=createChatGptTargetBinding(()=>new Promise(resolve=>{unblock=resolve;}),EXT,
+    async()=>({url:URL,documentId:D1,documentLifecycle:"active",
+      frameType:"outermost_frame",parentFrameId:-1}));
   const pending=binding.select("worker-a",KEY);
   binding.invalidate();
   unblock([{id:7,url:URL,incognito:false}]);
   assert.equal((await pending).code,"TARGET_SELECTION_STALE");
   assert.equal(await binding.current("worker-a",KEY),null);
+});
+
+test("same-document pushState URL change revokes cached status despite unchanged tab/document and stale tab census",async()=>{
+  const f=fixture();
+  await f.binding.select("worker-a",KEY);
+  assert.deepEqual(await f.binding.observe(observed(),sender(),"worker-a",KEY),{ok:true});
+  assert.deepEqual(await f.binding.current("worker-a",KEY),observed());
+  // tabs.query still reports old URL, while webNavigation.getFrame sees new
+  // current URL with the SAME tab ID and document UUID.
+  f.setFrame({url:"https://chatgpt.com/c/two",documentId:D1,
+    documentLifecycle:"active",frameType:"outermost_frame",parentFrameId:-1});
+  assert.equal(await f.binding.current("worker-a",KEY),null);
+  f.setFrame({url:URL,documentId:D1,documentLifecycle:"active",
+    frameType:"outermost_frame",parentFrameId:-1});
+  assert.equal((await f.binding.observe(observed(),sender(),"worker-a",KEY)).code,
+    "TARGET_NOT_SELECTED");
+});
+test("same-document history event revokes selected target before a later status read",async()=>{
+  const f=fixture();await f.binding.select("worker-a",KEY);
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  // Browser-owned top-level navigation event forwards tabId to tabChanged.
+  f.binding.tabChanged(7);
+  assert.equal(await f.binding.current("worker-a",KEY),null);
+});
+test("readback refuses changed frame UUID, lifecycle, parent, error and unavailable frame provider",async()=>{
+  const bad=[
+    {documentId:D2},{documentLifecycle:"prerender"},
+    {frameType:"sub_frame"},{parentFrameId:1},{errorOccurred:true},
+  ];
+  for(const mutation of bad){
+    const f=fixture();await f.binding.select("worker-a",KEY);
+    await f.binding.observe(observed(),sender(),"worker-a",KEY);
+    f.setFrame({url:URL,documentId:D1,documentLifecycle:"active",
+      frameType:"outermost_frame",parentFrameId:-1,errorOccurred:false,...mutation});
+    assert.equal(await f.binding.current("worker-a",KEY),null);
+  }
+  const f=fixture();await f.binding.select("worker-a",KEY);
+  await f.binding.observe(observed(),sender(),"worker-a",KEY);
+  f.failFrame();
+  assert.equal(await f.binding.current("worker-a",KEY),null);
+});
+test("incoming stale same-document status is rejected against Chrome frame truth",async()=>{
+  const f=fixture();await f.binding.select("worker-a",KEY);
+  f.setFrame({url:"https://chatgpt.com/c/two",documentId:D1,
+    documentLifecycle:"active",frameType:"outermost_frame",parentFrameId:-1});
+  assert.equal((await f.binding.observe(observed(),sender(),"worker-a",KEY)).code,
+    "TARGET_CENSUS_CHANGED");
+  assert.equal(await f.binding.current("worker-a",KEY),null);
 });
