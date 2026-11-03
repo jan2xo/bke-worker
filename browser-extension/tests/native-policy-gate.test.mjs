@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {checkOwnerNativePolicy} from "../dist/native-policy-gate.js";
+import {validNativeHostPolicy} from "../native-host/host.mjs";
 const h=x=>x.repeat(64);
 const O="chrome-extension://"+"a".repeat(32)+"/";
 const NOW=Date.now();
@@ -55,4 +56,26 @@ test("native proof is only invoked in popup-gated onMessage branch, not during s
  assert.match(sw,/proveLocalNativeHost/);
  assert.match(sw,/permissions\.contains/);
  assert.match(sw,/NATIVE_PROOF_MESSAGE/);
+});
+
+test("F1-03 real extension and host predicates agree on local-only policy boundary",()=>{
+  const common=policy();
+  const valid={...common,expires_at_ms:NOW+30*86400000};
+  assert.equal(checkOwnerNativePolicy(valid,expected()).state,"LOCAL_POLICY_MATCH_ONLY");
+  assert.equal(validNativeHostPolicy(valid,NOW),true);
+  for(const rejected of [
+    {...common,expires_at_ms:NOW+31*86400000},
+    {...common,resources:{...common.resources,
+      browser_profile_sha256:common.resources.chatgpt_target_sha256}},
+    {...common,resources:{...common.resources,
+      bridge_identity_sha256:common.public_key_sha256}},
+    {...common,profile_binding_sha256:common.resources.chatgpt_target_sha256},
+    {...common,expires_at_ms:NOW-1},
+    {...common,resources:{...common.resources,extra:h("7")}},
+  ]){
+    assert.equal(checkOwnerNativePolicy(rejected,expected()).state,"BLOCKED");
+    assert.equal(validNativeHostPolicy(rejected,NOW),false);
+  }
+  // This is parser parity only: neither predicate authenticates policy
+  // authorship, Chrome profile, owner pins or a controller session.
 });
