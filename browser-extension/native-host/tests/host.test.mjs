@@ -112,6 +112,27 @@ test("all pinned policy fields are required; origin and host expiry cannot be in
   const wrongOrigin=await launch(f,{origin:"chrome-extension://"+"b".repeat(32)+"/"});
   await assert.rejects(wrongOrigin.handle,/NATIVE_POLICY_DENIED/);
 });
+test("F1-03 host policy admission rejects extension-invalid TTL, duplicate pins and clock",async()=>{
+  const f=fixture();
+  assert.equal(validNativeHostPolicy(f.policy,T),true);
+  for(const invalid of [
+    {...f.policy,expires_at_ms:T+31*86400000},
+    {...f.policy,resources:{...f.policy.resources,
+      browser_profile_sha256:f.policy.resources.chatgpt_target_sha256}},
+    {...f.policy,resources:{...f.policy.resources,
+      bridge_identity_sha256:f.policy.public_key_sha256}},
+    {...f.policy,profile_binding_sha256:f.policy.resources.chatgpt_target_sha256},
+  ]){
+    assert.equal(validNativeHostPolicy(invalid,T),false);
+    const run=await launch({...f,policy:invalid});
+    await assert.rejects(run.handle,/NATIVE_POLICY_DENIED/);
+    run.input.destroy();
+  }
+  for(const at of [NaN,-1,0,Infinity,Number.MAX_SAFE_INTEGER+1]){
+    assert.equal(validNativeHostPolicy(f.policy,at),false);
+  }
+});
+
 test("wrong pinned worker, public key or resource fingerprints cannot produce a challenge",async()=>{
   const f=fixture(),different=identity();
   for(const hello of [
