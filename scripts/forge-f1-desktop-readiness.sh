@@ -6,9 +6,63 @@ fail_early(){ printf 'BKE_F1_READINESS=BLOCKED reason=%s\n' "$1" >&2; exit 2; }
 if [[ "${1:-}" == "--help" ]]; then
   printf '%s\n' 'Usage: bash scripts/forge-f1-desktop-readiness.sh' \
     'Checks source smoke and guides owner through isolated Chrome readiness.' \
-    'Authentication stays manual. No messages, CDP, cookies or local-storage reads.'
+    'Authentication stays manual. Read-only: --preflight-readonly (metadata only).'
   exit 0
 fi
+# SOURCE-ONLY operator preflight: no npm, browser/process/profile, policy-content,
+# native host, filesystem write, authorization prompt, or report creation.
+if [[ "${1:-}" == "--preflight-readonly" ]]; then
+  [[ $# -eq 1 ]] || fail_early "UNKNOWN_ARGUMENT"
+  preflight_block() {
+    printf 'BKE_F1_PREFLIGHT=BLOCKED reason=%s\n' "$1"
+    printf 'BKE_F1_SOURCE_SMOKE=NOT_RUN\nBKE_F1_REAL_CHROME=NOT_TESTED\nBKE_F1_NATIVE_HANDSHAKE=NOT_RUN\n'
+    exit 2
+  }
+  PF_SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)" || preflight_block "ENTRYPOINT_PATH_UNSAFE"
+  PF_SCRIPT_PATH="$PF_SCRIPT_DIR/$(basename -- "$0")"
+  PF_ROOT="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null)" || preflight_block "NOT_IN_GIT_REPOSITORY"
+  PF_ROOT="$(cd -- "$PF_ROOT" && pwd -P)" || preflight_block "REPOSITORY_PATH_UNSAFE"
+  [[ ! -L "$PF_SCRIPT_PATH" && "$PF_SCRIPT_PATH" == "$PF_ROOT/scripts/forge-f1-desktop-readiness.sh" ]] || preflight_block "ENTRYPOINT_PATH_UNSAFE"
+  [[ -n "${HOME:-}" && "$HOME" == /* && -d "$HOME" ]] || preflight_block "HOME_NOT_ABSOLUTE_DIRECTORY"
+  HOME="$(cd -- "$HOME" && pwd -P)" || preflight_block "HOME_PATH_UNSAFE"
+  [[ "$(id -u)" != "0" ]] || preflight_block "DO_NOT_RUN_AS_ROOT"
+  PF_ORIGIN="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" remote get-url origin 2>/dev/null)" || preflight_block "ORIGIN_REMOTE_MISSING"
+  case "$PF_ORIGIN" in
+    https://github.com/jan2xo/bke-worker|https://github.com/jan2xo/bke-worker.git|git@github.com:jan2xo/bke-worker.git|ssh://git@github.com/jan2xo/bke-worker.git) ;;
+    *) preflight_block "ORIGIN_REPOSITORY_UNTRUSTED" ;;
+  esac
+  PF_BRANCH="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" branch --show-current 2>/dev/null)" || preflight_block "BRANCH_UNAVAILABLE"
+  [[ "$PF_BRANCH" == "main" ]] || preflight_block "CHECKOUT_NOT_MAIN"
+  PF_DIRTY="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" status --porcelain --untracked-files=all 2>/dev/null)" || preflight_block "CHECKOUT_STATUS_UNAVAILABLE"
+  [[ -z "$PF_DIRTY" ]] || preflight_block "CHECKOUT_DIRTY"
+  for tool in node npm python3; do command -v "$tool" >/dev/null 2>&1 || preflight_block "SOURCE_TOOL_MISSING"; done
+  [[ "$(uname -s)" == "Darwin" ]] || preflight_block "MACOS_REQUIRED"
+  PF_NODE="$(node --version 2>/dev/null)" || preflight_block "NODE_VERSION_UNAVAILABLE"
+  [[ "$PF_NODE" =~ ^v([0-9]+)\. && "${BASH_REMATCH[1]}" -ge 22 ]] || preflight_block "NODE_22_OR_NEWER_REQUIRED"
+  PF_HEAD="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" rev-parse --verify HEAD 2>/dev/null)" || preflight_block "HEAD_SHA_UNAVAILABLE"
+  [[ "$PF_HEAD" =~ ^[0-9a-f]{40}$ ]] || preflight_block "HEAD_SHA_INVALID"
+  # Anonymous HTTPS remote query: no fetch, remote-tracking ref update, or credential helper.
+  PF_REMOTE="$(GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    git -c credential.helper= -C "$PF_ROOT" ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main 2>/dev/null)" || preflight_block "REMOTE_MAIN_QUERY_FAILED"
+  [[ "$PF_REMOTE" =~ ^([0-9a-f]{40})[[:space:]]refs/heads/main$ ]] || preflight_block "REMOTE_MAIN_SHA_INVALID"
+  [[ "$PF_HEAD" == "${BASH_REMATCH[1]}" ]] || preflight_block "STALE_CHECKOUT"
+  # Presence metadata only; never execute Chrome or inspect any profile.
+  if [[ ! -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" &&
+        ! -x "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]]; then
+    preflight_block "GOOGLE_CHROME_APP_PATH_NOT_FOUND"
+  fi
+  PF_POLICY="$HOME/.config/bke-worker/native-host/owner-policy.json"
+  for dir in "$HOME/.config" "$HOME/.config/bke-worker" "$HOME/.config/bke-worker/native-host" "$PF_POLICY"; do
+    [[ ! -L "$dir" ]] || preflight_block "OWNER_POLICY_PATH_SYMLINK"
+  done
+  [[ -f "$PF_POLICY" ]] || preflight_block "OWNER_POLICY_FILE_MISSING"
+  printf 'BKE_F1_PREFLIGHT=READ_ONLY_PASS\n'
+  printf 'BKE_F1_HEAD_SHA=%s\n' "$PF_HEAD"
+  printf 'BKE_F1_CHROME_APP_PATH=FOUND_UNVERIFIED\nBKE_F1_OWNER_POLICY=EXISTS_UNVERIFIED\n'
+  printf 'BKE_F1_SOURCE_SMOKE=NOT_RUN\nBKE_F1_REAL_CHROME=NOT_TESTED\nBKE_F1_NATIVE_HANDSHAKE=NOT_RUN\n'
+  exit 0
+fi
+
 [[ $# -eq 0 ]] || fail_early "UNKNOWN_ARGUMENT"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "$0")"
