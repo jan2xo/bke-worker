@@ -9,8 +9,8 @@ if [[ "${1:-}" == "--help" ]]; then
     'Authentication stays manual. Read-only: --preflight-readonly (metadata only).'
   exit 0
 fi
-# SOURCE-ONLY operator preflight: no npm, browser/process/profile, policy-content,
-# native host, filesystem write, authorization prompt, or report creation.
+# Strict metadata-only macOS preflight. No browser/profile access, installs,
+# policy reads, Git working-tree writes, credentials, or authentication.
 if [[ "${1:-}" == "--preflight-readonly" ]]; then
   [[ $# -eq 1 ]] || fail_early "UNKNOWN_ARGUMENT"
   preflight_block() {
@@ -20,35 +20,65 @@ if [[ "${1:-}" == "--preflight-readonly" ]]; then
   }
   PF_SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)" || preflight_block "ENTRYPOINT_PATH_UNSAFE"
   PF_SCRIPT_PATH="$PF_SCRIPT_DIR/$(basename -- "$0")"
-  PF_ROOT="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_SCRIPT_DIR/.." rev-parse --show-toplevel 2>/dev/null)" || preflight_block "NOT_IN_GIT_REPOSITORY"
-  PF_ROOT="$(cd -- "$PF_ROOT" && pwd -P)" || preflight_block "REPOSITORY_PATH_UNSAFE"
+  PF_ROOT="$(cd -- "$PF_SCRIPT_DIR/.." && pwd -P)" || preflight_block "REPOSITORY_PATH_UNSAFE"
   [[ ! -L "$PF_SCRIPT_PATH" && "$PF_SCRIPT_PATH" == "$PF_ROOT/scripts/forge-f1-desktop-readiness.sh" ]] || preflight_block "ENTRYPOINT_PATH_UNSAFE"
   [[ -n "${HOME:-}" && "$HOME" == /* && -d "$HOME" ]] || preflight_block "HOME_NOT_ABSOLUTE_DIRECTORY"
   HOME="$(cd -- "$HOME" && pwd -P)" || preflight_block "HOME_PATH_UNSAFE"
-  [[ "$(id -u)" != "0" ]] || preflight_block "DO_NOT_RUN_AS_ROOT"
-  PF_ORIGIN="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" remote get-url origin 2>/dev/null)" || preflight_block "ORIGIN_REMOTE_MISSING"
+  [[ "$(/usr/bin/id -u)" != "0" ]] || preflight_block "DO_NOT_RUN_AS_ROOT"
+  [[ -x /usr/bin/git && -x /usr/bin/env ]] || preflight_block "GIT_NOT_FOUND"
+  [[ -d "$PF_ROOT/.git" && ! -L "$PF_ROOT/.git" &&
+     -f "$PF_ROOT/.git/config" && ! -L "$PF_ROOT/.git/config" &&
+     -f "$PF_ROOT/.git/HEAD" && ! -L "$PF_ROOT/.git/HEAD" &&
+     ! -L "$PF_ROOT/.git/index" &&
+     ! -e "$PF_ROOT/.git/objects/info/alternates" ]] || preflight_block "GIT_DIRECTORY_UNSAFE"
+  # Every Git invocation runs in this identical fixed environment. All caller
+  # GIT_* overrides (including CONFIG_COUNT/KEY/VALUE and INDEX/WORK_TREE/DIR),
+  # SSH/askpass/curl and injected PATH settings are discarded.
+  preflight_git() {
+    /usr/bin/env -i HOME=/ PATH=/usr/bin:/bin LC_ALL=C \
+      GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null \
+      GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME=/dev/null \
+      GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false \
+      /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+      -c credential.helper= "$@"
+  }
+  # Read ONLY the explicit raw local config file with --no-includes. Refuse all
+  # non-baseline keys, which also rejects includes, URL rewrites, fsmonitor,
+  # filters, helpers, unexpected repo/worktree modes and command hooks.
+  PF_KEYS="$(preflight_git config --no-includes --file "$PF_ROOT/.git/config" --name-only --list 2>/dev/null)" || preflight_block "GIT_CONFIG_UNSAFE"
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    case "$key" in
+      core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|core.precomposeunicode|core.symlinks|core.protecthfs|core.protectntfs|remote.origin.url|remote.origin.fetch|branch.main.remote|branch.main.merge) ;;
+      *) preflight_block "GIT_CONFIG_UNSAFE" ;;
+    esac
+  done <<< "$PF_KEYS"
+  [[ "$(preflight_git config --no-includes --file "$PF_ROOT/.git/config" --get core.bare 2>/dev/null)" == "false" ]] || preflight_block "GIT_CONFIG_UNSAFE"
+  [[ "$(preflight_git config --no-includes --file "$PF_ROOT/.git/config" --get core.repositoryformatversion 2>/dev/null)" == "0" ]] || preflight_block "GIT_CONFIG_UNSAFE"
+  PF_ORIGIN="$(preflight_git config --no-includes --file "$PF_ROOT/.git/config" --get-all remote.origin.url 2>/dev/null)" || preflight_block "ORIGIN_REMOTE_MISSING"
   case "$PF_ORIGIN" in
     https://github.com/jan2xo/bke-worker|https://github.com/jan2xo/bke-worker.git|git@github.com:jan2xo/bke-worker.git|ssh://git@github.com/jan2xo/bke-worker.git) ;;
     *) preflight_block "ORIGIN_REPOSITORY_UNTRUSTED" ;;
   esac
-  PF_BRANCH="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" branch --show-current 2>/dev/null)" || preflight_block "BRANCH_UNAVAILABLE"
+  preflight_repo_git() {
+    preflight_git --git-dir="$PF_ROOT/.git" --work-tree="$PF_ROOT" "$@"
+  }
+  PF_BRANCH="$(preflight_repo_git symbolic-ref --quiet --short HEAD 2>/dev/null)" || preflight_block "BRANCH_UNAVAILABLE"
   [[ "$PF_BRANCH" == "main" ]] || preflight_block "CHECKOUT_NOT_MAIN"
-  PF_DIRTY="$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$PF_ROOT" status --porcelain --untracked-files=all 2>/dev/null)" || preflight_block "CHECKOUT_STATUS_UNAVAILABLE"
+  PF_DIRTY="$(preflight_repo_git status --porcelain --untracked-files=all 2>/dev/null)" || preflight_block "CHECKOUT_STATUS_UNAVAILABLE"
   [[ -z "$PF_DIRTY" ]] || preflight_block "CHECKOUT_DIRTY"
   for tool in node npm python3; do command -v "$tool" >/dev/null 2>&1 || preflight_block "SOURCE_TOOL_MISSING"; done
-  [[ "$(uname -s)" == "Darwin" ]] || preflight_block "MACOS_REQUIRED"
+  [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || preflight_block "MACOS_REQUIRED"
   PF_NODE="$(node --version 2>/dev/null)" || preflight_block "NODE_VERSION_UNAVAILABLE"
   [[ "$PF_NODE" =~ ^v([0-9]+)\. && "${BASH_REMATCH[1]}" -ge 22 ]] || preflight_block "NODE_22_OR_NEWER_REQUIRED"
-  PF_HEAD="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" rev-parse --verify HEAD 2>/dev/null)" || preflight_block "HEAD_SHA_UNAVAILABLE"
+  PF_HEAD="$(preflight_repo_git rev-parse --verify HEAD 2>/dev/null)" || preflight_block "HEAD_SHA_UNAVAILABLE"
   [[ "$PF_HEAD" =~ ^[0-9a-f]{40}$ ]] || preflight_block "HEAD_SHA_INVALID"
-  # Anonymous HTTPS from outside the checkout: no repo URL rewrites, credential
-  # helper, fetch, local remote-tracking ref update or interactive authentication.
-  PF_REMOTE="$(GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    git -c credential.helper= -C / ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main 2>/dev/null)" || preflight_block "REMOTE_MAIN_QUERY_FAILED"
+  # Anonymous literal HTTPS query outside every repository, same cleared env.
+  PF_REMOTE="$(preflight_git -C / ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main 2>/dev/null)" || preflight_block "REMOTE_MAIN_QUERY_FAILED"
   [[ "$PF_REMOTE" =~ ^([0-9a-f]{40})[[:space:]]refs/heads/main$ ]] || preflight_block "REMOTE_MAIN_SHA_INVALID"
   [[ "$PF_HEAD" == "${BASH_REMATCH[1]}" ]] || preflight_block "STALE_CHECKOUT"
-  # Presence metadata only; never execute Chrome or inspect any profile.
-  if [[ ! -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" &&
+  # Only presence metadata; never run Chrome or open any browser profile.
+  if [[ ! -x /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome &&
         ! -x "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]]; then
     preflight_block "GOOGLE_CHROME_APP_PATH_NOT_FOUND"
   fi
@@ -57,8 +87,7 @@ if [[ "${1:-}" == "--preflight-readonly" ]]; then
     [[ ! -L "$dir" ]] || preflight_block "OWNER_POLICY_PATH_SYMLINK"
   done
   [[ -f "$PF_POLICY" ]] || preflight_block "OWNER_POLICY_FILE_MISSING"
-  printf 'BKE_F1_PREFLIGHT=READ_ONLY_PASS\n'
-  printf 'BKE_F1_HEAD_SHA=%s\n' "$PF_HEAD"
+  printf 'BKE_F1_PREFLIGHT=READ_ONLY_PASS\nBKE_F1_HEAD_SHA=%s\n' "$PF_HEAD"
   printf 'BKE_F1_CHROME_APP_PATH=FOUND_UNVERIFIED\nBKE_F1_OWNER_POLICY=EXISTS_UNVERIFIED\n'
   printf 'BKE_F1_SOURCE_SMOKE=NOT_RUN\nBKE_F1_REAL_CHROME=NOT_TESTED\nBKE_F1_NATIVE_HANDSHAKE=NOT_RUN\n'
   exit 0
