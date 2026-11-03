@@ -13,7 +13,7 @@ const isChatUrl=(url:unknown):url is string=>{
   try { return typeof url==="string" && new URL(url).origin==="https://chatgpt.com"; }
   catch { return false; }
 };
-const blocked=(code:string)=>({ok:false,code});
+const blocked=(code:string)=>({ok:false as const,code});
 const safeTab=(tab:BrowserTab|undefined):tab is BrowserTab&{id:number;url:string}=>
   Number.isSafeInteger(tab?.id)&&Number(tab?.id)>=0&&tab?.incognito===false&&isChatUrl(tab?.url);
 
@@ -45,7 +45,7 @@ export function createChatGptTargetBinding(
     if(!Array.isArray(tabs)||tabs.length!==1||!safeTab(tabs[0]))
       return blocked("TARGET_NOT_UNIQUE");
     selected={workerId,keySha256,tabId:tabs[0].id,documentId:null,url:null};
-    return {ok:true,state:"OWNER_TAB_SELECTED_OBSERVATION_ONLY" as const};
+    return {ok:true as const,state:"OWNER_TAB_SELECTED_OBSERVATION_ONLY" as const};
   }
   async function observe(payload:unknown,sender:BrowserSender,workerId:string,keySha256:string){
     const current=selected,started=generation;
@@ -70,7 +70,7 @@ export function createChatGptTargetBinding(
     if(generation!==started||selected!==current)return blocked("TARGET_OBSERVATION_STALE");
     selected={...current,documentId:sender.documentId,url:sender.url};
     status=payload;
-    return {ok:true};
+    return {ok:true as const};
   }
   async function current(workerId:string,keySha256:string){
     const snapshot=selected,seen=status,started=generation;
