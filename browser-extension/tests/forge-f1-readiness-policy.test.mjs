@@ -185,3 +185,47 @@ test("non-object input and malformed readiness session fail closed", () => {
   const e = fixture(); e.readinessSessionId = "x";
   assert.ok(codes(e).includes("READINESS_SESSION_ID_INVALID"));
 });
+
+test("native-host fail closed before ChatGPT prompts does not invent zero tabs or an auth failure", () => {
+  const e = fixture();
+  e.nativeHost.status = "MISSING";
+  e.nativeHost.policyVerified = false;
+  e.chatgpt = { targetCount: null, exclusivityAttested: false, authenticatedAndIdle: false };
+  e.operatorBlocker = "NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING";
+  const r = evaluateF1DesktopReadiness(e);
+  assert.equal(r.source_status, "SOURCE_SMOKE_PASS");
+  assert.equal(r.real_chrome_status, "BLOCKED");
+  assert.ok(r.blocker_codes.includes("NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING"));
+  assert.ok(r.blocker_codes.includes("CHATGPT_TARGET_NOT_EVALUATED"));
+  assert.ok(!r.blocker_codes.includes("CHATGPT_TARGET_COUNT_NOT_ONE"));
+  assert.ok(!r.blocker_codes.includes("CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED"));
+  assert.ok(!r.blocker_codes.includes("CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE"));
+  assert.equal(r.chatgpt.open_target_count, null);
+  assert.equal(r.chatgpt.target_count_source, "NOT_EVALUATED");
+  assert.equal(r.chatgpt.authenticated_and_idle, null);
+  assert.equal(r.chatgpt.authentication_evidence_source, "NOT_EVALUATED");
+  assert.equal(r.authority.message_send_authority, "NONE");
+});
+
+test("missing ChatGPT evidence always fails closed, without false owner attestation", () => {
+  const e = fixture();
+  delete e.chatgpt;
+  const r = evaluateF1DesktopReadiness(e);
+  assert.equal(r.real_chrome_status, "BLOCKED");
+  assert.ok(r.blocker_codes.includes("CHATGPT_TARGET_NOT_EVALUATED"));
+  assert.equal(r.chatgpt.open_target_count, null);
+  assert.equal(r.chatgpt.target_count_source, "NOT_EVALUATED");
+});
+
+test("actual owner-entered zero or duplicate ChatGPT tabs still fail", () => {
+  for (const count of [0, 2]) {
+    const e = fixture();
+    e.chatgpt.targetCount = count;
+    const r = evaluateF1DesktopReadiness(e);
+    assert.equal(r.real_chrome_status, "BLOCKED");
+    assert.ok(r.blocker_codes.includes("CHATGPT_TARGET_COUNT_NOT_ONE"));
+    assert.ok(!r.blocker_codes.includes("CHATGPT_TARGET_NOT_EVALUATED"));
+    assert.equal(r.chatgpt.open_target_count, count);
+    assert.equal(r.chatgpt.target_count_source, "OWNER_VISUAL_ATTESTATION");
+  }
+});

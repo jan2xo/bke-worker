@@ -138,7 +138,7 @@ EXTENSION_ENABLED=false; EXTENSION_PATH_MATCHES=false; EXTENSION_VERSION_MATCHES
 EXTENSION_MANIFEST_VERSION=0; EXTENSION_PERMISSIONS='[]'; EXTENSION_OPTIONAL_PERMISSIONS='[]'; EXTENSION_HOST_PERMISSIONS='[]'
 EXTENSION_PATH="$ROOT_DIR/browser-extension"
 HOST_STATUS="NOT_CHECKED"; HOST_NAME="bke.worker.desktop"; HOST_ORIGIN=""; HOST_POLICY_VERIFIED=false
-CHATGPT_TARGET_COUNT=0; CHATGPT_EXCLUSIVITY_ATTESTED=false; CHATGPT_AUTH_IDLE=false
+CHATGPT_TARGET_COUNT=""; CHATGPT_EXCLUSIVITY_ATTESTED=false; CHATGPT_AUTH_IDLE=false
 OPERATOR_BLOCKER=""; SEND_ATTEMPTED=false; PROFILE_SECRETS_READ=false
 OTHER_PROFILES_TOUCHED=false; CREDENTIALS_WRITTEN=false
 if command -v sha256sum >/dev/null 2>&1; then
@@ -188,7 +188,7 @@ data={
  "profile":{"path":v("PROFILE_DIR"),"exists":b("PROFILE_EXISTS"),"pathCanonical":b("PROFILE_CANONICAL"),"ownerMatches":b("PROFILE_OWNER_MATCHES"),"privateMode":b("PROFILE_PRIVATE"),"dedicated":b("PROFILE_DEDICATED"),"activeProcess":b("PROFILE_ACTIVE"),"exclusiveOwnerAttested":b("PROFILE_EXCLUSIVE")},
  "extension":{"id":v("EXTENSION_ID"),"version":v("EXTENSION_VERSION"),"manifestVersion":int(v("EXTENSION_MANIFEST_VERSION","0") or 0),"matchCount":int(v("EXTENSION_COUNT","0") or 0),"enabled":b("EXTENSION_ENABLED"),"path":v("EXTENSION_PATH"),"pathMatches":b("EXTENSION_PATH_MATCHES"),"versionMatches":b("EXTENSION_VERSION_MATCHES"),"permissions":a("EXTENSION_PERMISSIONS"),"optionalPermissions":a("EXTENSION_OPTIONAL_PERMISSIONS"),"hostPermissions":a("EXTENSION_HOST_PERMISSIONS"),"nativeMessagingPermission":"NOT_CHECKED"},
  "nativeHost":{"status":v("HOST_STATUS"),"name":v("HOST_NAME"),"origin":v("HOST_ORIGIN"),"policyVerified":b("HOST_POLICY_VERIFIED")},
- "chatgpt":{"targetCount":int(v("TARGET_COUNT","0") or 0),"exclusivityAttested":b("CHATGPT_EXCLUSIVE"),"authenticatedAndIdle":b("CHATGPT_AUTH_IDLE")},
+ "chatgpt":{"targetCount":None if v("TARGET_COUNT") == "" else int(v("TARGET_COUNT")),"exclusivityAttested":b("CHATGPT_EXCLUSIVE"),"authenticatedAndIdle":b("CHATGPT_AUTH_IDLE")},
  "safety":{"messageSendAttempted":b("SEND_ATTEMPTED"),"profileSecretsRead":b("PROFILE_SECRETS_READ"),"otherProfilesTouched":b("OTHER_PROFILES_TOUCHED"),"credentialsWritten":b("CREDENTIALS_WRITTEN")},
  "operatorBlocker":v("OPERATOR_BLOCKER")}
 with open(sys.argv[1],"w",encoding="utf-8") as f:

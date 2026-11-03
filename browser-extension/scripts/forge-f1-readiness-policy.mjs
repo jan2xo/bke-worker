@@ -107,9 +107,16 @@ export function evaluateF1DesktopReadiness(evidence) {
   add(blockers, host.origin !== expectedOrigin || !expectedOrigin, "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH");
   add(blockers, host.policyVerified !== true, "NATIVE_HOST_OWNER_POLICY_NOT_VERIFIED");
 
-  add(blockers, chatgpt.targetCount !== 1, "CHATGPT_TARGET_COUNT_NOT_ONE");
-  add(blockers, chatgpt.exclusivityAttested !== true, "CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED");
-  add(blockers, chatgpt.authenticatedAndIdle !== true, "CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE");
+  // The operator's ChatGPT prompts occur AFTER native-host verification.
+  // A blocked earlier stage is unknown, not an owner-attested zero-tab result.
+  const chatgptTargetEvaluated = chatgpt.targetCount !== null && chatgpt.targetCount !== undefined;
+  if (!chatgptTargetEvaluated) {
+    add(blockers, true, "CHATGPT_TARGET_NOT_EVALUATED");
+  } else {
+    add(blockers, chatgpt.targetCount !== 1, "CHATGPT_TARGET_COUNT_NOT_ONE");
+    add(blockers, chatgpt.exclusivityAttested !== true, "CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED");
+    add(blockers, chatgpt.authenticatedAndIdle !== true, "CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE");
+  }
 
   add(blockers, safety.messageSendAttempted !== false, "MESSAGE_SEND_NOT_PROVEN_ABSENT");
   add(blockers, safety.profileSecretsRead !== false, "PROFILE_SECRET_READ_NOT_PROVEN_ABSENT");
@@ -172,9 +179,10 @@ export function evaluateF1DesktopReadiness(evidence) {
     },
     chatgpt: {
       open_target_count: Number.isInteger(chatgpt.targetCount) ? chatgpt.targetCount : null,
-      target_count_source: "OWNER_VISUAL_ATTESTATION",
-      authenticated_and_idle: chatgpt.authenticatedAndIdle === true,
-      authentication_evidence_source: "OWNER_VISUAL_ATTESTATION_NO_PROFILE_SECRETS_READ",
+      target_count_source: chatgptTargetEvaluated ? "OWNER_VISUAL_ATTESTATION" : "NOT_EVALUATED",
+      authenticated_and_idle: chatgptTargetEvaluated ? chatgpt.authenticatedAndIdle === true : null,
+      authentication_evidence_source: chatgptTargetEvaluated
+        ? "OWNER_VISUAL_ATTESTATION_NO_PROFILE_SECRETS_READ" : "NOT_EVALUATED",
       conversation_id: "NOT_CREATED_NO_SEND_OCCURRED",
     },
     authority: {
