@@ -100,4 +100,11 @@ for command in (
     result = subprocess.run(command, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
 
+# Executed by the existing PR Guard operator-entrypoint job on each exact PR head.
+preflight = subprocess.run(
+    ["python3", str(root / "tests/forge_f1_readonly_preflight_test.py")],
+    text=True, capture_output=True,
+)
+assert preflight.returncode == 0, preflight.stdout + preflight.stderr
+
 print("BKE FORGE F1 desktop readiness entrypoint contract: PASS")
