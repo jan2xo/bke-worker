@@ -156,5 +156,5 @@ test("private peer attestor remains unused while owner-optional P256 native proo
   assert.doesNotMatch(source,/createPrivatePeerEvidenceSigner|private-peer-attestor/u);
  }
  assert.deepEqual(JSON.parse(manifest).optional_permissions,["nativeMessaging"]);
- assert.deepEqual(JSON.parse(manifest).permissions,["storage"]);
+ assert.deepEqual(JSON.parse(manifest).permissions,["storage","webNavigation"]);
 });
