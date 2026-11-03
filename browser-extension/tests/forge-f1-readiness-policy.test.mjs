@@ -29,7 +29,7 @@ function fixture() {
       id: extensionId, version: "0.1.0", manifestVersion: 3, matchCount: 1,
       enabled: true, path: "/Users/test/source/browser-extension",
       pathMatches: true, versionMatches: true,
-      permissions: ["storage"], optionalPermissions: ["nativeMessaging"],
+      permissions: ["storage", "webNavigation"], optionalPermissions: ["nativeMessaging"],
       hostPermissions: ["https://chatgpt.com/*"], nativeMessagingPermission: "NOT_CHECKED",
     },
     nativeHost: {
