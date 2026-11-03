@@ -27,6 +27,8 @@ export function createChatGptTargetBinding(
   let selected:Selected|null=null;
   let status:ChatGptPageStatus|null=null;
   let generation=0;
+  // Navigation may happen before an awaited tab census identifies its candidate.
+  let navigationEpoch=0;
   function invalidate(){generation++;selected=null;status=null;}
   function sameOwner(workerId:string,keySha256:string){
     return selected!==null&&selected.workerId===workerId&&selected.keySha256===keySha256;
@@ -51,12 +53,13 @@ export function createChatGptTargetBinding(
   }
   async function select(workerId:string,keySha256:string){
     invalidate();
-    const generationAtStart=generation;
+    const generationAtStart=generation, navigationAtStart=navigationEpoch;
     if(!isValidWorkerId(workerId)||workerId.trim()!==workerId||!HASH.test(keySha256))
       return blocked("TARGET_OWNER_INVALID");
     let tabs:BrowserTab[];
     try{tabs=await listTabs();}catch{return blocked("TARGET_TABS_UNAVAILABLE");}
-    if(generation!==generationAtStart)return blocked("TARGET_SELECTION_STALE");
+    if(generation!==generationAtStart||navigationEpoch!==navigationAtStart)
+      return blocked("TARGET_SELECTION_STALE");
     if(!Array.isArray(tabs)||tabs.length!==1||!safeTab(tabs[0]))
       return blocked("TARGET_NOT_UNIQUE");
     selected={workerId,keySha256,tabId:tabs[0].id,documentId:null,url:null};
@@ -100,6 +103,11 @@ export function createChatGptTargetBinding(
     if(generation!==started||selected!==snapshot)return null;
     return seen;
   }
-  function tabChanged(tabId:number){if(selected?.tabId===tabId)invalidate();}
+  function tabChanged(tabId:number){
+    // All browser navigation events advance the epoch even before selection
+    // commits. Unrelated tabs conservatively abort an in-flight selection.
+    navigationEpoch++;
+    if(selected?.tabId===tabId)invalidate();
+  }
   return Object.freeze({select,observe,current,invalidate,tabChanged});
 }
