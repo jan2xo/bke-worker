@@ -174,7 +174,7 @@ test("probe-only extension never exposes signing through popup/content script or
   const sw=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
   const cs=readFileSync(new URL("../src/content-script.ts",import.meta.url),"utf8");
   const popup=readFileSync(new URL("../src/popup.ts",import.meta.url),"utf8");
-  assert.deepEqual(manifest.permissions,["storage"]);
+  assert.deepEqual(manifest.permissions,["storage","webNavigation"]);
   assert.deepEqual(manifest.host_permissions,["https://chatgpt.com/*"]);
   assert.doesNotMatch(sw,/\.sign\(|bke\.device\.identity\.sign|new WebSocket|connectNative/);
   assert.doesNotMatch(cs,/device-identity|signChallenge|private_key/);
