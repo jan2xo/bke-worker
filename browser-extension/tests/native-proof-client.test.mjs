@@ -211,7 +211,7 @@ test("local proof is popup-gated, optional and never authorizes sending",()=>{
   const sw=readFileSync(new URL("../src/service-worker.ts",import.meta.url),"utf8");
   const popup=readFileSync(new URL("../src/popup.ts",import.meta.url),"utf8");
   const manifest=JSON.parse(readFileSync(new URL("../manifest.json",import.meta.url),"utf8"));
-  assert.deepEqual(manifest.permissions,["storage"]);
+  assert.deepEqual(manifest.permissions,["storage","webNavigation"]);
   assert.deepEqual(manifest.optional_permissions,["nativeMessaging"]);
   assert.match(sw,/isTrustedPopup\(sender\)/);
   assert.match(sw,/permissions\.contains/);
