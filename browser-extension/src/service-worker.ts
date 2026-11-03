@@ -23,7 +23,8 @@ const IDENTITY_INIT_MESSAGE = "bke.device.identity.initialize";
 const NATIVE_PROOF_MESSAGE = "bke.native.local.proof";
 const TARGET_SELECT_MESSAGE = "bke.chatgpt.target.select";
 const targetBinding=createChatGptTargetBinding(
-  ()=>chrome.tabs.query({url:["https://chatgpt.com/*"]}),chrome.runtime.id);
+  ()=>chrome.tabs.query({url:["https://chatgpt.com/*"]}),chrome.runtime.id,
+  (tabId:number)=>chrome.webNavigation.getFrame({tabId,frameId:0}));
 let nativeProofActive = false;
 
 const DEFAULT_CONFIG: BridgeConfig = {
@@ -160,6 +161,16 @@ chrome.tabs.onReplaced.addListener((added:number,removed:number)=>{
   targetBinding.tabChanged(added);
   void chrome.action.setBadgeText({text:""});
 });
+// History API and fragment navigation can change a top-level URL while the
+// tab ID and document ID remain the same; never preserve old status on either.
+function revokeTopLevelNavigation(details:any){
+  if(details?.frameId!==0||!Number.isSafeInteger(details?.tabId))return;
+  targetBinding.tabChanged(details.tabId);
+  void chrome.action.setBadgeText({text:""});
+}
+chrome.webNavigation.onHistoryStateUpdated.addListener(revokeTopLevelNavigation);
+chrome.webNavigation.onReferenceFragmentUpdated.addListener(revokeTopLevelNavigation);
+chrome.webNavigation.onBeforeNavigate.addListener(revokeTopLevelNavigation);
 
 // Only the extension popup can initialize or inspect the local device key.
 // Neither ChatGPT content scripts nor externally-connected pages can sign.
