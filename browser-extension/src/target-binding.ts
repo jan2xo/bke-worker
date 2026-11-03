@@ -3,6 +3,9 @@
 import { isValidChatGptPageStatus, isValidWorkerId, type ChatGptPageStatus } from "./protocol.js";
 
 type BrowserTab = { id?:number; url?:string; incognito?:boolean };
+type BrowserFrame = { url?:string; documentId?:string;
+  documentLifecycle?:string; frameType?:string; parentFrameId?:number;
+  errorOccurred?:boolean };
 type BrowserSender = { id?:string; tab?:BrowserTab; url?:string;
   frameId?:number; documentId?:string; documentLifecycle?:string };
 type Selected = { workerId:string; keySha256:string; tabId:number;
@@ -19,6 +22,7 @@ const safeTab=(tab:BrowserTab|undefined):tab is BrowserTab&{id:number;url:string
 
 export function createChatGptTargetBinding(
   listTabs:()=>Promise<BrowserTab[]>,extensionId:string,
+  getTopFrame:(tabId:number)=>Promise<BrowserFrame|null|undefined>,
 ) {
   let selected:Selected|null=null;
   let status:ChatGptPageStatus|null=null;
@@ -32,6 +36,17 @@ export function createChatGptTargetBinding(
       const tabs=await listTabs();
       return Array.isArray(tabs)&&tabs.length===1&&safeTab(tabs[0])&&
         tabs[0].id===tabId&&tabs[0].url===url;
+    }catch{return false;}
+  }
+  // Tab URL snapshots can lag same-document History API navigation.
+  // Independently inspect Chrome's current top-level frame before every
+  // observation and every readback; failures deny rather than expose cache.
+  async function frameMatches(tabId:number,documentId:string,url:string){
+    try{
+      const frame=await getTopFrame(tabId);
+      return frame?.url===url&&frame.documentId===documentId&&
+        frame.documentLifecycle==="active"&&frame.frameType==="outermost_frame"&&
+        frame.parentFrameId===-1&&frame.errorOccurred!==true;
     }catch{return false;}
   }
   async function select(workerId:string,keySha256:string){
@@ -64,7 +79,8 @@ export function createChatGptTargetBinding(
     if(current.url!==null&&current.url!==sender.url){
       invalidate();return blocked("TARGET_URL_CHANGED");
     }
-    if(!await census(current.tabId,sender.url)){
+    if(!await census(current.tabId,sender.url)||
+      !await frameMatches(current.tabId,sender.documentId,sender.url)){
       invalidate();return blocked("TARGET_CENSUS_CHANGED");
     }
     if(generation!==started||selected!==current)return blocked("TARGET_OBSERVATION_STALE");
@@ -77,7 +93,8 @@ export function createChatGptTargetBinding(
     if(!snapshot||!seen)return null;
     if(!sameOwner(workerId,keySha256)){invalidate();return null;}
     if(snapshot.documentId===null||snapshot.url===null||
-      !await census(snapshot.tabId,snapshot.url)){
+      !await census(snapshot.tabId,snapshot.url)||
+      !await frameMatches(snapshot.tabId,snapshot.documentId,snapshot.url)){
       invalidate();return null;
     }
     if(generation!==started||selected!==snapshot)return null;
