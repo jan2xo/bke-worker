@@ -10,9 +10,9 @@ import {
 import { createDeviceIdentityBridge, createIndexedDbIdentityStore, publicIdentitySummary } from "./device-identity.js";
 import { checkOwnerNativePolicy } from "./native-policy-gate.js";
 import { proveLocalNativeHost } from "./native-proof-client.js";
+import { createChatGptTargetBinding } from "./target-binding.js";
 
 const CONFIG_KEY = "bridgeConfig";
-const STATUS_KEY = "chatGptStatus";
 const STATUS_MESSAGE = "bke.chatgpt.status";
 const GET_STATUS_MESSAGE = "bke.status.get";
 const GET_CONFIG_MESSAGE = "bke.config.get";
@@ -21,6 +21,9 @@ const PROBE_MESSAGE = "bke.chatgpt.probe";
 const IDENTITY_STATUS_MESSAGE = "bke.device.identity.status";
 const IDENTITY_INIT_MESSAGE = "bke.device.identity.initialize";
 const NATIVE_PROOF_MESSAGE = "bke.native.local.proof";
+const TARGET_SELECT_MESSAGE = "bke.chatgpt.target.select";
+const targetBinding=createChatGptTargetBinding(
+  ()=>chrome.tabs.query({url:["https://chatgpt.com/*"]}),chrome.runtime.id);
 let nativeProofActive = false;
 
 const DEFAULT_CONFIG: BridgeConfig = {
@@ -56,57 +59,53 @@ async function getConfig(): Promise<BridgeConfig> {
   return DEFAULT_CONFIG;
 }
 
-async function getChatGptStatus(): Promise<ChatGptPageStatus | null> {
-  const stored = await chrome.storage.session.get(STATUS_KEY);
-  return stored[STATUS_KEY] ?? null;
+// Identity is read from the extension's own nonexportable key store, never
+// accepted from ChatGPT page input or the untrusted message payload.
+async function ownerIdentity():Promise<{workerId:string;keySha256:string}|null>{
+  try{
+    const config=await getConfig();
+    if(!validateConfig(config.workerId,config.controllerUrl).ok)return null;
+    const key=await createDeviceIdentityBridge({
+      store:createIndexedDbIdentityStore()}).read(config.workerId);
+    return key.state==="READY"
+      ? {workerId:config.workerId,keySha256:key.public_key_sha256}:null;
+  }catch{return null;}
 }
-
-async function getBridgeStatus(): Promise<BridgeStatus> {
-  const [config, chatGpt] = await Promise.all([
-    getConfig(),
-    getChatGptStatus(),
-  ]);
-
+async function getBridgeStatus():Promise<BridgeStatus>{
+  const config=await getConfig();
+  const owner=await ownerIdentity();
+  const chatGpt=owner
+    ? await targetBinding.current(owner.workerId,owner.keySha256):null;
   return {
-    protocolVersion: PROTOCOL_VERSION,
-    workerId: config.workerId,
-    controllerUrl: config.controllerUrl,
-    connectionState: deriveConnectionState(config),
-    chatGpt,
+    protocolVersion:PROTOCOL_VERSION,workerId:config.workerId,
+    controllerUrl:config.controllerUrl,
+    connectionState:deriveConnectionState(config),chatGpt,
   };
 }
-
-function isChatGptSender(sender: any): boolean {
-  try {
-    return new URL(sender?.url ?? "").origin === "https://chatgpt.com";
-  } catch {
-    return false;
+async function recordChatGptStatus(payload:unknown,sender:any){
+  const owner=await ownerIdentity();
+  if(!owner){
+    targetBinding.invalidate();
+    return {ok:false,error:"TARGET_OWNER_UNAVAILABLE"};
   }
-}
-
-async function recordChatGptStatus(
-  payload: unknown,
-  sender: any,
-): Promise<{ ok: boolean; error?: string }> {
-  if (!isChatGptSender(sender)) {
-    return { ok: false, error: "CHATGPT_SENDER_INVALID" };
+  const result=await targetBinding.observe(payload,sender,owner.workerId,owner.keySha256);
+  if(!result.ok){
+    await chrome.action.setBadgeText({text:""});
+    return {ok:false,error:result.code};
   }
-
-  if (!isValidChatGptPageStatus(payload)) {
-    return { ok: false, error: "CHATGPT_STATUS_INVALID" };
-  }
-
-  const candidate: ChatGptPageStatus = payload;
-
-  await chrome.storage.session.set({
-    [STATUS_KEY]: candidate,
-  });
-
+  const candidate=payload as ChatGptPageStatus;
   await chrome.action.setBadgeText({
-    text: candidate.composerAvailable && !candidate.turnBusy ? "OK" : "…",
+    text:candidate.composerAvailable&&!candidate.turnBusy?"OK":"…",
   });
-
-  return { ok: true };
+  return {ok:true};
+}
+// Selecting a read-only target is a separate direct owner popup action.
+async function selectOwnerTarget(){
+  const owner=await ownerIdentity();
+  if(!owner)return {ok:false,code:"TARGET_OWNER_UNAVAILABLE"};
+  const result=await targetBinding.select(owner.workerId,owner.keySha256);
+  if(result.ok)await probeChatGptTabs();
+  return result;
 }
 
 async function probeChatGptTabs(): Promise<void> {
@@ -131,6 +130,8 @@ async function probeChatGptTabs(): Promise<void> {
 }
 
 async function initializeBridge(): Promise<void> {
+  targetBinding.invalidate(); // MV3 restart never restores stale observations.
+  await chrome.action.setBadgeText({text:""});
   await hardenStorageAccess();
   await probeChatGptTabs();
 }
@@ -143,6 +144,21 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   void initializeBridge();
+});
+chrome.tabs.onRemoved.addListener((tabId:number)=>{
+  targetBinding.tabChanged(tabId);
+  void chrome.action.setBadgeText({text:""});
+});
+chrome.tabs.onUpdated.addListener((tabId:number,change:any)=>{
+  if(change?.status==="loading"||typeof change?.url==="string"){
+    targetBinding.tabChanged(tabId);
+    void chrome.action.setBadgeText({text:""});
+  }
+});
+chrome.tabs.onReplaced.addListener((added:number,removed:number)=>{
+  targetBinding.tabChanged(removed);
+  targetBinding.tabChanged(added);
+  void chrome.action.setBadgeText({text:""});
 });
 
 // Only the extension popup can initialize or inspect the local device key.
@@ -240,11 +256,26 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (type === STATUS_MESSAGE) {
-      void recordChatGptStatus(message.payload, sender).then(sendResponse);
+      void recordChatGptStatus(message.payload, sender).then(sendResponse,
+        () => sendResponse({ok:false,error:"TARGET_OBSERVATION_UNAVAILABLE"}));
+      return true;
+    }
+
+    if (type === TARGET_SELECT_MESSAGE) {
+      if(!isTrustedPopup(sender)){
+        sendResponse({ok:false,code:"TARGET_SELECT_SENDER_REJECTED"});
+        return false;
+      }
+      void selectOwnerTarget().then(sendResponse,
+        () => sendResponse({ok:false,code:"TARGET_SELECTION_UNAVAILABLE"}));
       return true;
     }
 
     if (type === GET_STATUS_MESSAGE) {
+      if(!isTrustedPopup(sender)){
+        sendResponse({ok:false,error:"TARGET_STATUS_SENDER_REJECTED"});
+        return false;
+      }
       void getBridgeStatus().then(sendResponse);
       return true;
     }
@@ -272,9 +303,12 @@ chrome.runtime.onMessage.addListener(
         return false;
       }
 
+      targetBinding.invalidate(); // Even a same-ID save requires re-selection.
+      void chrome.action.setBadgeText({text:""});
       void chrome.storage.local
         .set({ [CONFIG_KEY]: result.value })
-        .then(() => sendResponse(result));
+        .then(() => sendResponse(result),
+          () => sendResponse({ok:false,error:"CONFIG_SAVE_UNAVAILABLE"}));
       return true;
     }
 
