@@ -33,7 +33,7 @@ if [[ "${1:-}" == "--preflight-readonly" ]]; then
   esac
   PF_BRANCH="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" branch --show-current 2>/dev/null)" || preflight_block "BRANCH_UNAVAILABLE"
   [[ "$PF_BRANCH" == "main" ]] || preflight_block "CHECKOUT_NOT_MAIN"
-  PF_DIRTY="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" status --porcelain --untracked-files=all 2>/dev/null)" || preflight_block "CHECKOUT_STATUS_UNAVAILABLE"
+  PF_DIRTY="$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$PF_ROOT" status --porcelain --untracked-files=all 2>/dev/null)" || preflight_block "CHECKOUT_STATUS_UNAVAILABLE"
   [[ -z "$PF_DIRTY" ]] || preflight_block "CHECKOUT_DIRTY"
   for tool in node npm python3; do command -v "$tool" >/dev/null 2>&1 || preflight_block "SOURCE_TOOL_MISSING"; done
   [[ "$(uname -s)" == "Darwin" ]] || preflight_block "MACOS_REQUIRED"
@@ -41,9 +41,10 @@ if [[ "${1:-}" == "--preflight-readonly" ]]; then
   [[ "$PF_NODE" =~ ^v([0-9]+)\. && "${BASH_REMATCH[1]}" -ge 22 ]] || preflight_block "NODE_22_OR_NEWER_REQUIRED"
   PF_HEAD="$(GIT_OPTIONAL_LOCKS=0 git -C "$PF_ROOT" rev-parse --verify HEAD 2>/dev/null)" || preflight_block "HEAD_SHA_UNAVAILABLE"
   [[ "$PF_HEAD" =~ ^[0-9a-f]{40}$ ]] || preflight_block "HEAD_SHA_INVALID"
-  # Anonymous HTTPS remote query: no fetch, remote-tracking ref update, or credential helper.
+  # Anonymous HTTPS from outside the checkout: no repo URL rewrites, credential
+  # helper, fetch, local remote-tracking ref update or interactive authentication.
   PF_REMOTE="$(GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    git -c credential.helper= -C "$PF_ROOT" ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main 2>/dev/null)" || preflight_block "REMOTE_MAIN_QUERY_FAILED"
+    git -c credential.helper= -C / ls-remote https://github.com/jan2xo/bke-worker.git refs/heads/main 2>/dev/null)" || preflight_block "REMOTE_MAIN_QUERY_FAILED"
   [[ "$PF_REMOTE" =~ ^([0-9a-f]{40})[[:space:]]refs/heads/main$ ]] || preflight_block "REMOTE_MAIN_SHA_INVALID"
   [[ "$PF_HEAD" == "${BASH_REMATCH[1]}" ]] || preflight_block "STALE_CHECKOUT"
   # Presence metadata only; never execute Chrome or inspect any profile.
