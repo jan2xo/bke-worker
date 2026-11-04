@@ -138,7 +138,7 @@ EXTENSION_ENABLED=false; EXTENSION_PATH_MATCHES=false; EXTENSION_VERSION_MATCHES
 EXTENSION_MANIFEST_VERSION=0; EXTENSION_PERMISSIONS='[]'; EXTENSION_OPTIONAL_PERMISSIONS='[]'; EXTENSION_HOST_PERMISSIONS='[]'
 EXTENSION_PATH="$ROOT_DIR/browser-extension"
 HOST_STATUS="NOT_CHECKED"; HOST_NAME="bke.worker.desktop"; HOST_ORIGIN=""; HOST_POLICY_VERIFIED=false
-CHATGPT_TARGET_COUNT=0; CHATGPT_EXCLUSIVITY_ATTESTED=false; CHATGPT_AUTH_IDLE=false
+CHATGPT_TARGET_COUNT=""; CHATGPT_EXCLUSIVITY_ATTESTED=""; CHATGPT_AUTH_IDLE=""
 OPERATOR_BLOCKER=""; SEND_ATTEMPTED=false; PROFILE_SECRETS_READ=false
 OTHER_PROFILES_TOUCHED=false; CREDENTIALS_WRITTEN=false
 if command -v sha256sum >/dev/null 2>&1; then
@@ -180,6 +180,15 @@ def a(k):
         x=json.loads(v(k,"[]"))
         return x if isinstance(x,list) else []
     except Exception: return []
+def target_count(k):
+    raw=v(k)
+    if raw=="": return None
+    if raw=="0" or (len(raw)<=9 and raw.isascii() and raw.isdigit() and raw[0]!="0"):
+        return int(raw)
+    return "INVALID"
+def attested(k):
+    raw=v(k)
+    return True if raw=="true" else False if raw=="false" else None
 data={
  "readinessSessionId":v("SESSION_ID"),
  "repository":{"origin":v("REPO_ORIGIN"),"branch":v("REPO_BRANCH"),"headSha":v("HEAD_SHA"),"remoteMainSha":v("REMOTE_MAIN_SHA"),"clean":True},
@@ -188,7 +197,7 @@ data={
  "profile":{"path":v("PROFILE_DIR"),"exists":b("PROFILE_EXISTS"),"pathCanonical":b("PROFILE_CANONICAL"),"ownerMatches":b("PROFILE_OWNER_MATCHES"),"privateMode":b("PROFILE_PRIVATE"),"dedicated":b("PROFILE_DEDICATED"),"activeProcess":b("PROFILE_ACTIVE"),"exclusiveOwnerAttested":b("PROFILE_EXCLUSIVE")},
  "extension":{"id":v("EXTENSION_ID"),"version":v("EXTENSION_VERSION"),"manifestVersion":int(v("EXTENSION_MANIFEST_VERSION","0") or 0),"matchCount":int(v("EXTENSION_COUNT","0") or 0),"enabled":b("EXTENSION_ENABLED"),"path":v("EXTENSION_PATH"),"pathMatches":b("EXTENSION_PATH_MATCHES"),"versionMatches":b("EXTENSION_VERSION_MATCHES"),"permissions":a("EXTENSION_PERMISSIONS"),"optionalPermissions":a("EXTENSION_OPTIONAL_PERMISSIONS"),"hostPermissions":a("EXTENSION_HOST_PERMISSIONS"),"nativeMessagingPermission":"NOT_CHECKED"},
  "nativeHost":{"status":v("HOST_STATUS"),"name":v("HOST_NAME"),"origin":v("HOST_ORIGIN"),"policyVerified":b("HOST_POLICY_VERIFIED")},
- "chatgpt":{"targetCount":int(v("TARGET_COUNT","0") or 0),"exclusivityAttested":b("CHATGPT_EXCLUSIVE"),"authenticatedAndIdle":b("CHATGPT_AUTH_IDLE")},
+ "chatgpt":{"targetCount":target_count("TARGET_COUNT"),"exclusivityAttested":attested("CHATGPT_EXCLUSIVE"),"authenticatedAndIdle":attested("CHATGPT_AUTH_IDLE")},
  "safety":{"messageSendAttempted":b("SEND_ATTEMPTED"),"profileSecretsRead":b("PROFILE_SECRETS_READ"),"otherProfilesTouched":b("OTHER_PROFILES_TOUCHED"),"credentialsWritten":b("CREDENTIALS_WRITTEN")},
  "operatorBlocker":v("OPERATOR_BLOCKER")}
 with open(sys.argv[1],"w",encoding="utf-8") as f:
@@ -367,9 +376,13 @@ printf 'Count of open chatgpt.com tabs in this isolated profile (must be exactly
 IFS= read -r CHATGPT_TARGET_COUNT </dev/tty || block_real "CHATGPT_TARGET_COUNT_NOT_PROVIDED"
 [[ "$CHATGPT_TARGET_COUNT" =~ ^[0-9]+$ ]] || block_real "CHATGPT_TARGET_COUNT_INVALID"
 [[ "$CHATGPT_TARGET_COUNT" == "1" ]] || block_real "CHATGPT_TARGET_COUNT_NOT_ONE"
+# Owner confirmed exclusive profile above and now exactly one ChatGPT tab.
+CHATGPT_EXCLUSIVITY_ATTESTED=true
+# This confirmation was reached: a refusal is a failure, not NOT_EVALUATED.
+CHATGPT_AUTH_IDLE=false
 prompt_exact "CHATGPT_AUTHENTICATED_AND_IDLE" \
   "Visually confirm ChatGPT is logged in by you and idle, with no generation, challenge or modal. Nothing is read from the session." || block_real "CHATGPT_AUTHENTICATED_IDLE_NOT_ATTESTED"
-CHATGPT_EXCLUSIVITY_ATTESTED=true; CHATGPT_AUTH_IDLE=true
+CHATGPT_AUTH_IDLE=true
 
 printf 'BKE_F1_SOURCE_STATUS=SOURCE_SMOKE_PASS\n'
 printf 'BKE_F1_HEAD_SHA=%s\n' "$HEAD_SHA"

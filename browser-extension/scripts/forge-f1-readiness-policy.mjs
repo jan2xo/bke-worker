@@ -107,9 +107,25 @@ export function evaluateF1DesktopReadiness(evidence) {
   add(blockers, host.origin !== expectedOrigin || !expectedOrigin, "NATIVE_HOST_EXTENSION_ORIGIN_MISMATCH");
   add(blockers, host.policyVerified !== true, "NATIVE_HOST_OWNER_POLICY_NOT_VERIFIED");
 
-  add(blockers, chatgpt.targetCount !== 1, "CHATGPT_TARGET_COUNT_NOT_ONE");
-  add(blockers, chatgpt.exclusivityAttested !== true, "CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED");
-  add(blockers, chatgpt.authenticatedAndIdle !== true, "CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE");
+  // These operator confirmations are sequential, not a single evaluated stage.
+  // Earlier rejection must never manufacture failed or successful later attestations.
+  const chatgptTargetEvaluated = chatgpt.targetCount !== null && chatgpt.targetCount !== undefined;
+  const uniqueTarget = chatgpt.targetCount === 1;
+  const exclusivityEvaluated = uniqueTarget && typeof chatgpt.exclusivityAttested === "boolean";
+  const authenticationEvaluated = uniqueTarget &&
+    chatgpt.exclusivityAttested === true && typeof chatgpt.authenticatedAndIdle === "boolean";
+  if (!chatgptTargetEvaluated) add(blockers, true, "CHATGPT_TARGET_NOT_EVALUATED");
+  else add(blockers, !uniqueTarget, "CHATGPT_TARGET_COUNT_NOT_ONE");
+  if (uniqueTarget) {
+    add(blockers, !exclusivityEvaluated, "CHATGPT_TARGET_EXCLUSIVITY_NOT_EVALUATED");
+    add(blockers, exclusivityEvaluated && chatgpt.exclusivityAttested !== true,
+      "CHATGPT_TARGET_EXCLUSIVITY_NOT_ATTESTED");
+    if (chatgpt.exclusivityAttested === true) {
+      add(blockers, !authenticationEvaluated, "CHATGPT_AUTH_IDLE_NOT_EVALUATED");
+      add(blockers, authenticationEvaluated && chatgpt.authenticatedAndIdle !== true,
+        "CHATGPT_NOT_HUMAN_CONFIRMED_AUTHENTICATED_AND_IDLE");
+    }
+  }
 
   add(blockers, safety.messageSendAttempted !== false, "MESSAGE_SEND_NOT_PROVEN_ABSENT");
   add(blockers, safety.profileSecretsRead !== false, "PROFILE_SECRET_READ_NOT_PROVEN_ABSENT");
@@ -172,9 +188,15 @@ export function evaluateF1DesktopReadiness(evidence) {
     },
     chatgpt: {
       open_target_count: Number.isInteger(chatgpt.targetCount) ? chatgpt.targetCount : null,
-      target_count_source: "OWNER_VISUAL_ATTESTATION",
-      authenticated_and_idle: chatgpt.authenticatedAndIdle === true,
-      authentication_evidence_source: "OWNER_VISUAL_ATTESTATION_NO_PROFILE_SECRETS_READ",
+      target_count_source: chatgptTargetEvaluated ? "OWNER_VISUAL_ATTESTATION" : "NOT_EVALUATED",
+      target_exclusivity_attested: exclusivityEvaluated ? chatgpt.exclusivityAttested : null,
+      target_exclusivity_evidence_source: exclusivityEvaluated
+        ? "OWNER_PROFILE_AND_TAB_COUNT_CONFIRMATION" : "NOT_EVALUATED",
+      authenticated_and_idle: authenticationEvaluated ? chatgpt.authenticatedAndIdle : null,
+      authentication_evidence_source: authenticationEvaluated
+        ? (chatgpt.authenticatedAndIdle === true
+          ? "OWNER_VISUAL_ATTESTATION_NO_PROFILE_SECRETS_READ" : "OWNER_CONFIRMATION_FAILED")
+        : "NOT_EVALUATED",
       conversation_id: "NOT_CREATED_NO_SEND_OCCURRED",
     },
     authority: {
