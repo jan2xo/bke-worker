@@ -318,6 +318,21 @@ Before merge:
 
 Any head change makes older certification stale.
 
+### Independently attributable source-only review evidence (prospective)
+
+For ordinary **source-only** PRs, do not impose a manual GitHub `APPROVED` button press as a universal extra gate. Determine the review evidence contract **before** execution from the existing issue/PR acceptance plan and applicable GitHub branch rules. A formal `APPROVED` event remains mandatory when **any** of those explicitly require it; neither an alternate comment nor an implementer's restatement waives that requirement.
+
+Where formal `APPROVED` is **not** required, an independent technical review may satisfy the declared source-only review-evidence gate only when **the separate eligible reviewer personally publishes** a GitHub review or PR comment from its own authenticated account, with:
+- an explicit `ACCEPT_SOURCE_ONLY` or `REMEDIATE` verdict, exact PR head SHA, reviewer identity and implementation independence;
+- inspected scope and meaningful source/security findings (or no material findings), evidence of the required exact-head certification, counterevidence and unverified boundaries;
+- no conflict with unresolved review findings, required physical proof, security/production locks or the current task's acceptance contract.
+
+The executor must read the **persisted GitHub author**, exact SHA, content, CI, applicable review requirements and current head before using such a verdict. A copied/pasted review in a chat, or a comment reposted under the implementer's account, is not independent GitHub publication. A technical `ACCEPT_SOURCE_ONLY` in a `COMMENTED` review/comment must never be presented as GitHub's formal `APPROVED` state.
+
+This prospective policy cannot retroactively relax a PR's already-declared formal approval requirement. A platform- or tool-denied review submission is a **stop condition**, not permission to reroute a forbidden action through another account, endpoint or tool. Record the genuine blocker; use only legitimately permitted independent publishing and the current task's rules. If an eligible independent reviewer cannot publish evidence, hold the PR.
+
+Routine post-review reconciliation, exact-head certification checks, authorized SHA-locked merge and GitHub checkpoint publication should continue without repeatedly demanding manual owner clicks when the above conditions are satisfied. Owner involvement is reserved for explicitly owner-only authorization, human authentication, production/security locks, and ambiguity recovery. This is a **governance rule only**; it does not provide automated reviewer wake, live worker dispatch, browser access or new permissions.
+
 ## 12. CURRENT EXPECTED CERTIFICATION MODULES
 
 Available certification modules still reflect multiple implementation generations. Select only the minimum complete graph for the actual changed boundary:
