@@ -357,18 +357,8 @@ prompt_exact "CANONICAL_EXTENSION_PATH_VERSION_AND_ENABLED_CONFIRMED" \
   "Visually confirm the single counted extension has ID $EXTENSION_ID, uses exactly $EXTENSION_PATH, is enabled, and reports manifest version $EXTENSION_VERSION. Only this visual attestation is used; Chrome profile metadata is not read." || block_real "EXTENSION_IDENTITY_NOT_ATTESTED"
 EXTENSION_ENABLED=true; EXTENSION_PATH_MATCHES=true; EXTENSION_VERSION_MATCHES=true
 HOST_ORIGIN="chrome-extension://$EXTENSION_ID/"
-HOST_STATUS="MISSING"
-INSPECT_OUTPUT="$(BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" inspect 2>&1)" || block_real "NATIVE_HOST_INSPECTION_FAILED_OR_CONFLICT"
-if printf '%s' "$INSPECT_OUTPUT" | grep -Fq 'PASS: manifest matches expected contract.'; then
-  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" verify >/dev/null 2>&1 || block_real "NATIVE_HOST_VERIFICATION_FAILED"
-  HOST_STATUS="VERIFIED_REGISTRATION_ONLY"; HOST_POLICY_VERIFIED=true
-elif printf '%s' "$INSPECT_OUTPUT" | grep -Fq 'not registered; inspect is read-only.'; then
-  prompt_exact "PREPARE_USER_LEVEL_CHROME_NATIVE_HOST" \
-    "The user-level host is absent. Run the existing transactional installer? This will not grant extension permissions or connect/send; an existing owner-pinned policy is required." || block_real "NATIVE_HOST_INSTALL_NOT_AUTHORIZED"
-  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" install </dev/tty || block_real "NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING"
-  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" verify >/dev/null 2>&1 || block_real "NATIVE_HOST_VERIFY_AFTER_INSTALL_FAILED"
-  HOST_STATUS="VERIFIED_REGISTRATION_ONLY"; HOST_POLICY_VERIFIED=true
-else block_real "NATIVE_HOST_INSPECTION_CONTRACT_UNKNOWN"; fi
+# Read-only, owner-attested target checks are independent of local native-host setup.
+# Their success never substitutes for genuine policy/registration or live nativeMessaging.
 prompt_exact "THIS_IS_THE_ONLY_F1_EXPERIMENT_PROFILE" \
   "Visually confirm no other worker/session shares this isolated profile." || block_real "F1_PROFILE_UNIQUENESS_NOT_ATTESTED"
 PROFILE_EXCLUSIVE_ATTESTED=true
@@ -383,6 +373,20 @@ CHATGPT_AUTH_IDLE=false
 prompt_exact "CHATGPT_AUTHENTICATED_AND_IDLE" \
   "Visually confirm ChatGPT is logged in by you and idle, with no generation, challenge or modal. Nothing is read from the session." || block_real "CHATGPT_AUTHENTICATED_IDLE_NOT_ATTESTED"
 CHATGPT_AUTH_IDLE=true
+
+HOST_STATUS="MISSING"
+INSPECT_OUTPUT="$(BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" inspect 2>&1)" || block_real "NATIVE_HOST_INSPECTION_FAILED_OR_CONFLICT"
+if printf '%s' "$INSPECT_OUTPUT" | grep -Fq 'PASS: manifest matches expected contract.'; then
+  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" verify >/dev/null 2>&1 || block_real "NATIVE_HOST_VERIFICATION_FAILED"
+  HOST_STATUS="VERIFIED_REGISTRATION_ONLY"; HOST_POLICY_VERIFIED=true
+elif printf '%s' "$INSPECT_OUTPUT" | grep -Fq 'not registered; inspect is read-only.'; then
+  prompt_exact "PREPARE_USER_LEVEL_CHROME_NATIVE_HOST" \
+    "The user-level host is absent. Run the existing transactional installer? This will not grant extension permissions or connect/send; an existing owner-pinned policy is required." || block_real "NATIVE_HOST_INSTALL_NOT_AUTHORIZED"
+  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" install </dev/tty || block_real "NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING"
+  BKE_NATIVE_HOST_EXTENSION_ORIGIN="$HOST_ORIGIN" bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" verify >/dev/null 2>&1 || block_real "NATIVE_HOST_VERIFY_AFTER_INSTALL_FAILED"
+  HOST_STATUS="VERIFIED_REGISTRATION_ONLY"; HOST_POLICY_VERIFIED=true
+else block_real "NATIVE_HOST_INSPECTION_CONTRACT_UNKNOWN"; fi
+
 
 printf 'BKE_F1_SOURCE_STATUS=SOURCE_SMOKE_PASS\n'
 printf 'BKE_F1_HEAD_SHA=%s\n' "$HEAD_SHA"

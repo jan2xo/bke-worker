@@ -161,11 +161,11 @@ safe_parent(){
  mode="$(stat -c '%a' "$p" 2>/dev/null || stat -f '%Lp' "$p" 2>/dev/null)" || return 1
  owner="$(stat -c '%u' "$p" 2>/dev/null || stat -f '%u' "$p" 2>/dev/null)" || return 1
  bits="$((8#$mode))"; uid="$(id -u)"
- if [[ "$owner" = "$uid" ]]; then
-   (( (bits & 0022) == 0 ))
- elif [[ "$owner" = "0" ]] && (( (bits & 01000) != 0 )); then
+ if [[ "$owner" = "0" ]] && (( (bits & 01000) != 0 )); then
    # System sticky directories such as /tmp may be shared; private child paths are validated separately.
    (( (bits & 0002) != 0 ))
+ elif [[ "$owner" = "$uid" ]]; then
+   (( (bits & 0022) == 0 ))
  elif [[ "$owner" = "0" ]]; then
    (( (bits & 0022) == 0 ))
  else
