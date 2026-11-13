@@ -11,6 +11,13 @@ export interface BridgeConfig {
   controllerUrl: string;
 }
 
+export type ChatPageUiState =
+  | "NEW_CHAT_LANDING"
+  | "THREAD"
+  | "BUSY"
+  | "AUTH_REQUIRED"
+  | "UNKNOWN";
+
 export interface ChatGptPageStatus {
   protocolVersion: typeof PROTOCOL_VERSION;
   observedAt: string;
@@ -18,6 +25,7 @@ export interface ChatGptPageStatus {
   visible: boolean;
   composerAvailable: boolean;
   turnBusy: boolean;
+  uiState?: ChatPageUiState;
 }
 
 export interface BridgeStatus {
@@ -99,6 +107,49 @@ export function validateConfig(
   };
 }
 
+const VALID_UI_STATES = new Set<ChatPageUiState>([
+  "NEW_CHAT_LANDING",
+  "THREAD",
+  "BUSY",
+  "AUTH_REQUIRED",
+  "UNKNOWN",
+]);
+
+export function conversationIdFromChatGptUrl(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl);
+    if (
+      url.origin !== "https://chatgpt.com" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    const match = /^\/c\/([A-Za-z0-9_-]{8,128})$/.exec(url.pathname);
+    return match ? (match[1] ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isChatGptLandingUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return (
+      url.origin === "https://chatgpt.com" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.pathname === "/"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isValidChatGptPageStatus(
   value: unknown,
 ): value is ChatGptPageStatus {
@@ -113,7 +164,8 @@ export function isValidChatGptPageStatus(
     typeof candidate.url !== "string" ||
     typeof candidate.visible !== "boolean" ||
     typeof candidate.composerAvailable !== "boolean" ||
-    typeof candidate.turnBusy !== "boolean"
+    typeof candidate.turnBusy !== "boolean" ||
+    (candidate.uiState !== undefined && !VALID_UI_STATES.has(candidate.uiState))
   ) {
     return false;
   }

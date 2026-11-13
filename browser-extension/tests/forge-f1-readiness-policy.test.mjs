@@ -311,3 +311,26 @@ test("actual embedded shell Python report producer preserves absent, invalid and
     rmSync(tmp,{recursive:true,force:true});
   }
 });
+
+test("owner ChatGPT observations run before native-host policy and cannot bypass it", () => {
+  const shell=readFileSync(new URL("../../scripts/forge-f1-desktop-readiness.sh",import.meta.url),"utf8");
+  const target= shell.indexOf('prompt_exact "THIS_IS_THE_ONLY_F1_EXPERIMENT_PROFILE"');
+  const auth= shell.indexOf('prompt_exact "CHATGPT_AUTHENTICATED_AND_IDLE"');
+  const install= shell.indexOf('bash "$ROOT_DIR/scripts/prepare-chrome-native-host.sh" install');
+  assert.ok(target > 0 && auth > target && install > auth,
+    "owner target checks must occur before native-host install");
+  const evidence=fixture();
+  evidence.nativeHost.status="MISSING";
+  evidence.nativeHost.policyVerified=false;
+  evidence.operatorBlocker="NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING";
+  const r=evaluateF1DesktopReadiness(evidence);
+  assert.equal(r.source_status,"SOURCE_SMOKE_PASS");
+  assert.equal(r.real_chrome_status,"BLOCKED");
+  assert.ok(r.blocker_codes.includes("NATIVE_HOST_OWNER_POLICY_NOT_VERIFIED"));
+  assert.ok(r.blocker_codes.includes("NATIVE_HOST_INSTALL_FAILED_OR_OWNER_POLICY_MISSING"));
+  assert.ok(!r.blocker_codes.some(code=>code.startsWith("CHATGPT_")));
+  assert.equal(r.chatgpt.target_count_source,"OWNER_VISUAL_ATTESTATION");
+  assert.equal(r.chatgpt.authenticated_and_idle,true);
+  assert.equal(r.authority.dispatch_authority,"NONE");
+  assert.equal(r.authority.message_send_authority,"NONE");
+});

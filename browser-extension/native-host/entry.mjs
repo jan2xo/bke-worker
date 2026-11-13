@@ -6,6 +6,7 @@ import { open,constants } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runNativeProofHost } from "./host.mjs";
+import { runNativeControllerBridge } from "./controller-host.mjs";
 
 async function readOwnerPinnedPolicy(path) {
   if(typeof path!=="string"||!isAbsolute(path)||path.includes("\0"))
@@ -27,6 +28,19 @@ async function readOwnerPinnedPolicy(path) {
 }
 
 export async function main(args=process.argv.slice(2)) {
+  const envSocket=process.env.BKE_CONTROLLER_IPC_SOCKET;
+  const bridgeFlagIndex=args.indexOf("--controller-bridge");
+  if(bridgeFlagIndex>=0||(typeof envSocket==="string"&&envSocket.length>0)){
+    const cleanArgs=args.filter(a=>a!=="--controller-bridge");
+    if(cleanArgs.length<2||cleanArgs.length>3)throw Error("NATIVE_INVOCATION_DENIED");
+    const [policyPath,claimedOrigin,argSocket]=cleanArgs;
+    const ipcSocketPath=argSocket||envSocket||null;
+    const policy=await readOwnerPinnedPolicy(policyPath);
+    const session=await runNativeControllerBridge({
+      input:process.stdin,output:process.stdout,policy,claimedOrigin,ipcSocketPath,
+    });
+    return session.waitClosed();
+  }
   if(args.length!==2)throw Error("NATIVE_INVOCATION_DENIED");
   const [policyPath,claimedOrigin]=args;
   const policy=await readOwnerPinnedPolicy(policyPath);

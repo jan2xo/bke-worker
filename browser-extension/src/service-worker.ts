@@ -11,6 +11,12 @@ import { createDeviceIdentityBridge, createIndexedDbIdentityStore, publicIdentit
 import { checkOwnerNativePolicy } from "./native-policy-gate.js";
 import { proveLocalNativeHost } from "./native-proof-client.js";
 import { createChatGptTargetBinding } from "./target-binding.js";
+import {
+  connectControllerNativeBridge,
+  createControllerBridgeSupervisor,
+  type ControllerBridgeCommand,
+  type ControllerBridgeSupervisor,
+} from "./controller-transport.js";
 
 const CONFIG_KEY = "bridgeConfig";
 const STATUS_MESSAGE = "bke.chatgpt.status";
@@ -22,10 +28,15 @@ const IDENTITY_STATUS_MESSAGE = "bke.device.identity.status";
 const IDENTITY_INIT_MESSAGE = "bke.device.identity.initialize";
 const NATIVE_PROOF_MESSAGE = "bke.native.local.proof";
 const TARGET_SELECT_MESSAGE = "bke.chatgpt.target.select";
+const CONTROLLER_CONNECT_MESSAGE = "bke.controller.bridge.connect";
+const CONTROLLER_STATUS_MESSAGE = "bke.controller.bridge.status";
+const CONTENT_DISPATCH_MESSAGE = "bke.chatgpt.dispatch";
 const targetBinding=createChatGptTargetBinding(
   ()=>chrome.tabs.query({url:["https://chatgpt.com/*"]}),chrome.runtime.id,
   (tabId:number)=>chrome.webNavigation.getFrame({tabId,frameId:0}));
 let nativeProofActive = false;
+let controllerSupervisor: ControllerBridgeSupervisor | null = null;
+const consumedBridgeAttempts = new Set<string>();
 
 const DEFAULT_CONFIG: BridgeConfig = {
   workerId: "",
@@ -246,6 +257,119 @@ async function nativeProofAction(rawPolicy: unknown) {
   }
 }
 
+async function controllerBridgeConnectAction(rawPolicy: unknown) {
+  try {
+    const config = await getConfig();
+    if (!validateConfig(config.workerId, config.controllerUrl).ok) {
+      return { state: "BLOCKED", code: "CONTROLLER_BRIDGE_WORKER_INVALID" };
+    }
+    const bridge = createDeviceIdentityBridge({ store: createIndexedDbIdentityStore() });
+    const publicKey = await bridge.read(config.workerId);
+    if (publicKey.state !== "READY") {
+      return { state: "BLOCKED", code: "CONTROLLER_BRIDGE_KEY_UNAVAILABLE" };
+    }
+    const policy = checkOwnerNativePolicy(rawPolicy, {
+      origin: chrome.runtime.getURL(""),
+      workerId: config.workerId,
+      publicKeySha256: publicKey.public_key_sha256,
+      now: Date.now(),
+    });
+    if (policy.state !== "LOCAL_POLICY_MATCH_ONLY") return policy;
+
+    const permitted = await chrome.permissions.contains({ permissions: ["nativeMessaging"] });
+    if (permitted !== true) {
+      return { state: "BLOCKED", code: "CONTROLLER_BRIDGE_PERMISSION_NOT_GRANTED" };
+    }
+
+    if (!controllerSupervisor) {
+      controllerSupervisor = createControllerBridgeSupervisor(() =>
+        connectControllerNativeBridge({
+          runtime: chrome.runtime,
+          identity: bridge,
+          workerId: config.workerId,
+          resources: policy.resources,
+          profileBindingSha256: policy.profileBindingSha256,
+          checkPermission: () => chrome.permissions.contains({ permissions: ["nativeMessaging"] }),
+          consumedRegistry: {
+            consumeOnce(attemptId: string): boolean {
+              if (consumedBridgeAttempts.has(attemptId)) return false;
+              consumedBridgeAttempts.add(attemptId);
+              return true;
+            },
+          },
+          handlers: {
+            withTargetLock: (run) =>
+              targetBinding.withCurrentTargetObservation(
+                config.workerId,
+                publicKey.public_key_sha256,
+                run,
+              ),
+            getTargetStatus: async () => {
+              const seen = await targetBinding.current(config.workerId, publicKey.public_key_sha256);
+              if (!seen) {
+                return { ok: false, code: "TARGET_NOT_OBSERVED" };
+              }
+              const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+              const tabId = tabs.length === 1 && Number.isInteger(tabs[0]?.id) ? tabs[0].id : -1;
+              return {
+                ok: true,
+                code: "TARGET_STATUS_OK",
+                payload: {
+                  ...seen,
+                  tabId,
+                  matchingWritableTargetCount: tabs.length,
+                  sharedWritableProfile: false,
+                },
+              };
+            },
+            dispatchFirstMessage: async (cmd: ControllerBridgeCommand) => {
+              const seen = await targetBinding.current(config.workerId, publicKey.public_key_sha256);
+              if (!seen) return { ok: false, code: "TARGET_LOST_BEFORE_DISPATCH" };
+              const res = await chrome.tabs.sendMessage(Number(cmd.target_tab_id), {
+                type: CONTENT_DISPATCH_MESSAGE,
+                mode: "FIRST_MESSAGE",
+                attemptId: String(cmd.attempt_id),
+                prompt: String(cmd.prompt),
+                expectedBeforeUrl: seen.url,
+              });
+              return res?.ok
+                ? { ok: true, code: res.code ?? "FIRST_MESSAGE_SENT", payload: res }
+                : { ok: false, code: res?.code ?? "FIRST_MESSAGE_DISPATCH_FAILED" };
+            },
+            dispatchContinuation: async (cmd: ControllerBridgeCommand) => {
+              const seen = await targetBinding.current(config.workerId, publicKey.public_key_sha256);
+              if (!seen) return { ok: false, code: "TARGET_LOST_BEFORE_DISPATCH" };
+              const res = await chrome.tabs.sendMessage(Number(cmd.target_tab_id), {
+                type: CONTENT_DISPATCH_MESSAGE,
+                mode: "CONTINUATION",
+                attemptId: String(cmd.attempt_id),
+                prompt: String(cmd.prompt),
+                expectedBeforeUrl: seen.url,
+                expectedConversationId: String(cmd.expected_conversation_id),
+              });
+              return res?.ok
+                ? { ok: true, code: res.code ?? "CONTINUATION_SENT", payload: res }
+                : { ok: false, code: res?.code ?? "CONTINUATION_DISPATCH_FAILED" };
+            },
+          },
+        }),
+      );
+    }
+
+    const res = await controllerSupervisor.connect();
+    if (!res.ok) {
+      return { state: "BLOCKED", code: res.code };
+    }
+    return {
+      state: "BRIDGE_ESTABLISHED",
+      session_id: res.session.sessionId,
+      worker_id: res.session.workerId,
+    };
+  } catch {
+    return { state: "BLOCKED", code: "CONTROLLER_BRIDGE_UNAVAILABLE" };
+  }
+}
+
 chrome.runtime.onMessage.addListener(
   (
     message: any,
@@ -253,6 +377,34 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (response: unknown) => void,
   ) => {
     const type = message?.type;
+
+    if (type === CONTROLLER_CONNECT_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ state: "BLOCKED", code: "CONTROLLER_BRIDGE_SENDER_REJECTED" });
+        return false;
+      }
+      void controllerBridgeConnectAction(message?.policy).then(sendResponse, () =>
+        sendResponse({ state: "BLOCKED", code: "CONTROLLER_BRIDGE_UNAVAILABLE" }),
+      );
+      return true;
+    }
+
+    if (type === CONTROLLER_STATUS_MESSAGE) {
+      if (!isTrustedPopup(sender)) {
+        sendResponse({ state: "BLOCKED", code: "CONTROLLER_BRIDGE_SENDER_REJECTED" });
+        return false;
+      }
+      const sess = controllerSupervisor?.currentSession() ?? null;
+      sendResponse({
+        state: controllerSupervisor?.isQuarantined()
+          ? "QUARANTINED"
+          : sess
+            ? sess.state()
+            : "DISCONNECTED",
+        sessionId: sess?.sessionId ?? null,
+      });
+      return false;
+    }
 
     if (type === NATIVE_PROOF_MESSAGE) {
       if (!isTrustedPopup(sender)) {
